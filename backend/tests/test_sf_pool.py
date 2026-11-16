@@ -119,3 +119,13 @@ def test_close_all(clock):
     with pool.connection() as b:
         pass
     assert b.closed  # not kept after shutdown
+
+
+def test_discard_closes_on_release(clock):
+    pool = make(clock)
+    with pool.connection() as a:
+        pool.discard(a)
+    assert a.closed
+    with pool.connection() as b:
+        pass
+    assert b is not a

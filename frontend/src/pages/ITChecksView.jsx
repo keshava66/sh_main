@@ -1088,6 +1088,8 @@ export default function ITChecksView({
   const searchRef = useRef(null);
   const resultsRef = useRef(null);
   const toastId = useRef(0);
+  const aliveRef = useRef(true);
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
   const busyRef = useRef(busy);
   busyRef.current = busy;
 
@@ -1251,10 +1253,10 @@ export default function ITChecksView({
         }
       }
     };
-    // three at a time so we don't hammer Oracle
-    const worker = async () => { while (queue.length) await one(queue.shift()); };
+    // three at a time so we don't hammer Oracle; leaving the page stops the queue
+    const worker = async () => { while (queue.length && aliveRef.current) await one(queue.shift()); };
     await Promise.all([worker(), worker(), worker()]);
-    if (todo.length > 1) toast(failed ? 'bad' : 'ok', 'Re-validation finished', `${passed} passed · ${failed} still failing`);
+    if (todo.length > 1 && aliveRef.current) toast(failed ? 'bad' : 'ok', 'Re-validation finished', `${passed} passed · ${failed} still failing`);
   }, [canRefreshTable, onRevalidateTable, toast, setOpenKey]);
 
   const revalidateMany = (list, what) => {
@@ -1366,7 +1368,11 @@ export default function ITChecksView({
       if (run.stopped) toast('info', 'Validation stopped', 'The run was cancelled before it finished.');
       else if (bad) toast('bad', 'Validation complete', `${bad} of ${run.dbs.length} run${run.dbs.length > 1 ? 's' : ''} failed — check the log.`);
       else if (held) toast('bad', 'Validation complete', 'Some pipelines failed, so the results were not published to this page — check the log.');
-      else toast('ok', 'Validation complete', 'Results saved to Snowflake. Load them to update the view.');
+      else if (!appliedRuns.length) {
+        // Looking at all runs combined: pull the new results in straight away.
+        toast('ok', 'Validation complete', 'Results saved to Snowflake. Loading the latest results…');
+        onLoadRuns(null);
+      } else toast('ok', 'Validation complete', 'Results saved to Snowflake. Pick “All runs combined” or the new run to see them.');
       setRun((r) => (r ? { ...r, min: false, stopping: false } : r));
     }
     wasRunning.current = runActive;
@@ -1851,7 +1857,7 @@ export default function ITChecksView({
             <button type="button" className="btn sm icon ghost" onClick={() => setRunModal(false)} aria-label="Close"><Ico n="x" /></button>
           </div>
           <div className="modal-body">
-            {RUN_DBS.map((d, i) => (
+            {RUN_DBS.map((d) => (
               <button type="button" key={d.id} className={`dbopt${runSel[d.id] ? ' on' : ''}`} onClick={() => setRunSel((s) => ({ ...s, [d.id]: !s[d.id] }))}>
                 <SrcIco src={d.label} />
                 <div className="tx"><b>{d.label}</b><span>{engineOf(d.label)} → Snowflake{allSrcCounts[d.label] ? ` · ${fmt(allSrcCounts[d.label])} tables last run` : ''}</span></div>

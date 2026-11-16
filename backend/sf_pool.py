@@ -29,6 +29,7 @@ class SnowflakePool:
         self._lock = threading.Lock()
         self._idle = []   # [(conn, created_at, released_at)], newest last
         self._closed = False
+        self._doomed = set()  # ids of connections that must not go back in the pool
 
     def _usable(self, conn, created, released, now):
         if now - released > self._max_idle or now - created > self._max_age:
@@ -62,7 +63,17 @@ class SnowflakePool:
             return picked
         return self._connect(), self._clock()
 
+    def discard(self, conn):
+        """Close this connection when it's released instead of reusing it
+        (e.g. a query on it timed out and may still be running)."""
+        with self._lock:
+            self._doomed.add(id(conn))
+
     def _release(self, conn, created, broken):
+        with self._lock:
+            if id(conn) in self._doomed:
+                self._doomed.discard(id(conn))
+                broken = True
         if broken:
             self._close(conn)
             return

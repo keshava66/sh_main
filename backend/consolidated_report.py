@@ -1246,8 +1246,11 @@ def fetch_consolidated_download(token: str = Query(...), auth: dict = Depends(re
 
 # ── /latest — load the most recent persisted report ──────────────────────────
 
+# /latest, /history and /fetch are plain (sync) handlers on purpose: FastAPI runs
+# them in a worker thread, so their Snowflake queries and pandas work never block
+# the event loop (which would freeze every other request and live stream).
 @consolidated_router.get("/latest")
-async def get_latest_consolidated_report(
+def get_latest_consolidated_report(
     delta_mode: bool = Query(False, description="When True, fetch from the delta registry"),
     auth: dict = Depends(require_permission("viewBusinessChecks")),
 ):
@@ -1292,13 +1295,13 @@ async def get_latest_consolidated_report(
     full_report = f"{database}.{schema}.{report_name}"
     cur = sf.conn.cursor()
     try:
-        await asyncio.get_event_loop().run_in_executor(None, lambda: cur.execute(f"SELECT * FROM {full_report}"))
-        batches = await asyncio.get_event_loop().run_in_executor(None, lambda: list(cur.fetch_pandas_batches()))
+        cur.execute(f"SELECT * FROM {full_report}")
+        batches = list(cur.fetch_pandas_batches())
     finally:
         cur.close()
 
     df = pd.concat(batches, ignore_index=True) if batches else pd.DataFrame()
-    ids = await asyncio.to_thread(_allowed_ids, auth)
+    ids = _allowed_ids(auth)
     df, rule_counts, rule_color_map, _ = cut_report(df, rule_counts, rule_color_map, [], ids)
     if ids is not None:
         total_rows, rules_count = len(df), len(rule_counts)
@@ -1324,7 +1327,7 @@ async def get_latest_consolidated_report(
 # ── /history — list all persisted reports ─────────────────────────────────────
 
 @consolidated_router.get("/history")
-async def get_consolidated_report_history(
+def get_consolidated_report_history(
     delta_mode: bool = Query(False, description="When True, fetch from the delta registry"),
     auth: dict = Depends(require_permission("viewBusinessChecks")),
 ):
@@ -1353,7 +1356,7 @@ async def get_consolidated_report_history(
     finally:
         cur.close()
 
-    ids = await asyncio.to_thread(_allowed_ids, auth)
+    ids = _allowed_ids(auth)
     if ids is not None:
         # Unique rows need the report itself; only the per-rule counts are known here
         def mine(r):
@@ -1379,7 +1382,7 @@ async def get_consolidated_report_history(
 # ── /fetch — load a specific persisted report by name ────────────────────────
 
 @consolidated_router.get("/fetch")
-async def fetch_consolidated_report(
+def fetch_consolidated_report(
         report_name: str = Query(..., description="Exact report table name"),
         delta_mode: bool = Query(False, description="When True, look up in the delta registry"),
         auth: dict = Depends(require_permission("viewBusinessChecks")),
@@ -1421,13 +1424,13 @@ async def fetch_consolidated_report(
     full_report = f"{database}.{schema}.{report_name}"
     cur = sf.conn.cursor()
     try:
-        await asyncio.get_event_loop().run_in_executor(None, lambda: cur.execute(f"SELECT * FROM {full_report}"))
-        batches = await asyncio.get_event_loop().run_in_executor(None, lambda: list(cur.fetch_pandas_batches()))
+        cur.execute(f"SELECT * FROM {full_report}")
+        batches = list(cur.fetch_pandas_batches())
     finally:
         cur.close()
 
     df = pd.concat(batches, ignore_index=True) if batches else pd.DataFrame()
-    ids = await asyncio.to_thread(_allowed_ids, auth)
+    ids = _allowed_ids(auth)
     df, rule_counts, rule_color_map, _ = cut_report(df, rule_counts, rule_color_map, [], ids)
     if ids is not None:
         total_rows, rules_count = len(df), len(rule_counts)

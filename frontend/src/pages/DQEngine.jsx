@@ -1,10 +1,8 @@
-import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import React, { Suspense, useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useSearchParams, Navigate } from 'react-router-dom';
-import BusinessDefinedChecks from './BusinessDefinedChecks';
-import DataValidation from './DataValidation';
-import IndCtaDataQuality from './IndCtaDataQuality';
-import SafetyDQ from './SafetyDQ';
 import { useRBAC } from '../context/RBACContext';
+import { lazyPage } from '../utils/lazyPage';
+import LoadingSpinner from './components/LoadingSpinner';
 
 // J&J Custom Icons
 import alertTriangleIcon from "/icons/JJ_Icon_Alert_RGB.svg";
@@ -15,7 +13,28 @@ import recordsIcon from "/icons/JJ_Icon_Records_Information_RGB.svg";
 import shieldCheckIcon from "/icons/JJ_Icon_Safety.svg";
 import chevronRightIcon from "/icons/JJ_Icon_Chevron_Right.svg";
 import { apiFetch } from '../utils/apiClient';
-import ITChecksView from './ITChecksView';
+
+// Each suite is its own download, fetched the first time it's needed (or ahead of
+// time from the picker), so opening one suite doesn't pay for the other four.
+const ITChecksView = lazyPage(() => import('./ITChecksView'));
+const BusinessDefinedChecks = lazyPage(() => import('./BusinessDefinedChecks'));
+const DataValidation = lazyPage(() => import('./DataValidation'));
+const IndCtaDataQuality = lazyPage(() => import('./IndCtaDataQuality'));
+const SafetyDQ = lazyPage(() => import('./SafetyDQ'));
+const SUITE_PAGES = {
+  IT_Checks: ITChecksView,
+  Data_Validation: DataValidation,
+  Business_defined_checks: BusinessDefinedChecks,
+  IND_CTA_DQ: IndCtaDataQuality,
+  Safety_DQ: SafetyDQ,
+};
+const preloadSuite = (check) => SUITE_PAGES[check]?.preload();
+
+const SuiteLoading = () => (
+  <div className="flex items-center justify-center h-full min-h-[50vh] bg-jj-gray-01">
+    <LoadingSpinner />
+  </div>
+);
 
 // ─── Icon Wrapper ─────────────────────────────────────────────────────────────
 const Icon = ({ src, alt, className = "w-6 h-6", color }) => {
@@ -363,14 +382,37 @@ function DataQualityEngine() {
     hasPermission('viewIndCtaQuality')     && 'IND_CTA_DQ',
     hasPermission('viewSafetyDQ')          && 'Safety_DQ',
   ].filter(Boolean), [hasPermission]);
+  const canViewIT = availableCheckTypes.includes('IT_Checks');
+  // Effects key on this string, not the array, so they only re-run when access really changes.
+  const suitesKey = availableCheckTypes.join(',');
 
-  // ── Fetch which Oracle connections are configured ──
+  // ── Which Oracle connections are configured (decides the re-validate buttons) ──
+  // Only IT Checks needs it, so it's fetched once, the first time IT Checks opens.
+  const oracleFetched = useRef(false);
   useEffect(() => {
+    if (activeCheck !== 'IT_Checks' || oracleFetched.current || !canViewIT) return undefined;
+    oracleFetched.current = true;
+    let alive = true, settled = false;
     apiFetch(`/dq/oracle_connections`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setOracleConnections(data); })
-      .catch(() => {});
-  }, []);
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => { settled = !!data; if (alive && data) setOracleConnections(data); })
+      .catch(() => {})
+      .finally(() => { if (!settled) oracleFetched.current = false; }); // failed: try again next time
+    // Left before it answered: fetch again next time instead of keeping nothing.
+    return () => { alive = false; if (!settled) oracleFetched.current = false; };
+  }, [activeCheck, canViewIT]);
+
+  // On the picker, download the suites in the background so opening one is instant.
+  useEffect(() => {
+    if (activeCheck) return undefined;
+    const run = () => suitesKey.split(',').forEach(preloadSuite);
+    if (window.requestIdleCallback) {
+      const id = window.requestIdleCallback(run, { timeout: 2000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = setTimeout(run, 300);
+    return () => clearTimeout(id);
+  }, [activeCheck, suitesKey]);
 
   // Only the newest load may write state. Bumping this also cancels a load
   // that is still running when the user leaves IT Checks.
@@ -443,7 +485,6 @@ function DataQualityEngine() {
   // cancels any load in flight and drops the data so a late response can't
   // pull the page back. ITChecksView loads run changes itself while it is open;
   // loadedKeyRef stops this effect loading the same runs a second time.
-  const canViewIT = hasPermission('viewITChecks');
   useEffect(() => {
     if (activeCheck === 'IT_Checks' && canViewIT) {
       if (loadedKeyRef.current !== runsKey) loadReport(runsKey ? runsKey.split('|') : null);
@@ -738,6 +779,8 @@ function DataQualityEngine() {
                     <button
                       type="button"
                       onClick={() => openCheckType(item.value)}
+                      onMouseEnter={() => preloadSuite(item.value)}
+                      onFocus={() => preloadSuite(item.value)}
                       className="group flex items-center w-full text-left rounded-[14px] border-[1.5px] border-[#e8e6e3] bg-[#faf9f8] shadow-[0_1px_3px_rgba(49,44,42,.04)] transition-[transform,box-shadow,border-color,background-color] duration-200 ease-out hover:border-jj-red hover:bg-[#fff5f4] hover:translate-x-[3px] hover:shadow-[0_10px_28px_-12px_rgba(235,23,0,.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-jj-red focus-visible:ring-offset-2"
                       style={{ gap: 18, padding: 'clamp(8px,1.8vh,18px) 20px' }}
                     >
@@ -790,28 +833,36 @@ function DataQualityEngine() {
     );
   }
 
+  // Every suite gets its own error boundary (keyed, so switching suites clears a
+  // crash) and a spinner while its code downloads the first time.
+  const suite = (node) => (
+    <ErrorBoundary key={activeCheck}>
+      <Suspense fallback={<SuiteLoading />}>{node}</Suspense>
+    </ErrorBoundary>
+  );
+
   // ── Business Checks ──
   if (activeCheck === 'Business_defined_checks') {
     if (!hasPermission('viewBusinessChecks')) return <Navigate to="/dashboard" replace />;
-    return <BusinessDefinedChecks onBack={resetState} />;
+    return suite(<BusinessDefinedChecks onBack={resetState} />);
   }
 
   // ── IND/CTA Data Quality ──
   if (activeCheck === 'IND_CTA_DQ') {
     if (!hasPermission('viewIndCtaQuality')) return <Navigate to="/dashboard" replace />;
-    return <ErrorBoundary><IndCtaDataQuality onBack={availableCheckTypes.length > 1 ? resetState : null} /></ErrorBoundary>;
+    return suite(<IndCtaDataQuality onBack={availableCheckTypes.length > 1 ? resetState : null} />);
   }
 
-  // ── Safety (mock data for now) ──
+  // ── Safety ──
   if (activeCheck === 'Safety_DQ') {
     if (!hasPermission('viewSafetyDQ')) return <Navigate to="/dashboard" replace />;
-    return <ErrorBoundary><SafetyDQ /></ErrorBoundary>;
+    return suite(<SafetyDQ />);
   }
 
   // ── Data Validation ──
   if (activeCheck === 'Data_Validation') {
     if (!hasPermission('viewDataValidation')) return <Navigate to="/dashboard" replace />;
-    return <DataValidation onBack={resetState} />;
+    return suite(<DataValidation onBack={resetState} />);
   }
 
   // Guard: user could land here via direct URL with no IT Checks permission
@@ -819,25 +870,23 @@ function DataQualityEngine() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  return (
-    <ErrorBoundary>
-      <ITChecksView
-        reportData={reportData}
-        availableRuns={availableRuns}
-        runsMerged={runsMerged}
-        newestDate={newestDate}
-        oldestDate={oldestDate}
-        runsLoading={runsLoading}
-        isLoading={isLoading}
-        loadError={loadError}
-        onLoadRuns={loadReport}
-        onRevalidateTable={handleRevalidateTable}
-        canRefreshTable={canRefreshTable}
-        canRun={hasPermission('runITChecks')}
-        canSwitch={availableCheckTypes.length > 1}
-        onSwitch={resetState}
-      />
-    </ErrorBoundary>
+  return suite(
+    <ITChecksView
+      reportData={reportData}
+      availableRuns={availableRuns}
+      runsMerged={runsMerged}
+      newestDate={newestDate}
+      oldestDate={oldestDate}
+      runsLoading={runsLoading}
+      isLoading={isLoading}
+      loadError={loadError}
+      onLoadRuns={loadReport}
+      onRevalidateTable={handleRevalidateTable}
+      canRefreshTable={canRefreshTable}
+      canRun={hasPermission('runITChecks')}
+      canSwitch={availableCheckTypes.length > 1}
+      onSwitch={resetState}
+    />
   );
 }
 

@@ -92,3 +92,16 @@ def test_text_is_gzipped(client):
     r = client.get("/text", headers={"Accept-Encoding": "gzip, deflate"})
     assert r.headers["content-encoding"] == "gzip"
     assert r.text == "hello " * 1000
+
+
+def test_attachment_download_left_alone():
+    app = FastAPI()
+    app.add_middleware(GZipJSONMiddleware, minimum_size=10)
+
+    @app.get("/log.txt")
+    def log():
+        return PlainTextResponse("line\n" * 1000, headers={"Content-Disposition": 'attachment; filename="x.txt"'})
+
+    r = TestClient(app).get("/log.txt", headers={"Accept-Encoding": "gzip"})
+    assert "content-encoding" not in r.headers
+    assert int(r.headers["content-length"]) == 5000

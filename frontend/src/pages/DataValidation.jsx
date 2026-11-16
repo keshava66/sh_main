@@ -1086,6 +1086,8 @@ function DataValidation({ onBack }) {
   }, [fetchJson]);
 
   useEffect(() => {
+    // A newer pick can answer first; drop this response if so.
+    let stale = false;
     setSelectedTargetDatabase(null);
     setSelectedTargetSchema(null);
     setSelectedTargetTable(null);
@@ -1095,13 +1097,16 @@ function DataValidation({ onBack }) {
       setLoadingTargetDatabases(true);
       try {
         const data = await fetchJson(`${API_BASE_URL}/api/data-validation/target-databases?env=${encodeURIComponent(selectedEnv)}`);
+        if (stale) return;
         setTargetDatabases(data.databases || []);
       } catch (e) {
+        if (stale) return;
         setToast({ message: `Could not load Snowflake databases: ${e.message}`, type: 'error' });
       } finally {
-        setLoadingTargetDatabases(false);
+        if (!stale) setLoadingTargetDatabases(false);
       }
     })();
+    return () => { stale = true; };
   }, [fetchJson, selectedEnv]);
 
   useEffect(() => {
@@ -1164,6 +1169,8 @@ function DataValidation({ onBack }) {
 
   useEffect(() => {
     if (!sourceHasDatabase || !selectedSourceDatabase) return;
+    // A newer pick can answer first; drop this response if so.
+    let stale = false;
     setSelectedSourceSchema(null);
     setSelectedSourceTable(null);
     setSourceSchemas([]);
@@ -1175,11 +1182,13 @@ function DataValidation({ onBack }) {
       (async () => {
         try {
           const data = await fetchJson(`${API_BASE_URL}/api/data-validation/source-schemas?${params}`);
+          if (stale) return;
           setSourceSchemas(data.schemas || []);
         } catch (e) {
+          if (stale) return;
           setToast({ message: `Could not load schemas: ${e.message}`, type: 'error' });
         } finally {
-          setLoadingSourceSchemas(false);
+          if (!stale) setLoadingSourceSchemas(false);
         }
       })();
     } else {
@@ -1187,19 +1196,24 @@ function DataValidation({ onBack }) {
       (async () => {
         try {
           const data = await fetchJson(`${API_BASE_URL}/api/data-validation/source-tables?${params}`);
+          if (stale) return;
           setSourceTables(data.tables || []);
         } catch (e) {
+          if (stale) return;
           setToast({ message: `Could not load tables: ${e.message}`, type: 'error' });
         } finally {
-          setLoadingSourceTables(false);
+          if (!stale) setLoadingSourceTables(false);
         }
       })();
     }
+    return () => { stale = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSourceDatabase]);
 
   useEffect(() => {
     if (!sourceHasSchema || !selectedSourceSchema) return;
+    // A newer pick can answer first; drop this response if so.
+    let stale = false;
     setSelectedSourceTable(null);
     setSourceTables([]);
     setLoadingSourceTables(true);
@@ -1210,18 +1224,23 @@ function DataValidation({ onBack }) {
     (async () => {
       try {
         const data = await fetchJson(`${API_BASE_URL}/api/data-validation/source-tables?${params}`);
+        if (stale) return;
         setSourceTables(data.tables || []);
       } catch (e) {
+        if (stale) return;
         setToast({ message: `Could not load tables: ${e.message}`, type: 'error' });
       } finally {
-        setLoadingSourceTables(false);
+        if (!stale) setLoadingSourceTables(false);
       }
     })();
+    return () => { stale = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSourceSchema]);
 
   useEffect(() => {
     if (!selectedTargetDatabase) return;
+    // A newer pick can answer first; drop this response if so.
+    let stale = false;
     setSelectedTargetSchema(null);
     setSelectedTargetTable(null);
     setTargetSchemas([]);
@@ -1230,17 +1249,22 @@ function DataValidation({ onBack }) {
     (async () => {
       try {
         const data = await fetchJson(`${API_BASE_URL}/api/data-validation/target-schemas?database=${encodeURIComponent(selectedTargetDatabase)}&env=${encodeURIComponent(selectedEnv)}`);
+        if (stale) return;
         setTargetSchemas(data.schemas || []);
       } catch (e) {
+        if (stale) return;
         setToast({ message: `Could not load Snowflake schemas: ${e.message}`, type: 'error' });
       } finally {
-        setLoadingTargetSchemas(false);
+        if (!stale) setLoadingTargetSchemas(false);
       }
     })();
+    return () => { stale = true; };
   }, [selectedTargetDatabase, fetchJson, selectedEnv]);
 
   useEffect(() => {
     if (!selectedTargetDatabase || !selectedTargetSchema) return;
+    // A newer pick can answer first; drop this response if so.
+    let stale = false;
     setSelectedTargetTable(null);
     setTargetTables([]);
     setLoadingTargetTables(true);
@@ -1248,13 +1272,16 @@ function DataValidation({ onBack }) {
       try {
         const params = new URLSearchParams({ database: selectedTargetDatabase, schema: selectedTargetSchema, env: selectedEnv });
         const data = await fetchJson(`${API_BASE_URL}/api/data-validation/target-tables?${params}`);
+        if (stale) return;
         setTargetTables(data.tables || []);
       } catch (e) {
+        if (stale) return;
         setToast({ message: `Could not load Snowflake tables: ${e.message}`, type: 'error' });
       } finally {
-        setLoadingTargetTables(false);
+        if (!stale) setLoadingTargetTables(false);
       }
     })();
+    return () => { stale = true; };
   }, [selectedTargetDatabase, selectedTargetSchema, fetchJson, selectedEnv]);
 
   useEffect(() => {
@@ -1384,6 +1411,9 @@ function DataValidation({ onBack }) {
       setRunning(false);
       es.close();
     };
+    // The server (or a proxy) closed the stream without saying it was done:
+    // stop the spinner instead of leaving the button disabled forever.
+    es.onend = es.onerror;
   }, [canRunValidation, selectedSource, sourceHasDatabase, sourceHasSchema, selectedSourceDatabase,
       selectedSourceSchema, selectedSourceTable, selectedTargetDatabase, selectedTargetSchema,
       selectedTargetTable, keyColumn, sampleLimit, selectedEnv]);
@@ -1399,7 +1429,7 @@ function DataValidation({ onBack }) {
       });
       if (!res.ok) throw new Error((await res.json())?.detail || `HTTP ${res.status}`);
       const { token } = await res.json();
-      downloadFile(`/api/data-validation/download-report?token=${token}`, 'validation_report.xlsx');
+      downloadFile(`/api/data-validation/download-report?token=${encodeURIComponent(token)}`, 'validation_report.xlsx');
     } catch (e) {
       setToast({ message: `Could not prepare report: ${e.message}`, type: 'error' });
     } finally {

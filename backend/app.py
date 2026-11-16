@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
+import orjson
 import requests
 from requests.auth import HTTPBasicAuth
 import pandas as pd
@@ -1154,9 +1155,16 @@ def create_snowflake_connection():
         raise HTTPException(status_code=500, detail=f"Snowflake connection error: {e}")
 
 
+def _fast_json(payload) -> Response:
+    """JSON response via orjson. For multi-MB payloads FastAPI's default encoder
+    walks every value in Python and takes about a second; this takes milliseconds.
+    Same JSON out (NaN becomes null, which the browser can parse; Python's 'NaN' it can't)."""
+    return Response(content=orjson.dumps(payload, default=str), media_type="application/json")
+
+
 # Logged-in connections reused by the IT Checks report endpoints.
 from sf_pool import SnowflakePool
-it_report_pool = SnowflakePool(create_snowflake_connection)
+it_report_pool = SnowflakePool(create_snowflake_connection, max_idle_conns=6)
 
 
 @app.get("/dq/validation_report_tables")
@@ -1203,7 +1211,7 @@ def get_validation_report_dates(auth: dict = Depends(require_permission("viewITC
             }
             for row in rows
         ]
-        return {"runs": runs, "total": len(runs)}
+        return _fast_json({"runs": runs, "total": len(runs)})
     except HTTPException:
         raise
     except snowflake.connector.errors.ProgrammingError as e:
@@ -1285,9 +1293,12 @@ def get_validation_report(
                 raise HTTPException(status_code=404, detail="No reports found for the selected runs")
 
             pipelines: Dict[str, dict] = {}
+            latest_rd = None  # newest run, rows are newest first
             seen_tables: Dict[str, set] = {}
             for row in rows:
                 rd        = _parse_report(row[0])
+                if latest_rd is None:
+                    latest_rd = rd
                 source_db = row[3] or ''
                 for pipeline in rd.get('pipeline_results', []):
                     pname = pipeline.get('pipeline_name', 'Unknown')
@@ -1313,7 +1324,6 @@ def get_validation_report(
                                 '_source_db':          source_db,
                             })
 
-            latest_rd   = _parse_report(rows[0][0])
             report_data = {**latest_rd, 'pipeline_results': list(pipelines.values())}
             run_ts      = rows[0][1]
             load_date_v = rows[0][2]
@@ -1332,10 +1342,13 @@ def get_validation_report(
                 raise HTTPException(status_code=404, detail="No reports found")
 
             pipelines: Dict[str, dict] = {}
+            latest_rd = None  # newest run, rows are newest first
             seen_tables: Dict[str, set] = {}
 
             for row in rows:
                 rd        = _parse_report(row[0])
+                if latest_rd is None:
+                    latest_rd = rd
                 source_db = row[3] or ''
                 for pipeline in rd.get('pipeline_results', []):
                     pname = pipeline.get('pipeline_name', 'Unknown')
@@ -1364,7 +1377,6 @@ def get_validation_report(
                                 '_source_db':          source_db,
                             })
 
-            latest_rd   = _parse_report(rows[0][0])
             report_data = {**latest_rd, 'pipeline_results': list(pipelines.values())}
             run_ts      = rows[0][1]
             load_date_v = rows[0][2]
@@ -1372,7 +1384,7 @@ def get_validation_report(
             newest_date = _fmt(rows[0][2])
             oldest_date = _fmt(rows[-1][2])
 
-        return {
+        return _fast_json({
             "table_name": table_name,
             "database": database,
             "schema": schema,
@@ -1382,7 +1394,7 @@ def get_validation_report(
             "runs_merged": runs_merged,
             "newest_date": newest_date,
             "oldest_date": oldest_date,
-        }
+        })
     except HTTPException:
         raise  # keep 404 "no reports" as a 404, not a 500
     except snowflake.connector.errors.ProgrammingError as e:
@@ -2292,7 +2304,7 @@ def validate_single_table(  # sync on purpose: FastAPI runs it in a worker threa
                 detail=f"Invalid {_field}: must be a plain table/schema identifier",
             )
 
-    oracle_conn = snowflake_conn = None
+    oracle_conn = None
     try:
         logger.info(f"Starting validation for table: {table_name}")
 
@@ -2344,7 +2356,6 @@ def validate_single_table(  # sync on purpose: FastAPI runs it in a worker threa
         # Create connections
         logger.info("Creating database connections...")
         oracle_conn = create_oracle_connection(oracle_config)
-        snowflake_conn = create_snowflake_connection()
 
         # Build table config
         table_config = {
@@ -2356,15 +2367,24 @@ def validate_single_table(  # sync on purpose: FastAPI runs it in a worker threa
             'pipeline_name': pipeline_name
         }
 
-        # Run validation
+        # Run validation. The Snowflake login is reused from the pool: bulk
+        # re-validation calls this once per table.
         logger.info(f"Running validation for {table_name}...")
-        result = validate_single_table_logic(
-            oracle_conn,
-            snowflake_conn,
-            table_config,
-            transformations,
-            timeout
-        )
+        with it_report_pool.connection() as snowflake_conn:
+            result = None
+            try:
+                result = validate_single_table_logic(
+                    oracle_conn,
+                    snowflake_conn,
+                    table_config,
+                    transformations,
+                    timeout
+                )
+            finally:
+                # A timed-out or failed query can still be running on this connection
+                # in an abandoned thread, so it must not be handed to the next request.
+                if not isinstance(result, dict) or result.get('status') in ('TIMEOUT', 'ERROR'):
+                    it_report_pool.discard(snowflake_conn)
 
         logger.info(f"Validation complete for {table_name}: {result['status']}")
         return {
@@ -2385,11 +2405,6 @@ def validate_single_table(  # sync on purpose: FastAPI runs it in a worker threa
                     step()
                 except Exception as e:
                     logger.warning(f"Oracle cleanup: {e}")
-        if snowflake_conn is not None:
-            try:
-                snowflake_conn.close()
-            except Exception as e:
-                logger.warning(f"Snowflake cleanup: {e}")
 
 
 # ============================================================================

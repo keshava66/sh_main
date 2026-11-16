@@ -185,24 +185,26 @@ async function errorText(res) {
 }
 
 // The rule-input table endpoint is paginated at 200 rows max, so walk it.
+// The first page says how many there are; the rest are fetched together.
 async function fetchRuleInput() {
   const MAX_PAGES = 100;   // 20k rules — well past anything real
-  const all = [];
-  let page = 1;
-  let totalPages;
-  do {
+  const getPage = async (page) => {
     const res = await apiFetch(`/api/admin/dq-tables/rule-input?page=${page}&page_size=200`);
     if (!res.ok) throw new Error(await errorText(res));
-    const data = await res.json();
+    return res.json();
+  };
+  const first = await getPage(1);
+  const totalPages = Math.min(first.total_pages || 1, MAX_PAGES);
+  const rest = await mapLimit(Array.from({ length: totalPages - 1 }, (_, i) => i + 2), 4, getPage);
+  const all = [];
+  [first, ...rest].forEach((data) => {
     const cols = (data.columns || []).map(c => c.toLowerCase());
     (data.rows || []).forEach(row => {
       const obj = {};
       cols.forEach((c, i) => { obj[c] = row[i]; });
       all.push(obj);
     });
-    totalPages = Math.min(data.total_pages || 1, MAX_PAGES);
-    page += 1;
-  } while (page <= totalPages);
+  });
   return all;
 }
 
@@ -1218,8 +1220,9 @@ export default function ExecutiveView({
     }
     const ids = rules.map(r => r.rule_id);
     let errors = 0;
+    // Once this load is stale (left the page, cadence switched) the rest are skipped.
     mapLimit(ids, 6, id =>
-      loadTrend(id, deltaMode)
+      (cancelled ? Promise.resolve([]) : loadTrend(id, deltaMode))
         .then(d => [id, d])
         .catch(() => { errors += 1; return [id, []]; }))
       .then(pairs => {

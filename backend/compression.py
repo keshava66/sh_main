@@ -65,6 +65,7 @@ class GZipJSONMiddleware:
                 message.get("more_body", False)                      # streamed
                 or first.get("status") in (204, 206, 304)
                 or b"content-encoding" in hmap
+                or b"attachment" in hmap.get(b"content-disposition", b"").lower()  # downloads keep their real size
                 or len(body) < self.minimum_size
                 or not _compressible(hmap.get(b"content-type", b"").decode("latin-1"))
             )
