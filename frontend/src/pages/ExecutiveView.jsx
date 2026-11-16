@@ -328,11 +328,15 @@ function useHoverTip() {
   return [bind, node];
 }
 
-/* Big screens: the layout is designed for up to ~1840px of content. Past that,
-   scale the whole view up evenly (1440p ~1.3x, 4K ~2x) instead of stretching
-   it thin with tiny text. Measures the space the view sits in, so a wider or
-   narrower sidebar is accounted for. */
-const FIT_BASE = 1840;
+/* Fit to the screen. The view is laid out at one design width (1520px of
+   content: health | dimensions | trend across the top, domains beside the
+   scope panel) and scaled evenly to whatever width it has, up or down, so the
+   order never changes. Only when scaling down would push text below ~75% size
+   (a really small window, tablet or phone) does it stay at 1x and let the
+   container queries stack the sections instead. Measures the space the view
+   sits in, so the sidebar and browser zoom are accounted for. */
+const FIT_DESIGN = 1520;
+const FIT_MIN = 0.75;
 const FIT_MAX = 2.5;
 function useFitZoom() {
   const [zoom, setZoom] = useState(1);
@@ -344,7 +348,8 @@ function useFitZoom() {
     if (!host) return;
     const measure = () => {
       const w = host.clientWidth;
-      const z = w > FIT_BASE ? Math.min(FIT_MAX, Math.round((w / FIT_BASE) * 100) / 100) : 1;
+      const fit = Math.floor((w / FIT_DESIGN) * 1000) / 1000; // round down so the layout always gets its full design width
+      const z = fit < FIT_MIN ? 1 : Math.min(FIT_MAX, fit);
       setZoom((prev) => (prev === z ? prev : z));
     };
     measure();
@@ -366,9 +371,10 @@ const KEYFRAMES = `
 @keyframes exec-pulse { 0% { opacity:.85; transform:scale(1); } 70% { opacity:0; transform:scale(2.8); } 100% { opacity:0; } }
 @keyframes exec-spin { to { transform:rotate(360deg); } }
 @keyframes exec-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-/* Layout. Columns follow the width the view really has (container queries on
-   the header and body), not the window, so the sidebar and browser zoom are
-   accounted for. Above ~1080p the whole view is scaled up (see useFitZoom). */
+/* Layout. Normally the view is scaled to fit (see useFitZoom), so it always
+   sees its 1520px design width and gets the full layout below. On really
+   small screens it isn't scaled, and these container queries (on the width
+   the view really has) stack the sections instead. */
 .exv-head{container-type:inline-size}
 .exv-body{container-type:inline-size}
 .exv-pad{padding-left:28px;padding-right:28px}
@@ -399,9 +405,9 @@ const KEYFRAMES = `
   .exv-hero{grid-template-columns:minmax(300px,392px) minmax(0,1fr)}
   .exv-hero > .exv-trend{grid-column:1/-1}
 }
-/* Everything on one row once the middle column gets ~600px */
-@container (min-width:1560px){
-  .exv-hero{grid-template-columns:minmax(320px,392px) minmax(600px,1fr) minmax(420px,560px)}
+/* Everything on one row: the design layout the fit-to-screen scale keeps */
+@container (min-width:1500px){
+  .exv-hero{grid-template-columns:minmax(300px,.85fr) minmax(560px,1.55fr) minmax(380px,1.2fr)}
   .exv-hero > .exv-trend{grid-column:auto}
 }
 /* Domain/rule card beside the scope panel */
@@ -463,7 +469,7 @@ function SeverityChip({ severity, compact = false }) {
       className="font-johnson-text font-bold rounded flex-shrink-0"
       style={{
         color, backgroundColor: bg,
-        fontSize: compact ? '9.5px' : '11px',
+        fontSize: compact ? '10.5px' : '11px',
         letterSpacing: '.08em',
         padding: compact ? '3px 6px' : '3px 8px',
       }}
@@ -544,7 +550,7 @@ function HealthPanel({ score, delta, rules, domains, components, belowTarget }) 
         style={{ top: -150, right: -180, width: 560, opacity: 0.06 }}
       />
       <div className="relative">
-        <p className="m-0 font-johnson-text text-[10.5px] font-bold uppercase tracking-[.16em] text-jj-gray-06">
+        <p className="m-0 font-johnson-text text-[11px] font-bold uppercase tracking-[.16em] text-jj-gray-06">
           GRA - Data quality indicators
         </p>
 
@@ -564,7 +570,7 @@ function HealthPanel({ score, delta, rules, domains, components, belowTarget }) 
                 <span style={{ fontSize: Number.isInteger(score) ? 46 : 38, lineHeight: 1 }}>{score === null ? '—' : pctText(shown)}</span>
                 <span className="text-jj-gray-05" style={{ fontSize: 18 }}>%</span>
               </div>
-              <span className="font-johnson-text text-jj-gray-06" style={{ fontSize: 10.5, letterSpacing: '.08em', marginTop: 2 }}>
+              <span className="font-johnson-text text-jj-gray-06" style={{ fontSize: 11, letterSpacing: '.08em', marginTop: 2 }}>
                 PASS RATE
               </span>
             </div>
@@ -769,7 +775,7 @@ function TrendBars({ series, scopeLabel, loading, failed, quarterly }) {
           </div>
           <div className="flex gap-3.5 mt-2">
             {points.map(p => (
-              <span key={p.date} className="text-center font-johnson-text text-[10.5px] text-jj-gray-06" style={{ flex: 1, maxWidth: 46 }}>
+              <span key={p.date} className="text-center font-johnson-text text-[11px] text-jj-gray-06" style={{ flex: 1, maxWidth: 46 }}>
                 {periodLabel(p.date, quarterly)}
               </span>
             ))}
@@ -906,7 +912,7 @@ function DrillItem({ item, selected, onClick, severity, index }) {
             }}
           />
         </div>
-        <span className="font-johnson-text text-[10.5px] text-jj-gray-05 whitespace-nowrap">{item.meta}</span>
+        <span className="font-johnson-text text-[11px] text-jj-gray-05 whitespace-nowrap">{item.meta}</span>
       </div>
     </button>
   );
@@ -922,7 +928,7 @@ function DrillColumn({ label, items, selected, onPick, emptyText, severity, last
       }}
     >
       <div className="flex items-baseline justify-between gap-2 px-3.5 pt-3.5 pb-2.5">
-        <span className="font-johnson-text text-[10.5px] font-bold uppercase tracking-[.14em] text-jj-gray-06">{label}</span>
+        <span className="font-johnson-text text-[11px] font-bold uppercase tracking-[.14em] text-jj-gray-06">{label}</span>
         <span className="font-johnson-text text-[11px] text-jj-gray-05">
           {items.length} {items.length === 1 ? 'item' : 'items'}
         </span>
@@ -969,7 +975,7 @@ function ScoreRing({ score, size = 132, stroke = 12 }) {
           <span style={{ fontSize: Math.round(size * (Number.isInteger(score) ? 0.29 : 0.24)), lineHeight: 1 }}>{score === null ? '—' : pctText(shown)}</span>
           <span className="text-jj-gray-05" style={{ fontSize: Math.round(size * 0.12) }}>%</span>
         </div>
-        <span className="font-johnson-text text-jj-gray-06" style={{ fontSize: 10, letterSpacing: '.08em', marginTop: 2 }}>
+        <span className="font-johnson-text text-jj-gray-06" style={{ fontSize: 11, letterSpacing: '.08em', marginTop: 2 }}>
           PASS RATE
         </span>
       </div>
@@ -1108,7 +1114,7 @@ function ScopePanel({ rule, scoped, scopeTitle, scopeDelta, series, seriesLoadin
       )}
 
       <div className="px-6 pb-6">
-        <p className="m-0 mb-2 font-johnson-text text-[10.5px] font-bold uppercase tracking-[.14em] text-jj-gray-06">
+        <p className="m-0 mb-2 font-johnson-text text-[11px] font-bold uppercase tracking-[.14em] text-jj-gray-06">
           {rule ? 'Rule history' : 'Scope history'}
         </p>
         {seriesLoading && recent.length === 0 ? (
@@ -1126,7 +1132,7 @@ function ScopePanel({ rule, scoped, scopeTitle, scopeDelta, series, seriesLoadin
               {recent.map(p => (
                 <div key={p.date} className="flex flex-col h-full" style={{ flex: 1, maxWidth: 44, cursor: 'default' }} {...bindTip(barTipText(p, quarterly))}>
                   <span
-                    className="font-johnson-display text-[9.5px] font-bold text-center"
+                    className="font-johnson-display text-[11px] font-bold text-center"
                     style={{ height: 14, lineHeight: '14px', color: passColor(p.pass_percentage) }}
                   >
                     {Math.round(p.pass_percentage)}%
@@ -1149,7 +1155,7 @@ function ScopePanel({ rule, scoped, scopeTitle, scopeDelta, series, seriesLoadin
               {recent.map(p => (
                 <span
                   key={p.date}
-                  className="text-center font-johnson-text text-[10px] text-jj-gray-06"
+                  className="text-center font-johnson-text text-[11px] text-jj-gray-06"
                   style={{ flex: 1, maxWidth: 44 }}
                 >
                   {periodLabel(p.date, quarterly)}
