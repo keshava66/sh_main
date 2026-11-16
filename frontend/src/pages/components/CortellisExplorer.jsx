@@ -9,7 +9,6 @@ import closeIcon from "/icons/JJ_Icon_Close.svg";
 import downloadIcon from "/icons/JJ_Icon_Download_PDF_RGB.svg";
 import databaseIcon from "/icons/JJ_Icon_Database_RGB.svg";
 import chevronRightIcon from "/icons/JJ_Icon_Chevron_Right.svg";
-import chevronDownIcon from "/icons/JJ_Icon_Chevron_Down.svg";
 import alertIcon from "/icons/JJ_Icon_Alert_RGB.svg";
 import filterIcon from "/icons/JJ_Icon_Filter.svg";
 import dataVizIcon from "/icons/JJ_Icon_Data_Visualization.svg";
@@ -470,7 +469,7 @@ function trimTrend(trend) {
 }
 
 // records per year as stacked columns (by the top values of one facet) or plain totals
-function YearActivity({ trend, stack, years, onPickYear, labelOf, height = 250, title, sub, valueColor }) {
+function YearActivity({ trend, stack, years, onPickYear, height = 250, title, sub, valueColor }) {
   const tip = useChartTip();
   const [w, ref] = useElementWidth();
   const [mode, setMode] = useState('stack');

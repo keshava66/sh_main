@@ -138,37 +138,11 @@ def _connect():
 # Warm, TTL-refreshed connection - same shape as the other explorer modules.
 # ============================================================================
 
-class _NipoConnectionManager:
-    CONNECTION_TTL = 2 * 60 * 60  # 2 hours
+# Pool of warm connections so a page's parallel requests run side by side
+# (see PgConnectionPool in postgres_query_runner.py).
+from postgres_query_runner import PgConnectionPool as _PgConnectionPool
 
-    def __init__(self):
-        self._conn = None
-        self._created_at = 0.0
-        self._lock = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            expired = (time.time() - self._created_at) > self.CONNECTION_TTL
-            if self._conn is not None and not expired:
-                try:
-                    cur = self._conn.cursor()
-                    cur.execute("SELECT 1")
-                    cur.close()
-                    return self._conn
-                except Exception:
-                    logger.info("Nipo connection stale, reconnecting")
-            if self._conn is not None:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
-            self._conn = _connect()
-            self._conn.autocommit = True
-            self._created_at = time.time()
-            return self._conn
-
-
-_conn_manager = _NipoConnectionManager()
+_conn_pool = _PgConnectionPool(lambda: _connect(), "NIPO")
 
 
 def _to_json_safe(val):
@@ -199,11 +173,7 @@ def _to_json_safe(val):
 
 
 def _run(sql: str, params: Optional[list] = None) -> List[Dict[str, Any]]:
-    conn = _conn_manager.get()
-    with conn.cursor() as cur:
-        cur.execute(sql, params or [])
-        cols = [d[0] for d in cur.description] if cur.description else []
-        rows = cur.fetchall() if cur.description else []
+    cols, rows = _conn_pool.run(sql, params)
     return [{cols[i]: _to_json_safe(r[i]) for i in range(len(cols))} for r in rows]
 
 

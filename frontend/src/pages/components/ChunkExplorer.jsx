@@ -26,7 +26,13 @@ function SearchSection({ children, label = 'Search fields', hint = 'Type in any 
     const n = [...el.querySelectorAll('input')].filter(i => i.value.trim()).length;
     if (n !== active) setActive(n);
   });
-  useEffect(() => { if (active > 0) setOpen(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Opens by itself once if it mounts with a search already typed in (e.g. the
+  // filter rail was collapsed and reopened). The count above lands after the
+  // first render, so this has to follow it rather than run once on mount.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (active > 0 && !autoOpened.current) { autoOpened.current = true; setOpen(true); }
+  }, [active]);
   return (
     <div className="border-b border-jj-gray-01 flex-shrink-0">
       <button
@@ -2065,6 +2071,8 @@ function Pager({ page, totalPages, loading, onGo }) {
   );
 }
 // building blocks for explorers that bring their own views (VirtualRegulatorExplorer)
+// Shared with the other explorers; only costs dev hot-reload, so not split into another file.
+/* eslint-disable react-refresh/only-export-components */
 export {
   Icon, Card, ErrorBanner, ChartSkeleton, NoData, CardUnavailable, Pill, ContentChips,
   Donut, RankedBars, ColumnChart, TrendLine, Pager, SqlModal, ChunkText, DocumentDrawer,
@@ -2072,3 +2080,4 @@ export {
   cellText, colorFrom, parseContentTypes, renderCell,
   LEVEL_COLORS, CONTENT_COLORS, INGESTION_COLORS, FALLBACK_COLORS,
 };
+/* eslint-enable react-refresh/only-export-components */

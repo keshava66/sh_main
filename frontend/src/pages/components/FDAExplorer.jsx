@@ -25,7 +25,13 @@ function SearchSection({ children, label = 'Search fields', hint = 'Type in any 
     const n = [...el.querySelectorAll('input')].filter(i => i.value.trim()).length;
     if (n !== active) setActive(n);
   });
-  useEffect(() => { if (active > 0) setOpen(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Opens by itself once if it mounts with a search already typed in (e.g. the
+  // filter rail was collapsed and reopened). The count above lands after the
+  // first render, so this has to follow it rather than run once on mount.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (active > 0 && !autoOpened.current) { autoOpened.current = true; setOpen(true); }
+  }, [active]);
   return (
     <div className="border-b border-jj-gray-01 flex-shrink-0">
       <button
@@ -387,7 +393,7 @@ function ErrorBanner({ message, onRetry }) {
 
 /* ============================== filter rail ============================== */
 
-function FdaFacetGroup({ label, column, selected, onChange, options, loading }) {
+function FdaFacetGroup({ label, selected, onChange, options, loading }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const toggleValue = (val) => {

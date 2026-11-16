@@ -129,3 +129,71 @@ def test_discard_closes_on_release(clock):
     with pool.connection() as b:
         pass
     assert b is not a
+
+
+# ── Postgres pool (postgres_query_runner.PgConnectionPool), against a real server ──
+import os as _os
+import threading as _threading
+import time as _time
+
+_PG_DSN = _os.environ.get("DATA_API_TEST_PG_DSN")
+_pg = pytest.mark.skipif(not _PG_DSN, reason="DATA_API_TEST_PG_DSN not set")
+
+
+def _pg_pool(**kw):
+    import psycopg2
+    from postgres_query_runner import PgConnectionPool
+    return PgConnectionPool(lambda: psycopg2.connect(_PG_DSN), "test", **kw)
+
+
+@_pg
+def test_pg_pool_runs_queries_side_by_side():
+    pool = _pg_pool()
+    pool.run("select 1")
+    t0 = _time.time()
+    ths = [_threading.Thread(target=pool.run, args=("select pg_sleep(0.4)",)) for _ in range(6)]
+    [t.start() for t in ths]
+    [t.join() for t in ths]
+    assert _time.time() - t0 < 1.2  # one shared connection took ~2.4s
+    pool.close_all()
+
+
+@_pg
+def test_pg_pool_recovers_when_server_kills_connections():
+    import psycopg2
+    pool = _pg_pool()
+    for _ in range(3):
+        pool.run("select 1")
+    pids = [r[0] for r in pool.run("select pg_backend_pid()")[1]]
+    admin = psycopg2.connect(_PG_DSN)
+    admin.autocommit = True
+    with admin.cursor() as c:
+        c.execute("select pg_terminate_backend(%s)", (pids[0],))
+    admin.close()
+    _time.sleep(0.2)
+    assert pool.run("select 42")[1] == [(42,)]
+    pool.close_all()
+
+
+@_pg
+def test_pg_pool_caps_open_connections():
+    pool = _pg_pool(max_open=3, max_idle=2)
+    seen = []
+    def q():
+        seen.append(pool.run("select count(*) from pg_stat_activity where application_name = '' and backend_type = 'client backend'")[1][0][0])
+        pool.run("select pg_sleep(0.2)")
+    ths = [_threading.Thread(target=q) for _ in range(10)]
+    [t.start() for t in ths]
+    [t.join() for t in ths]
+    assert len(pool._idle) <= 2
+    pool.close_all()
+
+
+@_pg
+def test_pg_pool_sql_error_keeps_connection_usable():
+    import psycopg2
+    pool = _pg_pool()
+    with pytest.raises(psycopg2.Error):
+        pool.run("select * from no_such_table")
+    assert pool.run("select 1")[1] == [(1,)]
+    pool.close_all()

@@ -60,6 +60,118 @@ def set_postgres_dependencies(config: Optional[Dict[str, Any]]):
         logger.warning("⚠️ postgres_query_runner config not found - Data Studio Postgres will be unavailable unless PGQR_* env vars are set")
 
 
+class PgConnectionPool:
+    """Thread-safe pool of autocommit connections for the read-only explorers.
+
+    One shared psycopg2 connection runs one query at a time, so a page that
+    fires its summary, charts, facets and rows together waited for the sum of
+    them. This keeps up to `max_open` connections so they run side by side.
+    A connection is health-checked only after `ping_after` seconds idle (not
+    before every query), retired after `ttl`, and dropped if it errors. `run`
+    retries a read once on a fresh connection when the old one turns out dead.
+    """
+
+    def __init__(self, connect, name: str, max_open: int = 8, max_idle: int = 4,
+                 ttl: float = 2 * 60 * 60, ping_after: float = 60):
+        import threading
+        self._connect = connect
+        self._name = name
+        self._max_idle = max_idle
+        self._ttl = ttl
+        self._ping_after = ping_after
+        self._lock = threading.Lock()
+        self._slots = threading.BoundedSemaphore(max_open)
+        self._idle = []  # [(conn, created_at, last_used)], newest last
+
+    def _new(self):
+        conn = self._connect()
+        conn.autocommit = True
+        return conn
+
+    @staticmethod
+    def _close(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def _usable(self, conn, created, used, now):
+        if conn.closed or now - created > self._ttl:
+            return False
+        if now - used <= self._ping_after:
+            return True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return True
+        except Exception:
+            logger.info(f"{self._name} connection stale, replacing it")
+            return False
+
+    def _acquire(self):
+        import time
+        now = time.monotonic()
+        while True:
+            with self._lock:
+                item = self._idle.pop() if self._idle else None
+            if item is None:
+                return self._new(), now
+            conn, created, used = item
+            if self._usable(conn, created, used, now):
+                return conn, created
+            self._close(conn)
+
+    def _release(self, conn, created, broken):
+        import time
+        if broken or conn.closed:
+            self._close(conn)
+            return
+        with self._lock:
+            if len(self._idle) < self._max_idle:
+                self._idle.append((conn, created, time.monotonic()))
+                return
+        self._close(conn)
+
+    def run(self, sql: str, params=None):
+        """Execute one statement; returns (column_names, rows)."""
+        import time
+        import psycopg2
+        if not self._slots.acquire(timeout=30):
+            raise HTTPException(status_code=503, detail="The data source is busy. Please try again in a moment.")
+        try:
+            for attempt in (1, 2):
+                # Retry on a brand-new connection: the idle ones were dropped below.
+                conn, created = self._acquire() if attempt == 1 else (self._new(), time.monotonic())
+                broken = False
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, params or [])
+                        cols = [d[0] for d in cur.description] if cur.description else []
+                        rows = cur.fetchall() if cur.description else []
+                    return cols, rows
+                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                    broken = True
+                    if attempt == 2:
+                        raise
+                    # One dead connection usually means the server restarted or
+                    # killed idle sessions, so the other idle ones are dead too.
+                    self.close_all()
+                    logger.info(f"{self._name} connection dropped, retrying on a fresh one")
+                except Exception:
+                    broken = conn.closed != 0
+                    raise
+                finally:
+                    self._release(conn, created, broken)
+        finally:
+            self._slots.release()
+
+    def close_all(self):
+        with self._lock:
+            idle, self._idle = self._idle, []
+        for conn, _, _ in idle:
+            self._close(conn)
+
+
 def _to_json_safe(val):
     """Coerce Postgres/psycopg2 result values into something json-encodable.
     Numeric/temporal precision is preserved by rendering as text rather than

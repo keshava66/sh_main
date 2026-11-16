@@ -23,7 +23,13 @@ function SearchSection({ children, label = 'Search fields', hint = 'Type in any 
     const n = [...el.querySelectorAll('input')].filter(i => i.value.trim()).length;
     if (n !== active) setActive(n);
   });
-  useEffect(() => { if (active > 0) setOpen(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Opens by itself once if it mounts with a search already typed in (e.g. the
+  // filter rail was collapsed and reopened). The count above lands after the
+  // first render, so this has to follow it rather than run once on mount.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (active > 0 && !autoOpened.current) { autoOpened.current = true; setOpen(true); }
+  }, [active]);
   return (
     <div className="border-b border-jj-gray-01 flex-shrink-0">
       <button
@@ -148,14 +154,19 @@ function DetailModal({ record, onClose }) {
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   useEffect(() => {
-    if (!record?.document_id) { setFull(null); return; }
+    if (!record?.document_id) { setFull(null); return undefined; }
+    // Opening another document before this one answers: drop the late answer,
+    // or the panel would show the previous document's text.
+    let stale = false;
+    setFull(null);
     setLoading(true);
     // 500 is the endpoint's ceiling - fetch the lot rather than a 50-chunk
     // teaser, since this panel is where you come to read the whole document.
-    fetchJson(`${API_BASE_URL}/api/nipo/data/${record.document_id}?chunk_limit=${CHUNK_FETCH_LIMIT}`)
-      .then(setFull)
-      .catch(() => setFull(null))
-      .finally(() => setLoading(false));
+    fetchJson(`${API_BASE_URL}/api/nipo/data/${encodeURIComponent(record.document_id)}?chunk_limit=${CHUNK_FETCH_LIMIT}`)
+      .then((d) => { if (!stale) setFull(d); })
+      .catch(() => { if (!stale) setFull(null); })
+      .finally(() => { if (!stale) setLoading(false); });
+    return () => { stale = true; };
   }, [record?.document_id]);
 
   if (!record) return null;
@@ -316,7 +327,7 @@ function ErrorBanner({ message, onRetry }) {
 
 /* ============================== filter rail ============================== */
 
-function NipoFacetGroup({ label, column, selected, onChange, options, loading }) {
+function NipoFacetGroup({ label, selected, onChange, options, loading }) {
   // Collapsed by default - with several facets the rail is otherwise a wall
   // of checkboxes and the search inputs get pushed off screen. The count
   // badge on the header still shows what's active while collapsed.

@@ -23,7 +23,13 @@ function SearchSection({ children, label = 'Search fields', hint = 'Type in any 
     const n = [...el.querySelectorAll('input')].filter(i => i.value.trim()).length;
     if (n !== active) setActive(n);
   });
-  useEffect(() => { if (active > 0) setOpen(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Opens by itself once if it mounts with a search already typed in (e.g. the
+  // filter rail was collapsed and reopened). The count above lands after the
+  // first render, so this has to follow it rather than run once on mount.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (active > 0 && !autoOpened.current) { autoOpened.current = true; setOpen(true); }
+  }, [active]);
   return (
     <div className="border-b border-jj-gray-01 flex-shrink-0">
       <button
@@ -842,6 +848,7 @@ export default function EpodExplorer({ logInPage, activeTab, onBusyChange, datas
     return s ? `?${s}` : "";
   }, [dataset]);
 
+  const exploreSeq = useRef(0);
   const loadExplore = useCallback(() => {
     const sources = {
       summary: `/api/epod/summary${dsQuery()}`,
@@ -853,8 +860,11 @@ export default function EpodExplorer({ logInPage, activeTab, onBusyChange, datas
       docTrend: `/api/epod/charts/ingestion-volume-over-time${dsQuery()}`,
     };
     const keys = Object.keys(sources);
+    // Switching dataset while the last one is still loading: only the newest load may paint.
+    const seq = ++exploreSeq.current;
     setChartsLoading(true);
     Promise.allSettled(keys.map(k => fetchJson(`${API_BASE_URL}${sources[k]}`))).then(results => {
+      if (seq !== exploreSeq.current) return;
       const next = {};
       const errors = {};
       results.forEach((r, i) => {

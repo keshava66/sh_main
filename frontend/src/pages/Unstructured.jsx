@@ -1,17 +1,32 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import LoadingSpinner from './components/LoadingSpinner';
-import EpodExplorer from './components/EpodExplorer';
-import NipoExplorer from './components/NipoExplorer';
-import FDAExplorer from './components/FDAExplorer';
-import VirtualRegulatorExplorer from './components/VirtualRegulatorExplorer';
-import VrExternalExplorer from './components/VrExternalExplorer';
 import VrExternalWelcome from './components/VrExternalWelcome';
 import { haOf, passesFacets, pickedCount } from './components/vrExternalFacets';
-import ImmbotExplorer from './components/ImmbotExplorer';
-import CortellisExplorer from './components/CortellisExplorer';
 import UnstructuredWelcome from './components/UnstructuredWelcome';
+import { lazyPage } from '../utils/lazyPage';
+
+// Each explorer is its own download, fetched the first time it's opened (or
+// ahead of time from the welcome screen), so opening one doesn't pay for all.
+const EpodExplorer = lazyPage(() => import('./components/EpodExplorer'));
+const NipoExplorer = lazyPage(() => import('./components/NipoExplorer'));
+const FDAExplorer = lazyPage(() => import('./components/FDAExplorer'));
+const VirtualRegulatorExplorer = lazyPage(() => import('./components/VirtualRegulatorExplorer'));
+const VrExternalExplorer = lazyPage(() => import('./components/VrExternalExplorer'));
+const ImmbotExplorer = lazyPage(() => import('./components/ImmbotExplorer'));
+const CortellisExplorer = lazyPage(() => import('./components/CortellisExplorer'));
+const EXPLORERS_BY_DOC_TYPE = {
+  vr: [VirtualRegulatorExplorer, VrExternalExplorer, CortellisExplorer],
+  immbot: [ImmbotExplorer],
+  epod: [EpodExplorer],
+  nipo: [NipoExplorer],
+  fda: [FDAExplorer],
+};
+const preloadDocType = (id) => (EXPLORERS_BY_DOC_TYPE[id] || []).forEach(c => c.preload());
+const ExplorerLoading = () => (
+  <div className="flex-1 min-h-0 flex items-center justify-center"><LoadingSpinner /></div>
+);
 import { useRBAC, UNSTRUCTURED_TABS, UNSTRUCTURED_SUBTABS } from '../context/RBACContext';
 import { useAuth } from '../context/AuthContext';
 import { logAuditEvent } from '../utils/auditLog';
@@ -49,7 +64,13 @@ function SearchSection({ children, label = 'Search fields', hint = 'Type in any 
     const n = [...el.querySelectorAll('input')].filter(i => i.value.trim()).length;
     if (n !== active) setActive(n);
   });
-  useEffect(() => { if (active > 0) setOpen(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Opens by itself once if it mounts with a search already typed in (e.g. the
+  // filter rail was collapsed and reopened). The count above lands after the
+  // first render, so this has to follow it rather than run once on mount.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (active > 0 && !autoOpened.current) { autoOpened.current = true; setOpen(true); }
+  }, [active]);
   return (
     <div className="border-b border-jj-gray-01 flex-shrink-0">
       <button
@@ -1892,7 +1913,7 @@ export default function Unstructured() {
   const [taDomainChart, setTaDomainChart] = useState(null); // { data, domains } | null when the endpoint isn't served
   const [distinctObjChart, setDistinctObjChart] = useState([]);
   const [docsOverTimeChart, setDocsOverTimeChart] = useState([]);
-  const [docsOverTimeGranularity, setDocsOverTimeGranularity] = useState('hour');
+  const [docsOverTimeGranularity] = useState('hour');
   const [rowsSql, setRowsSql] = useState('');
   const [summarySql, setSummarySql] = useState('');
   const [domainStatusSql, setDomainStatusSql] = useState('');
@@ -2454,7 +2475,7 @@ export default function Unstructured() {
       const sortedDomains = Object.entries(byDomain)
         .map(([domain, counts]) => ({ domain, ...counts, __total: Object.values(counts).reduce((a, b) => a + b, 0) }))
         .sort((a, b) => b.__total - a.__total)
-        .map(({ __total, ...rest }) => rest);
+        .map((row) => { const rest = { ...row }; delete rest.__total; return rest; });
       setDomainStatusChart({
         data: sortedDomains,
         statuses: Array.from(statuses),
@@ -2495,7 +2516,7 @@ export default function Unstructured() {
       const data = Array.from(byTa.values())
         .sort((a, b) => b.__total - a.__total)
         .slice(0, 15)
-        .map(({ __total, ...rest }) => rest);
+        .map((row) => { const rest = { ...row }; delete rest.__total; return rest; });
       setTaDomainChart({ data, domains });
     } else {
       setTaDomainChart(null);
@@ -2958,6 +2979,20 @@ export default function Unstructured() {
   ].filter(t => tabIds.includes(t.id));
 
   /* ============================== render ============================== */
+
+  // On the welcome screen, download the explorers this user can open in the
+  // background so picking one is instant.
+  const docTypesKey = docTypeIds.join(',');
+  useEffect(() => {
+    if (activeDocType !== null) return undefined;
+    const run = () => docTypesKey.split(',').forEach(preloadDocType);
+    if (window.requestIdleCallback) {
+      const id = window.requestIdleCallback(run, { timeout: 2000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = setTimeout(run, 300);
+    return () => clearTimeout(id);
+  }, [activeDocType, docTypesKey]);
 
   // Nothing picked yet - show the "choose an explorer" landing screen
   // instead of the tabbed workspace below. All the hooks above still run
@@ -3499,6 +3534,7 @@ export default function Unstructured() {
       </div>
 
       {/* ── Body ── */}
+      <Suspense fallback={<ExplorerLoading />}>
       {activeDocType === 'vr' && activeVrScope === 'external' && vrExtStage !== 'data' ? (
         <VrExternalWelcome
           sources={vrSources}
@@ -4026,7 +4062,7 @@ export default function Unstructured() {
               </div>
               <div className="flex-1 overflow-y-auto px-[18px] py-3.5 flex flex-col gap-[11px]">
                 {breakdownLoading && <ChartSkeleton height={200} />}
-                {!breakdownLoading && topArtifacts.map((a, i) => (
+                {!breakdownLoading && topArtifacts.map((a) => (
                   <div key={a.label} title={`${a.label}: ${a.count.toLocaleString()}`}>
                     <div className="flex justify-between text-[11.5px] font-johnson-text mb-[3px]">
                       <span className="text-jj-gray-08 truncate pr-2" title={a.label}>{a.label}</span>
@@ -4045,6 +4081,7 @@ export default function Unstructured() {
 
       </div>
       )}
+      </Suspense>
 
       <DetailModal record={detailRecord} onClose={() => setDetailRecord(null)} />
       <SqlModal modal={sqlModal} onClose={() => setSqlModal(null)} />
