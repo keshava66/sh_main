@@ -605,9 +605,10 @@ def _get_total_size_bytes(bypass_cache: bool = False) -> Optional[int]:
     try:
         sql = (
             f'{BASE_CTE} '
-            f'SELECT SUM(CASE WHEN "PATH_RN" = 1 THEN "FILE_SIZE" ELSE 0 END) FROM ('
-            f'  SELECT "FILE_SIZE", ROW_NUMBER() OVER (PARTITION BY "FILE_PATH_KEY" ORDER BY "FILE_PATH_KEY") AS "PATH_RN" '
-            f'  FROM (SELECT "FILE_SIZE", TO_VARCHAR("FILE_PATH") AS "FILE_PATH_KEY" FROM V)'
+            f'SELECT SUM("PATH_SIZE") FROM ('
+            f'  SELECT ANY_VALUE("FILE_SIZE") AS "PATH_SIZE" '
+            f'  FROM (SELECT "FILE_SIZE", TO_VARCHAR("FILE_PATH") AS "FILE_PATH_KEY" FROM V) '
+            f'  GROUP BY "FILE_PATH_KEY"'
             f')'
         )
         result = _run(sql, {})
@@ -657,19 +658,24 @@ def get_summary(
 
     parsed_filters = _parse_filters(filters)
     where_sql, params = _build_where(parsed_filters, search_file_name, search_object_name, search_jj_title, search_artifact_name, search_jj_number)
-    sql = (
-        f'{BASE_CTE} SELECT COUNT(*), COUNT(DISTINCT "FILE_NAME"), '
-        f'SUM(CASE WHEN "FILE_RN" = 1 AND UPPER("STATUS") = \'SUCCESS\' THEN "FILE_SIZE" ELSE 0 END) '
-        f'FROM ('
-        f'  SELECT *, ROW_NUMBER() OVER (PARTITION BY "FILE_PATH_KEY" ORDER BY "FILE_PATH_KEY") AS "FILE_RN" '
-        f'  FROM (SELECT *, TO_VARCHAR("FILE_PATH") AS "FILE_PATH_KEY" FROM V {where_sql})'
+    # Counts and the per-FILE_PATH size are separate queries run side by side.
+    # The size one groups by path (one row each, same as the old ROW_NUMBER()
+    # pick) instead of sorting ~60M rows through a window function.
+    sql = f'{BASE_CTE} SELECT COUNT(*), COUNT(DISTINCT "FILE_NAME") FROM V {where_sql}'
+    size_sql = (
+        f'{BASE_CTE} SELECT SUM("PATH_SIZE") FROM ('
+        f'  SELECT ANY_VALUE(CASE WHEN UPPER("STATUS") = \'SUCCESS\' THEN "FILE_SIZE" ELSE 0 END) AS "PATH_SIZE" '
+        f'  FROM (SELECT "STATUS", "FILE_SIZE", TO_VARCHAR("FILE_PATH") AS "FILE_PATH_KEY" FROM V {where_sql}) '
+        f'  GROUP BY "FILE_PATH_KEY"'
         f')'
     )
 
     # The all-time size doesn't depend on this query: fetch it at the same time.
     total_size_future = _side_by_side.submit(_get_total_size_bytes, bypass_cache)
+    size_future = _side_by_side.submit(_run, size_sql, params)
     try:
         result = _run(sql, params)
+        size_result = size_future.result()
     except FileNotFoundError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except HTTPException:
@@ -678,7 +684,8 @@ def get_summary(
         logger.error(f"Unstructured /summary failed: {e}")
         raise HTTPException(status_code=500, detail="Couldn't load this data. Please try again.")
 
-    total_count, distinct_file_names, ingested_size_bytes = result.rows[0] if result.rows else (0, 0, 0)
+    total_count, distinct_file_names = result.rows[0] if result.rows else (0, 0)
+    ingested_size_bytes = size_result.rows[0][0] if size_result.rows else 0
     total_size_bytes = total_size_future.result()
 
     payload = {
@@ -686,7 +693,7 @@ def get_summary(
         "distinct_file_names": distinct_file_names,
         "ingested_size_bytes": int(ingested_size_bytes or 0),
         "total_size_bytes": total_size_bytes,
-        "sql": _render_sql_for_display(sql, params),
+        "sql": _render_sql_for_display(sql, params) + ";\n\n" + _render_sql_for_display(size_sql, params),
         "cached": False,
     }
     _cache_set(cache_key, payload)
