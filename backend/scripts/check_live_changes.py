@@ -28,6 +28,8 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 os.chdir(BACKEND)
+# This script measures; the portal's background RIM Docs refresh would only add load.
+os.environ["UNSTRUCTURED_WARM_SECONDS"] = "0"
 
 results = []
 
@@ -152,6 +154,12 @@ def main():
         made = logins["n"] - before
         report("OK" if made <= 1 else "WARN", "Snowflake logins for those re-validations", f"{made} (was {len(picked)} before)")
 
+    print("\n== RIM Docs, query by query, Snowflake's result cache off (what a cold first visit costs) ==", flush=True)
+    try:
+        rim_cold_profile()
+    except Exception as e:
+        report("WARN", "RIM Docs profile", short(e))
+
     # The rest needs a real server so requests can overlap.
     port = free_port()
     srv = uvicorn.Server(uvicorn.Config(A.app, host="127.0.0.1", port=port, log_level="critical", log_config=None))
@@ -193,6 +201,91 @@ def main():
     warns = results.count("WARN")
     print(f"\n{len(results) - fails - warns} OK, {warns} WARN, {fails} FAIL")
     sys.exit(1 if fails else 0)
+
+
+def rim_cold_profile():
+    """Times every query the RIM Docs page runs on open, with Snowflake's result
+    cache switched off for this session only, and pulls the engine's own stats
+    for each (time compiling / queued / executing, data scanned, spills).
+    Prints numbers only: no SQL text, data values or credentials."""
+    import re
+    import unstructured as U
+    if not U._config:
+        report("WARN", "RIM Docs profile", "RIM Docs not configured here, skipped")
+        return
+    client = U._get_client()
+
+    def one(sql):
+        return U._run(sql, {}).rows
+
+    one("ALTER SESSION SET USE_CACHED_RESULT = FALSE")
+    try:
+        m = re.search(r"FROM\s+([A-Z0-9_$]+)\.([A-Z0-9_$]+)\.([A-Z0-9_$]+)", U.BASE_CTE, re.I)
+        if m:
+            db, schema, table = m.groups()
+            info = one(f"SELECT TABLE_TYPE, ROW_COUNT, BYTES, CLUSTERING_KEY FROM {db}.INFORMATION_SCHEMA.TABLES "
+                       f"WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'")
+            if info:
+                kind, nrows, nbytes, ckey = info[0]
+                size = f", {nrows:,} rows, {nbytes / 1e9:.2f} GB" if nrows is not None and nbytes is not None else ""
+                report("OK", "RIM Docs source", f"{kind}{size}, clustering key: {'yes' if ckey else 'none'}")
+        wh = one("SELECT CURRENT_WAREHOUSE()")[0][0]
+        if wh:
+            client.execute(f"SHOW WAREHOUSES LIKE '{wh}'")
+            shown = client.execute('SELECT "size", "max_cluster_count" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))').rows
+            if shown:
+                report("OK", "warehouse", f"size {shown[0][0]}, up to {shown[0][1]} cluster(s)")
+
+        # Record the query id of every query each part runs.
+        seen = []
+        real_run = U._run
+
+        def recording_run(sql, params=None):
+            res = real_run(sql, params)
+            seen.append(res.query_id)
+            return res
+        U._run = recording_run
+        nobody = {"permissions": {}, "user": {"email": "live-check"}}
+        parts = []
+        try:
+            for fn, kw in U._default_page_calls():
+                start = len(seen)
+                t = time.time()
+                try:
+                    U._call_with_defaults(fn, bypass_cache=True, auth=nobody, **kw)
+                    parts.append((fn.__name__.replace("get_", "").replace("_chart", ""), time.time() - t, seen[start:], None))
+                except Exception as e:
+                    parts.append((fn.__name__, time.time() - t, seen[start:], short(e)))
+        finally:
+            U._run = real_run
+
+        cur = client.conn.cursor()
+        cur.execute("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT => 200))")
+        cols = [d[0].upper() for d in cur.description]
+        hist = {r[cols.index("QUERY_ID")]: dict(zip(cols, r)) for r in cur.fetchall()}
+        cur.close()
+
+        def stat(h, *names):
+            for n in names:
+                if n in h and h[n] is not None:
+                    return h[n]
+            return None
+        for name, secs, qids, err in parts:
+            if err:
+                report("WARN", f"RIM {name}", err)
+                continue
+            bits = []
+            for q in qids:
+                h = hist.get(q) or {}
+                ms = lambda k: (stat(h, k) or 0) / 1000
+                scanned = (stat(h, "BYTES_SCANNED") or 0) / 1e6
+                spill = ((stat(h, "BYTES_SPILLED_TO_LOCAL_STORAGE") or 0) + (stat(h, "BYTES_SPILLED_TO_REMOTE_STORAGE") or 0)) / 1e6
+                bits.append(f"exec {ms('EXECUTION_TIME'):.1f}s, compile {ms('COMPILATION_TIME'):.1f}s, "
+                            f"queued {ms('QUEUED_OVERLOAD_TIME') + ms('QUEUED_PROVISIONING_TIME'):.1f}s, "
+                            f"scanned {scanned:,.0f} MB" + (f", SPILLED {spill:,.0f} MB" if spill else ""))
+            report("OK", f"RIM {name}", f"{secs:.2f}s total | " + " || ".join(bits))
+    finally:
+        one("ALTER SESSION SET USE_CACHED_RESULT = TRUE")
 
 
 def _close_explorer_snowflake():

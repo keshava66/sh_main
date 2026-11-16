@@ -1,3 +1,21 @@
+import os as _os
+import warnings as _warnings
+
+# Trust the operating system's certificate store (where corporate root CAs such
+# as J&J's are installed) for outbound HTTPS, so internal services like Denodo
+# can be verified instead of skipping the check. SMARTHUB_OS_TRUSTSTORE=false turns it off.
+if (_os.environ.get("SMARTHUB_OS_TRUSTSTORE") or "true").strip().lower() not in ("0", "false", "no", "off"):
+    try:
+        import truststore as _truststore
+        _truststore.inject_into_ssl()
+    except ImportError:
+        pass
+
+# The Snowflake connector warns on every connection that a logout default will
+# change in a future version. The portal runs no async Snowflake queries, so
+# either default behaves the same here; keep the logs readable.
+_warnings.filterwarnings("ignore", message=r".*enable_server_session_keep_alive_auto_detection was not set.*", category=FutureWarning)
+
 from fastapi import FastAPI, HTTPException, Body, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
@@ -1139,7 +1157,8 @@ def validate_credentials(username: str = Body(...), password: str = Body(...), a
             auth=HTTPBasicAuth(username, password),
             headers=headers,
             data=json.dumps(payload),
-            verify=False,
+            # Same setting as every other Denodo call: on unless the config says otherwise.
+            verify=((CONFIG or {}).get("denodo_service_account", {}).get("verify_ssl", True)),
             timeout=10
         )
 
@@ -5917,6 +5936,16 @@ def _it_shutdown():
 
 # ============================================================================
 
+@app.on_event("startup")
+def _start_background_warmers():
+    # Keeps the default RIM Docs page in cache (UNSTRUCTURED_WARM_SECONDS, 0 = off).
+    try:
+        import unstructured
+        unstructured.start_warmer()
+    except Exception as e:
+        logger.warning(f"Unstructured warmer not started: {e}")
+
+
 @app.on_event("shutdown")
 def shutdown_event():
     """Close all connections on shutdown"""
@@ -5939,6 +5968,12 @@ def shutdown_event():
         shutdown_shuttle()
     except Exception as e:
         logger.warning(f"Data Shuttle shutdown: {e}")
+
+    try:
+        import unstructured
+        unstructured.stop_warmer()
+    except Exception as e:
+        logger.warning(f"Unstructured warmer stop: {e}")
 
     try:
         it_report_pool.close_all()

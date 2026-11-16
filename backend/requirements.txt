@@ -22,3 +22,4 @@ xlrd
 python-multipart
 paramiko
 PyYAML
+truststore

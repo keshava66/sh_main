@@ -244,6 +244,11 @@ def _get_client():
 # approximate byte budget: a page of document chunks or a 5,000-row VR table
 # can be several MB, and expired entries used to sit in memory until 1,000
 # newer ones pushed them out. Expired ones are now swept every 30s.
+# Independent queries inside one request (a page of rows and its count, the
+# summary and the all-time size) run side by side instead of one after the other.
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+_side_by_side = _ThreadPoolExecutor(max_workers=16, thread_name_prefix="unstructured-q")
+
 _cache: Dict[str, tuple] = {}
 _cache_lock = threading.Lock()
 _cache_bytes = 0
@@ -472,8 +477,9 @@ def get_rows(
 
     try:
         t0 = time.time()
+        count_future = _side_by_side.submit(_run, count_sql, count_params)
         data_result = _run(data_sql, params)
-        count_result = _run(count_sql, count_params)
+        count_result = count_future.result()
         elapsed_ms = int((time.time() - t0) * 1000)
     except FileNotFoundError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -657,6 +663,8 @@ def get_summary(
         f')'
     )
 
+    # The all-time size doesn't depend on this query: fetch it at the same time.
+    total_size_future = _side_by_side.submit(_get_total_size_bytes, bypass_cache)
     try:
         result = _run(sql, params)
     except FileNotFoundError as e:
@@ -668,7 +676,7 @@ def get_summary(
         raise HTTPException(status_code=500, detail="Couldn't load this data. Please try again.")
 
     total_count, distinct_file_names, ingested_size_bytes = result.rows[0] if result.rows else (0, 0, 0)
-    total_size_bytes = _get_total_size_bytes(bypass_cache)
+    total_size_bytes = total_size_future.result()
 
     payload = {
         "total_count": total_count,
@@ -1049,3 +1057,88 @@ def get_breakdown_chart(
     payload = {"rows": [[r[0], r[1], r[2], r[3]] for r in result.rows], "sql": _render_sql_for_display(sql, params), "cached": False}
     _cache_set(cache_key, payload)
     return payload
+
+
+# ============================================================================
+# Keep the default RIM Docs page warm
+# ----------------------------------------------------------------------------
+# Cold, these queries take several seconds each on the ~2.8M row table. Every
+# UNSTRUCTURED_WARM_SECONDS (default 240, inside the 5-minute cache) the
+# unfiltered page - the one everyone opens first - is refreshed in the
+# background, with exactly the parameters the page sends, so it is always
+# served from cache. Repeat runs mostly hit Snowflake's own result cache, so
+# they cost next to nothing until the data changes. 0 turns it off.
+# ============================================================================
+
+WARM_SECONDS = int(os.environ.get("UNSTRUCTURED_WARM_SECONDS") or 240)
+_warm_stop = threading.Event()
+_warm_thread: Optional[threading.Thread] = None
+
+
+def _call_with_defaults(fn, **given):
+    """Call an endpoint function directly, filling each Query(...) default with its plain value."""
+    import inspect
+    kwargs = {}
+    for name, p in inspect.signature(fn).parameters.items():
+        if name in given:
+            kwargs[name] = given[name]
+        elif p.default is not inspect.Parameter.empty:
+            kwargs[name] = getattr(p.default, "default", p.default)
+    return fn(**kwargs)
+
+
+def _default_page_calls():
+    # What the RIM Docs page requests on open, with its defaults (Unstructured.jsx).
+    return [
+        (get_summary, {}),
+        (get_domain_status_chart, {}),
+        (get_therapeutic_area_chart, {}),
+        (get_domain_distinct_objects_chart, {}),
+        (get_therapeutic_area_domain_chart, {}),
+        (get_ingestion_status_chart, {}),
+        (get_documents_over_time_chart, {"granularity": "hour"}),
+        (get_rows, {"page": 1, "page_size": 50, "sort_col": "FILE_NAME", "sort_dir": "asc", "distinct_only": False}),
+        (get_breakdown_chart, {}),
+    ]
+
+
+def warm_default_page() -> int:
+    """Refresh the cached default page once. Returns how many parts succeeded."""
+    if not _config:
+        return 0
+    nobody = {"permissions": {}, "user": {"email": "cache-warmer"}}
+    ok = 0
+    futures = [_side_by_side.submit(_call_with_defaults, fn, bypass_cache=True, auth=nobody, **kw)
+               for fn, kw in _default_page_calls()]
+    for fut in futures:
+        try:
+            fut.result()
+            ok += 1
+        except Exception as e:  # one failing chart must not stop the rest
+            logger.info(f"Unstructured warm-up: one part failed: {e}")
+    return ok
+
+
+def start_warmer():
+    global _warm_thread
+    if WARM_SECONDS <= 0 or not _config or (_warm_thread and _warm_thread.is_alive()):
+        return
+
+    def loop():
+        while not _warm_stop.is_set():
+            t0 = time.time()
+            try:
+                n = warm_default_page()
+                logger.info(f"Unstructured default page warmed ({n} parts) in {time.time() - t0:.1f}s")
+            except Exception as e:
+                logger.warning(f"Unstructured warm-up failed: {e}")
+            _warm_stop.wait(WARM_SECONDS)
+
+    _warm_stop.clear()
+    _warm_thread = threading.Thread(target=loop, name="unstructured-warmer", daemon=True)
+    _warm_thread.start()
+
+
+def stop_warmer():
+    _warm_stop.set()
+

@@ -92,7 +92,9 @@ def configure(config: Optional[dict]) -> None:
     _cfg["user"] = acct.get("username")
     _cfg["password"] = acct.get("password")
     _cfg["base_url"] = (acct.get("base_url") or "").rstrip("/") or None
-    _cfg["verify"] = acct.get("verify_ssl", False)
+    # Certificates are checked unless the config turns it off (verify_ssl: false)
+    # or points at a CA bundle file. It used to default to off.
+    _cfg["verify"] = acct.get("verify_ssl", True)
     _cfg["connect_timeout"] = float(acct.get("connect_timeout", 10))
     _cfg["read_timeout"] = float(acct.get("read_timeout", 180))
     _cfg["search_limit"] = int(acct.get("search_limit", 1000000))
