@@ -1493,7 +1493,7 @@ export default function ITChecksView({
   const runBad = run ? run.dbs.filter((d) => run.codes[d] !== null && run.codes[d] !== 0).length : 0;
 
   return (
-    <div className={`itc${compactRows ? ' compact' : ''}`}>
+    <div className={`itc${compactRows ? ' compact' : ''}${selected.size || run ? ' has-float' : ''}`}>
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true" dangerouslySetInnerHTML={{ __html: SPRITE }} />
       <div className="itc-bg" />
 

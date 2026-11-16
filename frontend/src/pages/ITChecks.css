@@ -172,7 +172,9 @@
 .itc .on > .check svg, .itc .check.on svg { opacity: 1; transform: none; }
 
 /* ---------- layout ---------- */
-.itc .page { max-width: 1480px; margin: 0 auto; padding: 24px 28px 120px; }
+.itc .page { max-width: 1480px; margin: 0 auto; padding: 24px 28px 28px; }
+/* room so the floating bulk bar / run dock never cover the last rows; only while one is on screen */
+.itc.has-float .page { padding-bottom: 120px; }
 .itc .gap { height: 16px; }
 .itc .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 .itc .reveal { animation: itc-rise .9s var(--ease) backwards; animation-delay: var(--d, 0ms); }
