@@ -401,21 +401,17 @@ function DataQualityEngine() {
     const seq = ++loadSeq.current;
     const stale = () => seq !== loadSeq.current || !isMountedRef.current;
     setIsLoading(true); setLoadError('');
+    // The run list and the report don't depend on each other, so fetch both at once.
+    // The run list is best-effort: if it fails the report still shows.
+    if (!dates.length || !availableRunsRef.current.length) {
+      setRunsLoading(true);
+      apiFetch(`/dq/validation_report_dates`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (d && !stale()) setAvailableRuns(d.runs || []); })
+        .catch(err => { if (!stale()) console.error(err); })
+        .finally(() => { if (!stale()) setRunsLoading(false); });
+    }
     try {
-      if (!dates.length || !availableRunsRef.current.length) {
-        setRunsLoading(true);
-        try {
-          const datesRes = await apiFetch(`/dq/validation_report_dates`);
-          if (datesRes.ok) {
-            const datesData = await datesRes.json();
-            if (!stale()) setAvailableRuns(datesData.runs || []);
-          }
-        } finally {
-          if (!stale()) setRunsLoading(false);
-        }
-      }
-      if (stale()) return;
-
       let url = `/dq/validation_report`;
       if (dates.length === 1) url += `?load_date=${encodeURIComponent(dates[0])}`;
       else if (dates.length > 1) url += `?load_dates=${encodeURIComponent(dates.join(','))}`;

@@ -909,6 +909,13 @@ app.add_middleware(
 from audit import AuditApiCallMiddleware
 app.add_middleware(AuditApiCallMiddleware)
 
+# Gzips finished JSON/text responses (added last, so it wraps everything above).
+# Streams pass through untouched. Turn off with SMARTHUB_GZIP=false, e.g. if a
+# proxy in front already compresses.
+from compression import GZipJSONMiddleware
+if (os.environ.get("SMARTHUB_GZIP") or "true").strip().lower() not in ("0", "false", "no", "off"):
+    app.add_middleware(GZipJSONMiddleware, minimum_size=1024)
+
 
 # ============================================================================
 # SSO AUTHENTICATION
@@ -1081,19 +1088,39 @@ def validate_credentials(username: str = Body(...), password: str = Body(...), a
 # DATA QUALITY ENDPOINTS
 # ============================================================================
 
+_private_key_cache: Dict[tuple, bytes] = {}
+_private_key_lock = threading.Lock()
+
+
 def get_private_key(path, password):
-    """Load private key for Snowflake authentication"""
+    """Load private key for Snowflake authentication.
+
+    Decrypting the key is slow, so the result is kept per file. A changed file
+    (new mtime or size, e.g. a rotated key) is read again.
+    """
+    st = os.stat(path)
+    key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+    with _private_key_lock:
+        cached = _private_key_cache.get(key)
+    if cached is not None:
+        return cached
     with open(path, "rb") as key_file:
         p_key = serialization.load_pem_private_key(
             key_file.read(),
             password=password.encode(),
             backend=default_backend()
         )
-    return p_key.private_bytes(
+    der = p_key.private_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption()
     )
+    with _private_key_lock:
+        # drop older versions of the same file
+        for k in [k for k in _private_key_cache if k[0] == key[0]]:
+            del _private_key_cache[k]
+        _private_key_cache[key] = der
+    return der
 
 
 def create_snowflake_connection():
@@ -1127,6 +1154,11 @@ def create_snowflake_connection():
         raise HTTPException(status_code=500, detail=f"Snowflake connection error: {e}")
 
 
+# Logged-in connections reused by the IT Checks report endpoints.
+from sf_pool import SnowflakePool
+it_report_pool = SnowflakePool(create_snowflake_connection)
+
+
 @app.get("/dq/validation_report_tables")
 def get_validation_report_tables(auth: dict = Depends(require_permission("viewITChecks"))):
     if not CONFIG:
@@ -1155,16 +1187,14 @@ def get_validation_report_dates(auth: dict = Depends(require_permission("viewITC
     database = sf_config['database']
     full_table_name = f"{database}.{schema}.{table_name}"
 
-    conn = None
     try:
-        conn = create_snowflake_connection()
-        cur = conn.cursor()
-        cur.execute(f"""
-            SELECT load_date, run_timestamp, database
-            FROM {full_table_name}
-            ORDER BY load_date DESC
-        """)
-        rows = cur.fetchall()
+        with it_report_pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT load_date, run_timestamp, database
+                FROM {full_table_name}
+                ORDER BY load_date DESC
+            """)
+            rows = cur.fetchall()
         runs = [
             {
                 "load_date": row[0].strftime('%Y-%m-%d %H:%M:%S.%f')[:23] if row[0] else None,
@@ -1174,13 +1204,12 @@ def get_validation_report_dates(auth: dict = Depends(require_permission("viewITC
             for row in rows
         ]
         return {"runs": runs, "total": len(runs)}
+    except HTTPException:
+        raise
     except snowflake.connector.errors.ProgrammingError as e:
         raise HTTPException(status_code=500, detail=f"Snowflake query error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            conn.close()
 
 
 @app.get("/dq/validation_report")
@@ -1204,23 +1233,24 @@ def get_validation_report(
     def _parse_report(raw):
         return json.loads(raw) if isinstance(raw, str) else raw
 
-    conn = None
-    try:
-        conn = create_snowflake_connection()
-        cur = conn.cursor()
+    def _query(sql, params=None):
+        # Holds a pooled connection only for the query itself, not the merge below.
+        with it_report_pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
 
+    try:
         fetch_specific = load_date and load_date.upper() != 'ALL'
         fetch_subset   = load_dates and load_dates.strip()
 
         if fetch_specific:
             normalized = load_date.replace('T', ' ')
-            cur.execute(f"""
+            rows = _query(f"""
                 SELECT report_data, run_timestamp, load_date, database
                 FROM {full_table_name}
                 WHERE TO_CHAR(load_date, 'YYYY-MM-DD HH24:MI:SS.FF9') LIKE %s
                 LIMIT 1
             """, (normalized[:23] + '%',))
-            rows = cur.fetchall()
             if not rows:
                 raise HTTPException(status_code=404, detail=f"No report found for load_date={load_date}")
 
@@ -1245,13 +1275,12 @@ def get_validation_report(
             like_clauses = ' OR '.join(
                 ["TO_CHAR(load_date, 'YYYY-MM-DD HH24:MI:SS.FF9') LIKE %s"] * len(date_list)
             )
-            cur.execute(f"""
+            rows = _query(f"""
                 SELECT report_data, run_timestamp, load_date, database
                 FROM {full_table_name}
                 WHERE {like_clauses}
                 ORDER BY load_date DESC
             """, [d + '%' for d in date_list])
-            rows = cur.fetchall()
             if not rows:
                 raise HTTPException(status_code=404, detail="No reports found for the selected runs")
 
@@ -1294,12 +1323,11 @@ def get_validation_report(
 
         else:
             # ── Merge ALL runs — newest result per table wins ─────────────────
-            cur.execute(f"""
+            rows = _query(f"""
                 SELECT report_data, run_timestamp, load_date, database
                 FROM {full_table_name}
                 ORDER BY load_date DESC
             """)
-            rows = cur.fetchall()
             if not rows:
                 raise HTTPException(status_code=404, detail="No reports found")
 
@@ -1361,9 +1389,6 @@ def get_validation_report(
         raise HTTPException(status_code=500, detail=f"Snowflake query error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            conn.close()
 
 
 # ============================================================================
@@ -5822,6 +5847,11 @@ def shutdown_event():
         shutdown_shuttle()
     except Exception as e:
         logger.warning(f"Data Shuttle shutdown: {e}")
+
+    try:
+        it_report_pool.close_all()
+    except Exception as e:
+        logger.warning(f"IT report Snowflake pool shutdown: {e}")
 
     # Queued audit events go in (or to the spool) before the pool closes.
     from audit import flush_audit_queue
