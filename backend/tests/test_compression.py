@@ -105,3 +105,56 @@ def test_attachment_download_left_alone():
     r = TestClient(app).get("/log.txt", headers={"Accept-Encoding": "gzip"})
     assert "content-encoding" not in r.headers
     assert int(r.headers["content-length"]) == 5000
+
+
+# ── viewUnstructuredSQL: explorer responses drop "sql"/"count_sql" for callers without it ──
+
+@pytest.fixture(scope="module")
+def sql_app():
+    import os
+    os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
+    import app as A
+    from fastapi import Request, Depends
+
+    def mark(request: Request):
+        request.state.hide_sql = request.headers.get("x-test-perm") != "yes"
+
+    mini = FastAPI()
+    mini.add_middleware(A._HideSqlMiddleware)
+    mini.add_middleware(GZipJSONMiddleware, minimum_size=10)
+
+    @mini.get("/api/x/json", dependencies=[Depends(mark)])
+    def j():
+        return {"rows": [1], "sql": "SELECT 1", "nested": {"count_sql": "SELECT 2", "keep": 1}, "items": [{"sql": "x", "v": 2}]}
+
+    @mini.get("/api/x/stream", dependencies=[Depends(mark)])
+    def st():
+        def gen():
+            yield '{"a": 1, "sql": "S"}\n{"b"'
+            yield ': 2, "count_sql": "C"}\n'
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @mini.get("/api/x/csv", dependencies=[Depends(mark)])
+    def c():
+        return PlainTextResponse("sql,v\nSELECT 1,2\n" * 100, media_type="text/csv")
+
+    return TestClient(mini)
+
+
+def test_sql_kept_with_permission(sql_app):
+    r = sql_app.get("/api/x/json", headers={"x-test-perm": "yes"})
+    assert r.json()["sql"] == "SELECT 1" and r.json()["nested"]["count_sql"] == "SELECT 2"
+
+
+def test_sql_stripped_without_permission(sql_app):
+    r = sql_app.get("/api/x/json", headers={"Accept-Encoding": "gzip"})
+    assert r.json() == {"rows": [1], "nested": {"keep": 1}, "items": [{"v": 2}]}
+
+
+def test_sql_stripped_from_split_stream(sql_app):
+    r = sql_app.get("/api/x/stream")
+    assert [json.loads(l) for l in r.text.splitlines() if l.strip()] == [{"a": 1}, {"b": 2}]
+
+
+def test_csv_untouched(sql_app):
+    assert sql_app.get("/api/x/csv").text.startswith("sql,v\nSELECT 1,2")

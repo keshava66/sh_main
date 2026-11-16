@@ -638,12 +638,89 @@ app.include_router(
 )
 
 # ── Unstructured routes (separate file — edit unstructured.py, not here) ────
+# ── "View SQL" permission (viewUnstructuredSQL) ─────────────────────────────
+# Explorer responses carry the SQL that produced them ("sql", "count_sql") for
+# the View SQL buttons. For callers without the permission, _sql_visibility
+# (a dependency on the explorer routers) marks the request and this strips
+# those fields, including from the newline-delimited JSON streams.
+_SQL_KEYS = {"sql", "count_sql"}
+
+
+def _strip_sql(obj):
+    if isinstance(obj, dict):
+        return {k: _strip_sql(v) for k, v in obj.items() if k not in _SQL_KEYS}
+    if isinstance(obj, list):
+        return [_strip_sql(v) for v in obj]
+    return obj
+
+
+class _HideSqlMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/"):
+            return await self.app(scope, receive, send)
+        state = scope.setdefault("state", {})  # shared with request.state downstream
+        mode = None   # None = untouched, "json" = buffer whole body, "ndjson" = per line
+        start = None
+        buf = b""
+
+        async def send_wrapper(message):
+            nonlocal mode, start, buf
+            if message["type"] == "http.response.start":
+                ctype = dict((k.lower(), v) for k, v in message.get("headers", [])).get(b"content-type", b"")
+                if state.get("hide_sql"):
+                    if ctype.startswith(b"application/json"):
+                        mode = "json"
+                    elif ctype.startswith(b"application/x-ndjson"):
+                        mode = "ndjson"
+                if mode == "json":
+                    start = message  # held until the body is rewritten (length changes)
+                    return
+                if mode == "ndjson":
+                    message = {**message, "headers": [(k, v) for k, v in message["headers"] if k.lower() != b"content-length"]}
+                return await send(message)
+            if message["type"] != "http.response.body" or mode is None:
+                return await send(message)
+            more = message.get("more_body", False)
+            buf += message.get("body", b"")
+            if mode == "json":
+                if more:
+                    return
+                try:
+                    body = orjson.dumps(_strip_sql(orjson.loads(buf)))
+                except Exception:
+                    body = buf  # not valid JSON after all: send as it was
+                headers = [(k, v) for k, v in start["headers"] if k.lower() != b"content-length"]
+                headers.append((b"content-length", str(len(body)).encode()))
+                await send({**start, "headers": headers})
+                return await send({"type": "http.response.body", "body": body})
+            # ndjson: rewrite each complete line, keep the partial tail for the next chunk
+            *lines, buf = buf.split(b"\n") if more else (buf.split(b"\n") + [b""])
+            out = []
+            for line in lines:
+                try:
+                    out.append(orjson.dumps(_strip_sql(orjson.loads(line))) if line.strip() else line)
+                except Exception:
+                    out.append(line)
+            await send({"type": "http.response.body", "body": b"\n".join(out) + (b"\n" if lines else b""), "more_body": more})
+
+        await self.app(scope, receive, send_wrapper)
+
+
+async def _sql_visibility(request: _Request, auth: dict = Depends(require_auth)):
+    request.state.hide_sql = auth.get("permissions", {}).get("viewUnstructuredSQL") is not True
+
+
+app.add_middleware(_HideSqlMiddleware)
+
 from unstructured import unstructured_router, set_unstructured_dependencies
 
 set_unstructured_dependencies(CONFIG.get("unstructured") if CONFIG else None)
 app.include_router(
     unstructured_router,
-    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredRimDocs"))],
+    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredRimDocs")), Depends(_sql_visibility)],
 )
 
 # Virtual Regulator + IMMBOT tabs - same Snowflake connection as above (see chunk_explorer.py)
@@ -660,7 +737,7 @@ for _router, _perms in ((virtual_regulator_router, ("viewUnstructuredVR", "viewU
                         (vr_external_router, ("viewUnstructuredVR", "viewUnstructuredVRExternal")),
                         (cortellis_router, ("viewUnstructuredVR", "viewUnstructuredVRCortellis")),
                         (immbot_router, ("viewUnstructuredIMMBOT",))):
-    app.include_router(_router, dependencies=[Depends(require_permission("viewUnstructured", *_perms))])
+    app.include_router(_router, dependencies=[Depends(require_permission("viewUnstructured", *_perms)), Depends(_sql_visibility)])
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Structured Explorer (Find it) routes (separate file — edit gra_data_domains.py, not here) ──
@@ -679,7 +756,7 @@ from haq import haq_router, set_haq_dependencies
 set_haq_dependencies(CONFIG.get("postgres_query_runner") if CONFIG else None)
 app.include_router(
     haq_router,
-    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredHAQ"))],
+    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredHAQ")), Depends(_sql_visibility)],
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -692,7 +769,7 @@ from epod import epod_router, set_epod_dependencies
 set_epod_dependencies(CONFIG.get("postgres_query_runner") if CONFIG else None)
 app.include_router(
     epod_router,
-    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredEPOD"))],
+    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredEPOD")), Depends(_sql_visibility)],
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -702,7 +779,7 @@ from nipo import nipo_router, set_nipo_dependencies
 set_nipo_dependencies(CONFIG.get("postgres_query_runner") if CONFIG else None)
 app.include_router(
     nipo_router,
-    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredNipo"))],
+    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredNipo")), Depends(_sql_visibility)],
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -712,7 +789,7 @@ from fda import fda_router, set_fda_dependencies
 set_fda_dependencies(CONFIG.get("postgres_query_runner") if CONFIG else None)
 app.include_router(
     fda_router,
-    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredFDA"))],
+    dependencies=[Depends(require_permission("viewUnstructured", "viewUnstructuredFDA")), Depends(_sql_visibility)],
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
