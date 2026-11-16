@@ -303,7 +303,11 @@ const barTipText = (p, quarterly) =>
 function useHoverTip() {
   const [tip, setTip] = useState(null);
   const bind = (text) => ({
-    onMouseMove: (e) => setTip({ text, x: e.clientX, y: e.clientY }),
+    // The view may be scaled up on big screens (useFitZoom); the tip lives outside it, so match that size.
+    onMouseMove: (e) => setTip({
+      text, x: e.clientX, y: e.clientY,
+      z: parseFloat(getComputedStyle(e.currentTarget.closest('.exv-root') || document.body).zoom) || 1,
+    }),
     onMouseLeave: () => setTip(null),
   });
   const node = tip && createPortal(
@@ -311,9 +315,9 @@ function useHoverTip() {
       role="tooltip"
       className="font-johnson-text"
       style={{
-        position: 'fixed', left: tip.x, top: tip.y - 12, transform: 'translate(-50%, -100%)',
-        background: '#312c2a', color: '#fff', fontSize: 12, lineHeight: '16px',
-        padding: '6px 10px', borderRadius: 8, whiteSpace: 'nowrap',
+        position: 'fixed', left: tip.x, top: tip.y - 12 * tip.z, transform: 'translate(-50%, -100%)',
+        background: '#312c2a', color: '#fff', fontSize: 12 * tip.z, lineHeight: `${16 * tip.z}px`,
+        padding: `${6 * tip.z}px ${10 * tip.z}px`, borderRadius: 8 * tip.z, whiteSpace: 'nowrap',
         pointerEvents: 'none', zIndex: 9999, boxShadow: '0 4px 14px rgba(0,0,0,.18)',
       }}
     >
@@ -322,6 +326,35 @@ function useHoverTip() {
     document.body,
   );
   return [bind, node];
+}
+
+/* Big screens: the layout is designed for up to ~1840px of content. Past that,
+   scale the whole view up evenly (1440p ~1.3x, 4K ~2x) instead of stretching
+   it thin with tiny text. Measures the space the view sits in, so a wider or
+   narrower sidebar is accounted for. */
+const FIT_BASE = 1840;
+const FIT_MAX = 2.5;
+function useFitZoom() {
+  const [zoom, setZoom] = useState(1);
+  const ro = useRef(null);
+  const ref = useCallback((el) => {
+    ro.current?.disconnect();
+    ro.current = null;
+    const host = el?.parentElement;
+    if (!host) return;
+    const measure = () => {
+      const w = host.clientWidth;
+      const z = w > FIT_BASE ? Math.min(FIT_MAX, Math.round((w / FIT_BASE) * 100) / 100) : 1;
+      setZoom((prev) => (prev === z ? prev : z));
+    };
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      ro.current = new ResizeObserver(measure);
+      ro.current.observe(host);
+    }
+  }, []);
+  useEffect(() => () => ro.current?.disconnect(), []);
+  return [ref, zoom];
 }
 
 /* Replay phase: 0 = settled, 1 = collapsing bars back to zero after a refresh. */
@@ -333,34 +366,52 @@ const KEYFRAMES = `
 @keyframes exec-pulse { 0% { opacity:.85; transform:scale(1); } 70% { opacity:0; transform:scale(2.8); } 100% { opacity:0; } }
 @keyframes exec-spin { to { transform:rotate(360deg); } }
 @keyframes exec-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-/* Layout. The fixed 392 | 1fr | 560 grid and the "100% - 796px" drill card
-   needed about 1,400px; anything narrower overflowed sideways. */
+/* Layout. Columns follow the width the view really has (container queries on
+   the header and body), not the window, so the sidebar and browser zoom are
+   accounted for. Above ~1080p the whole view is scaled up (see useFitZoom). */
+.exv-head{container-type:inline-size}
+.exv-body{container-type:inline-size}
 .exv-pad{padding-left:28px;padding-right:28px}
-.exv-hero{display:grid;gap:16px;align-items:stretch;grid-template-columns:392px minmax(0,1fr) 560px}
+.exv-hero{display:grid;gap:16px;align-items:stretch;grid-template-columns:minmax(0,1fr)}
 .exv-grid3{display:grid;gap:10px;grid-template-columns:repeat(3,minmax(0,1fr))}
-.exv-drill{display:flex;gap:16px;align-items:flex-start}
-.exv-drill-card{flex:none;width:460px}
-.exv-drill-card.open{width:calc(100% - 796px)}
-.exv-head{display:flex;align-items:center;justify-content:space-between;gap:12px 24px;min-height:62px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
-.exv-scope-top{display:flex;align-items:center;gap:24px}
-@media (max-width:1500px){
+.exv-drill{display:flex;flex-direction:column;gap:16px;align-items:stretch}
+.exv-drill-card,.exv-drill-card.open{width:100%}
+.exv-head-in{display:flex;align-items:center;justify-content:space-between;gap:12px 24px;min-height:62px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
+.exv-scope-top{display:flex;flex-direction:column;align-items:stretch;gap:24px}
+.exv-health{flex-wrap:wrap}
+.exv-drill-cols{grid-template-columns:minmax(0,1fr)!important}
+.exv-crumbs{display:none!important}
+.exv-dim-title{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+@container (min-width:560px){
+  .exv-scope-top{flex-direction:row;align-items:center}
+  .exv-health{flex-wrap:nowrap}
+  .exv-drill-cols{grid-template-columns:1fr 1fr!important}
+}
+@container (min-width:900px){
+  .exv-crumbs{display:flex!important}
+}
+@container (max-width:559px){
+  .exv-pad{padding-left:16px;padding-right:16px}
+  .exv-grid3{grid-template-columns:minmax(0,1fr)}
+}
+/* Health panel beside the dimensions, trend on its own row */
+@container (min-width:960px){
   .exv-hero{grid-template-columns:minmax(300px,392px) minmax(0,1fr)}
   .exv-hero > .exv-trend{grid-column:1/-1}
 }
-@media (max-width:1300px){
-  .exv-drill{flex-direction:column;align-items:stretch}
-  .exv-drill-card,.exv-drill-card.open{width:100%}
+/* Everything on one row once the middle column gets ~600px */
+@container (min-width:1560px){
+  .exv-hero{grid-template-columns:minmax(320px,392px) minmax(600px,1fr) minmax(420px,560px)}
+  .exv-hero > .exv-trend{grid-column:auto}
 }
-@media (max-width:900px){
-  .exv-hero{grid-template-columns:minmax(0,1fr)}
-  .exv-crumbs{display:none!important}
+/* Domain/rule card beside the scope panel */
+@container (min-width:1240px){
+  .exv-drill{flex-direction:row;align-items:flex-start}
+  .exv-drill-card{flex:none;width:460px}
+  .exv-drill-card.open{width:calc(100% - 796px)}
 }
 @media (max-width:640px){
-  .exv-pad{padding-left:16px;padding-right:16px}
-  .exv-grid3{grid-template-columns:minmax(0,1fr)}
-  .exv-scope-top{flex-direction:column;align-items:stretch}
-  .exv-health{flex-wrap:wrap}
-  .exv-drill-cols{grid-template-columns:minmax(0,1fr)!important}
+  .exv-head .exv-pad,.exv-head.exv-pad{padding-left:16px;padding-right:16px}
 }
 `;
 
@@ -637,13 +688,13 @@ function TrendBars({ series, scopeLabel, loading, failed, quarterly }) {
       className="relative overflow-hidden h-full flex flex-col bg-white border border-jj-gray-02 rounded-2xl px-5 pt-4 pb-3.5"
       style={{ animation: 'exec-rise .5s .24s cubic-bezier(.2,.8,.2,1) both' }}
     >
-      <div className="flex items-baseline justify-between gap-4">
-        <div>
+      <div className="flex items-start justify-between gap-x-4 gap-y-2 flex-wrap">
+        <div className="min-w-0">
           <h3 className="m-0 font-johnson-display text-[15px] font-bold text-jj-gray-08">Pass rate over time</h3>
           <p className="m-0 mt-1 font-johnson-text text-xs text-jj-gray-06">{scopeLabel}</p>
         </div>
-        <div className="flex flex-col items-end gap-2 flex-shrink-0">
-          <div className="flex items-center gap-3.5 font-johnson-text text-[11px] text-jj-gray-06">
+        <div className="flex flex-col items-end gap-2 flex-shrink-0 max-w-full">
+          <div className="flex items-center justify-end gap-3.5 flex-wrap font-johnson-text text-[11px] text-jj-gray-06">
             <span className="flex items-center gap-1.5">
               <span style={{ width: 14, borderTop: '1px dashed #328714' }} />Target {TARGET}%
             </span>
@@ -651,7 +702,7 @@ function TrendBars({ series, scopeLabel, loading, failed, quarterly }) {
               <span style={{ width: 14, borderTop: '1px dashed #0f68b2' }} />Floor {FLOOR}%
             </span>
           </div>
-          <div className="flex items-center gap-3 font-johnson-text text-[11px] text-jj-gray-06">
+          <div className="flex items-center justify-end gap-3 flex-wrap font-johnson-text text-[11px] text-jj-gray-06">
             {PASS_BANDS.map(b => (
               <span key={b.label} className="flex items-center gap-1.5">
                 <span style={{ width: 9, height: 9, borderRadius: 2, backgroundColor: b.color }} />{b.label}
@@ -771,8 +822,8 @@ function DimensionCard({ label, avg, meta, selected, onClick, compact = false })
 
       <div className="flex items-start justify-between gap-2.5">
         <span
-          className="font-johnson-display font-bold text-jj-gray-08 truncate"
-          style={{ fontSize: compact ? 14.5 : 17 }}
+          className="exv-dim-title min-w-0 font-johnson-display font-bold text-jj-gray-08"
+          style={{ fontSize: compact ? 14.5 : 17, lineHeight: 1.2 }}
           title={shown}
         >
           {shown}
@@ -1039,14 +1090,14 @@ function ScopePanel({ rule, scoped, scopeTitle, scopeDelta, series, seriesLoadin
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <SeverityChip severity={r.severity} compact />
-                    <span className="flex-1 font-johnson-text text-sm font-bold text-jj-gray-08 truncate">
+                    <span className="exv-dim-title flex-1 min-w-0 font-johnson-text text-sm font-bold text-jj-gray-08">
                       {mdmRuleDisplayName(r) || `${dimensionOf(r)} · ${r.domain || 'Unassigned'}`}
                     </span>
                     <span className="font-johnson-display text-base font-bold flex-shrink-0" style={{ color: passColor(Number(r.pass_percentage)) }}>
                       {Math.round(Number(r.pass_percentage))}%
                     </span>
                   </div>
-                  <span className="font-johnson-text text-xs text-jj-gray-06 truncate">
+                  <span className="font-johnson-text text-xs text-jj-gray-06" style={{ overflowWrap: 'anywhere' }}>
                     {(r.component_name || 'Unassigned')} › {(r.domain || 'Unassigned')}
                   </span>
                 </button>
@@ -1124,6 +1175,8 @@ export default function ExecutiveView({
 }) {
   const [refreshing, setRefreshing] = useState(false);
   const [phase, setPhase] = useState(0);
+  const [fitRef, fitZoom] = useFitZoom();
+  const fitStyle = fitZoom === 1 ? undefined : { zoom: fitZoom };
 
   const replayTimer = useRef(null);
 
@@ -1308,14 +1361,15 @@ export default function ExecutiveView({
 
   if (loading && !rules.length) {
     return (
-      <div className={`exv-root ${embedded ? 'flex-1 min-h-0' : 'h-full'} bg-jj-gray-01 overflow-hidden`}>
+      <div ref={fitRef} style={fitStyle} className={`exv-root ${embedded ? 'flex-1 min-h-0' : 'h-full'} bg-jj-gray-01 overflow-hidden`}>
         <style>{KEYFRAMES}</style>
         <PageSkeleton />
       </div>
     );
   }
   const header = showHeader && (
-    <div className="exv-head exv-pad bg-white border-b border-jj-gray-02">
+    <div className="exv-head bg-white border-b border-jj-gray-02">
+    <div className="exv-head-in exv-pad">
       <div className="flex items-center gap-4 min-w-0">
         <img src={logoSrc} alt="GRA SmartHub" style={{ height: 26, width: 'auto', display: 'block', flexShrink: 0 }} />
         <div className="exv-crumbs flex items-center gap-2 font-johnson-text text-[12.5px] text-jj-gray-06 min-w-0">
@@ -1389,14 +1443,15 @@ export default function ExecutiveView({
         )}
       </div>
     </div>
+    </div>
   );
 
   // Header + scroll body. Empty/error states use it too, so Refresh stays reachable.
   const shell = (body) => (
-    <div className={`exv-root flex flex-col ${embedded ? 'flex-1 min-h-0' : 'h-full'} bg-jj-gray-01`}>
+    <div ref={fitRef} style={fitStyle} className={`exv-root flex flex-col ${embedded ? 'flex-1 min-h-0' : 'h-full'} bg-jj-gray-01`}>
       <style>{KEYFRAMES}</style>
       {header}
-      <div className="flex-1 min-h-0 overflow-auto">{body}</div>
+      <div className="exv-body flex-1 min-h-0 overflow-auto">{body}</div>
     </div>
   );
   const retry = showHeader ? null : handleRefresh;
