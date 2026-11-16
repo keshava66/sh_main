@@ -488,7 +488,7 @@ function DataQualityEngine() {
   // ──────────────────────────────────────────────────────────────────────────
   if (showWelcome) {
     if (isLoading) return (
-      <div className="flex items-center justify-center min-h-full bg-jj-gray-01">
+      <div className="flex items-center justify-center h-full overflow-hidden bg-jj-gray-01">
         <div className="text-center">
           <LoadingSpinner />
           <p className="font-johnson-text mt-4 text-sm font-bold text-jj-gray-07">Loading validation data…</p>
@@ -521,7 +521,7 @@ function DataQualityEngine() {
     ].filter(item => availableCheckTypes.includes(item.value));
 
     return (
-      <div className="min-h-full flex bg-jj-gray-01" style={{ fontFamily: "'JohnsonText', Arial, sans-serif" }}>
+      <div className="h-full overflow-hidden flex bg-jj-gray-01" style={{ fontFamily: "'JohnsonText', Arial, sans-serif" }}>
 
         {/* ═══ LEFT PANEL ═══ */}
         <div className="hidden lg:flex relative overflow-hidden flex-col" style={{ flex: '0 0 58%' }}>
@@ -595,7 +595,7 @@ function DataQualityEngine() {
           <div className="absolute bottom-0 left-0 right-0" style={{ height: 160, background: 'linear-gradient(to top,rgba(247,245,242,.92) 0%,transparent 100%)' }} />
 
           {/* ── Content layer ── */}
-          <div className="relative flex flex-col h-full" style={{ zIndex: 2, padding: '36px 52px' }}>
+          <div className="relative flex flex-col h-full" style={{ zIndex: 2, padding: 'clamp(18px,4vh,36px) 52px' }}>
 
             {/* Engine status */}
             <div className="flex items-center justify-between flex-wrap" style={{ gap: 16 }}>
@@ -615,26 +615,26 @@ function DataQualityEngine() {
               alt="GRA SmartHub"
               className="select-none"
               draggable={false}
-              style={{ width: 'clamp(160px, 15vw, 220px)', height: 'auto', marginTop: 14, alignSelf: 'flex-start' }}
+              style={{ width: 'clamp(160px, 15vw, 220px)', height: 'auto', maxHeight: '9vh', objectFit: 'contain', marginTop: 14, alignSelf: 'flex-start' }}
             />
 
             {/* Hero typography — stacked from the top so gaps stay fixed; the
                 leftover vertical space falls below the text instead of being
                 distributed between the badge, logo and headline */}
-            <div className="flex-1 flex flex-col justify-start" style={{ padding: '28px 0 20px' }}>
-              <p className="font-johnson-text font-bold uppercase" style={{ fontSize: 11, letterSpacing: '.26em', color: '#0f68b2', margin: '0 0 28px' }}>
+            <div className="flex-1 min-h-0 flex flex-col justify-start" style={{ padding: 'clamp(12px,3vh,28px) 0 clamp(8px,2vh,20px)' }}>
+              <p className="font-johnson-text font-bold uppercase" style={{ fontSize: 11, letterSpacing: '.26em', color: '#0f68b2', margin: '0 0 clamp(10px,3vh,28px)' }}>
                 Source-to-Target Validation
               </p>
-              <h1 className="font-johnson-display" style={{ fontWeight: 700, fontSize: 'clamp(40px,4.6vw,72px)', lineHeight: .97, color: '#312c2a', margin: 0, letterSpacing: '-.025em' }}>
+              <h1 className="font-johnson-display" style={{ fontWeight: 700, fontSize: 'clamp(32px,min(4.6vw,7.5vh),72px)', lineHeight: .97, color: '#312c2a', margin: 0, letterSpacing: '-.025em' }}>
                 Data Quality
               </h1>
               <h1 className="font-johnson-display italic" style={{ fontWeight: 300, fontSize: 'clamp(40px,4.6vw,72px)', lineHeight: .97, color: '#eb1700', margin: 0, letterSpacing: '-.025em' }}>
                 Engine.
               </h1>
-              <div style={{ margin: '28px 0' }}>
+              <div style={{ margin: 'clamp(12px,3vh,28px) 0' }}>
                 <div style={{ width: 52, height: 3, background: '#eb1700' }} />
               </div>
-              <p className="font-johnson-text" style={{ fontWeight: 300, fontSize: 'clamp(14px,1.1vw,17px)', lineHeight: 1.55, color: '#6e6259', maxWidth: 380, margin: '0 0 36px' }}>
+              <p className="font-johnson-text" style={{ fontWeight: 300, fontSize: 'clamp(14px,1.1vw,17px)', lineHeight: 1.55, color: '#6e6259', maxWidth: 380, margin: '0 0 clamp(12px,3.5vh,36px)' }}>
                 One platform, two lenses: automated IT checks confirm structural
                 integrity, while business-defined checks apply your own data-quality
                 rules — together catching anomalies before they reach production.
@@ -674,7 +674,7 @@ function DataQualityEngine() {
           className="relative flex-1 flex flex-col bg-white overflow-hidden"
           style={{ backgroundImage: 'radial-gradient(circle, rgba(203,196,188,.22) 1px, transparent 1px)', backgroundSize: '24px 24px', borderLeft: '1px solid #e8e6e3' }}
         >
-          <div className="flex-1 flex flex-col justify-center mx-auto w-full" style={{ padding: '56px 52px', maxWidth: 480 }}>
+          <div className="flex-1 min-h-0 flex flex-col justify-center mx-auto w-full" style={{ padding: 'clamp(16px,5vh,56px) 52px', maxWidth: 480 }}>
 
             {/* Compact hero — shown only when the left panel is hidden (small screens) */}
             <div className="lg:hidden text-center mb-8">
@@ -692,12 +692,12 @@ function DataQualityEngine() {
             <h2 className="font-johnson-display" style={{ fontWeight: 700, fontSize: 26, lineHeight: 1.08, color: '#312c2a', margin: '0 0 8px', letterSpacing: '-.01em' }}>
               Choose your check type
             </h2>
-            <p className="font-johnson-text" style={{ fontWeight: 400, fontSize: 14, color: '#81766f', margin: '0 0 36px', lineHeight: 1.5 }}>
+            <p className="font-johnson-text" style={{ fontWeight: 400, fontSize: 14, color: '#81766f', margin: '0 0 clamp(12px,3.5vh,36px)', lineHeight: 1.5 }}>
               Select a suite to load its latest validation analysis.
             </p>
 
             {/* Check type options */}
-            <div className="flex flex-col" style={{ gap: 14, marginBottom: 32 }}>
+            <div className="flex flex-col" style={{ gap: 'clamp(6px,1.4vh,14px)', marginBottom: 'clamp(12px,3vh,32px)' }}>
               {checkTypeOptions.map(item => {
                 const selected = selectedCheckType === item.value;
                 return (
@@ -707,7 +707,7 @@ function DataQualityEngine() {
                     aria-pressed={selected}
                     className="flex items-center w-full text-left"
                     style={{
-                      gap: 18, padding: '18px 20px', borderRadius: 14, cursor: 'pointer',
+                      gap: 18, padding: 'clamp(8px,1.8vh,18px) 20px', borderRadius: 14, cursor: 'pointer',
                       transition: 'box-shadow .18s ease, transform .18s ease, border-color .18s ease, background .18s ease',
                       background: selected ? '#fff5f4' : '#faf9f8',
                       border: selected ? '1.5px solid #eb1700' : '1.5px solid #e8e6e3',
@@ -776,7 +776,7 @@ function DataQualityEngine() {
               disabled={isLoading || !selectedCheckType}
               className="flex items-center justify-center w-full font-johnson-display"
               style={{
-                gap: 10, padding: '15px 24px', borderRadius: 13, border: 'none', fontWeight: 700, fontSize: 16,
+                gap: 10, padding: 'clamp(10px,1.6vh,15px) 24px', borderRadius: 13, border: 'none', fontWeight: 700, fontSize: 16,
                 letterSpacing: '-.01em', color: '#fff', cursor: (!selectedCheckType || isLoading) ? 'not-allowed' : 'pointer',
                 transition: 'opacity .2s ease, box-shadow .2s ease',
                 background: (!selectedCheckType || isLoading) ? '#cbc4bc' : '#eb1700',
@@ -799,7 +799,7 @@ function DataQualityEngine() {
           </div>
 
           {/* Right panel footer */}
-          <div className="flex items-center justify-between flex-wrap" style={{ padding: '0 52px 32px', gap: 16 }}>
+          <div className="flex items-center justify-between flex-wrap" style={{ padding: '0 52px clamp(12px,3vh,32px)', gap: 16 }}>
             <div className="flex items-center" style={{ gap: 8 }}>
               <Icon src={databaseIcon} alt="" className="w-3.5 h-3.5 text-jj-gray-05" style={{ opacity: .55 }} />
               <span className="font-johnson-text" style={{ fontSize: '11.5px', color: '#a39992' }}>
