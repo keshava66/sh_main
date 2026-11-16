@@ -562,15 +562,21 @@ function CrlMatchesExplorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/charts/decision`),
-      fetchJson(`${API_BASE_URL}/api/fda/charts/method`),
-      fetchJson(`${API_BASE_URL}/api/fda/charts/top-sponsors?limit=10`),
+      fetchJson(`${API_BASE_URL}/api/fda/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/charts/decision`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/charts/method`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/charts/top-sponsors?limit=10`, { signal: ctl.signal }),
     ]).then(([summaryRes, decisionRes, methodRes, sponsorsRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -592,7 +598,7 @@ function CrlMatchesExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   // Business-friendly labels for the raw yes/no decision - "Confirmed" reads
   // as a completed review, "Needs review" as a call to action, where "YES"/
@@ -1114,16 +1120,22 @@ function CrlLettersExplorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/letters/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/status`),
-      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/application-type`),
-      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/top-sponsors?limit=10`),
-      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/by-year`),
+      fetchJson(`${API_BASE_URL}/api/fda/letters/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/status`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/application-type`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/top-sponsors?limit=10`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/letters/charts/by-year`, { signal: ctl.signal }),
     ]).then(([summaryRes, statusRes, appTypeRes, sponsorsRes, yearRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -1148,7 +1160,7 @@ function CrlLettersExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const statusFallbackIdx = useRef({ i: 0 });
   const statusSegments = useMemo(() => {
@@ -1665,16 +1677,22 @@ function PinkLettersExplorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/therapeutic-area?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/issue-category?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/approval-outcome`),
-      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/by-year`),
+      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/therapeutic-area?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/issue-category?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/approval-outcome`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/pink-letters/charts/by-year`, { signal: ctl.signal }),
     ]).then(([summaryRes, areaRes, issueRes, outcomeRes, yearRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -1699,7 +1717,7 @@ function PinkLettersExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const outcomeFallbackIdx = useRef({ i: 0 });
   const outcomeSegments = useMemo(() => {
@@ -2228,16 +2246,22 @@ function EctdDocsExplorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/ectd/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/status`),
-      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/primary-group`),
-      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/top-products?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/top-sections?limit=12`),
+      fetchJson(`${API_BASE_URL}/api/fda/ectd/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/status`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/primary-group`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/top-products?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/ectd/charts/top-sections?limit=12`, { signal: ctl.signal }),
     ]).then(([summaryRes, statusRes, groupRes, productsRes, sectionsRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -2262,7 +2286,7 @@ function EctdDocsExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const statusFallbackIdx = useRef({ i: 0 });
   const statusSegments = useMemo(() => {
@@ -2919,17 +2943,23 @@ function FdaLettersV2Explorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/status`),
-      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/application-type`),
-      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/top-sponsors?limit=10`),
-      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/top-indications?limit=10`),
-      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/by-year`),
+      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/status`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/application-type`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/top-sponsors?limit=10`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/top-indications?limit=10`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/fda-letters/charts/by-year`, { signal: ctl.signal }),
     ]).then(([summaryRes, statusRes, appTypeRes, sponsorsRes, indicationsRes, yearRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -2957,7 +2987,7 @@ function FdaLettersV2Explorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const statusFallbackIdx = useRef({ i: 0 });
   const statusSegments = useMemo(() => {
@@ -3575,17 +3605,23 @@ function MilvexianMetadataExplorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/milvexian/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/status`),
-      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/primary-group`),
-      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/top-products?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/top-sections?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/content-type`),
+      fetchJson(`${API_BASE_URL}/api/fda/milvexian/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/status`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/primary-group`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/top-products?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/top-sections?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/milvexian/charts/content-type`, { signal: ctl.signal }),
     ]).then(([summaryRes, statusRes, groupRes, productsRes, sectionsRes, contentTypeRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -3613,7 +3649,7 @@ function MilvexianMetadataExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const statusFallbackIdx = useRef({ i: 0 });
   const statusSegments = useMemo(() => {
@@ -4285,17 +4321,23 @@ function FacilityIndexExplorer({ logInPage, activeTab, onBusyChange }) {
   const [sqlModal, setSqlModal] = useState(null);
   const openSqlModal = (payload) => setSqlModal(payload);
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/fda/facility-index/summary`),
-      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/top-facilities?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/responsibility?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/placebo-label`),
-      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/top-cities?limit=12`),
-      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/confidence-band`),
+      fetchJson(`${API_BASE_URL}/api/fda/facility-index/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/top-facilities?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/responsibility?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/placebo-label`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/top-cities?limit=12`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/fda/facility-index/charts/confidence-band`, { signal: ctl.signal }),
     ]).then(([summaryRes, facilitiesRes, responsibilityRes, placeboRes, citiesRes, confidenceRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -4323,7 +4365,7 @@ function FacilityIndexExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const placeboFallbackIdx = useRef({ i: 0 });
   const placeboSegments = useMemo(() => {

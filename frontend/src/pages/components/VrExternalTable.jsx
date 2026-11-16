@@ -351,7 +351,8 @@ export default function VrExternalTable({ source, sources = [], facets = {}, onF
     setLoading(true);
     setError(null);
     onBusyChange?.(true);
-    apiJson(`/api/vr-external/table/${encodeURIComponent(source.id)}${bypass ? '?bypass_cache=true' : ''}`)
+    const ctl = new AbortController(); // cancelled on leave so it stops holding a browser connection
+    apiJson(`/api/vr-external/table/${encodeURIComponent(source.id)}${bypass ? '?bypass_cache=true' : ''}`, { signal: ctl.signal })
       .then(res => {
         if (dead) return;
         setData(res);
@@ -363,7 +364,7 @@ export default function VrExternalTable({ source, sources = [], facets = {}, onF
         setLoading(false);
         onBusyChange?.(false);
       });
-    return () => { dead = true; onBusyChange?.(false); };
+    return () => { dead = true; ctl.abort(); onBusyChange?.(false); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey, source.id, attempt]);
 

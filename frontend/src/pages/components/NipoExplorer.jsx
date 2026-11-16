@@ -440,14 +440,20 @@ export default function NipoExplorer({ logInPage, activeTab, onBusyChange }) {
   const [chartsError, setChartsError] = useState(null);
   const [cardErrors, setCardErrors] = useState({});
 
+  // Cancelled on leave (and when reloaded) so it stops holding browser connections.
+  const dashAbort = useRef(null);
   const loadDashboard = useCallback(() => {
+    dashAbort.current?.abort();
+    const ctl = new AbortController();
+    dashAbort.current = ctl;
     setChartsLoading(true);
     setChartsError(null);
     Promise.allSettled([
-      fetchJson(`${API_BASE_URL}/api/nipo/summary`),
-      fetchJson(`${API_BASE_URL}/api/nipo/charts/by-indication?limit=10`),
-      fetchJson(`${API_BASE_URL}/api/nipo/charts/by-application-type?limit=10`),
+      fetchJson(`${API_BASE_URL}/api/nipo/summary`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/nipo/charts/by-indication?limit=10`, { signal: ctl.signal }),
+      fetchJson(`${API_BASE_URL}/api/nipo/charts/by-application-type?limit=10`, { signal: ctl.signal }),
     ]).then(([summaryRes, indicationRes, appTypeRes]) => {
+      if (ctl.signal.aborted) return;
       const errors = {};
       if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
       else errors.summary = summaryRes.reason?.message || "Failed to load summary";
@@ -466,7 +472,7 @@ export default function NipoExplorer({ logInPage, activeTab, onBusyChange }) {
     });
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); return () => dashAbort.current?.abort(); }, [loadDashboard]);
 
   const indicationBars = useMemo(() => byIndicationChart.map(r => ({ area: r.indication, count: r.count })), [byIndicationChart]);
   const appTypeBars = useMemo(() => byApplicationTypeChart.map(r => ({ area: r.application_type, count: r.count })), [byApplicationTypeChart]);

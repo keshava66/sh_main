@@ -849,6 +849,7 @@ export default function EpodExplorer({ logInPage, activeTab, onBusyChange, datas
   }, [dataset]);
 
   const exploreSeq = useRef(0);
+  const exploreAbort = useRef(null);
   const loadExplore = useCallback(() => {
     const sources = {
       summary: `/api/epod/summary${dsQuery()}`,
@@ -862,9 +863,13 @@ export default function EpodExplorer({ logInPage, activeTab, onBusyChange, datas
     const keys = Object.keys(sources);
     // Switching dataset while the last one is still loading: only the newest load may paint.
     const seq = ++exploreSeq.current;
+    // Cancelled on leave / dataset switch so it stops holding browser connections.
+    exploreAbort.current?.abort();
+    const ctl = new AbortController();
+    exploreAbort.current = ctl;
     setChartsLoading(true);
-    Promise.allSettled(keys.map(k => fetchJson(`${API_BASE_URL}${sources[k]}`))).then(results => {
-      if (seq !== exploreSeq.current) return;
+    Promise.allSettled(keys.map(k => fetchJson(`${API_BASE_URL}${sources[k]}`, { signal: ctl.signal }))).then(results => {
+      if (seq !== exploreSeq.current || ctl.signal.aborted) return;
       const next = {};
       const errors = {};
       results.forEach((r, i) => {
@@ -879,7 +884,7 @@ export default function EpodExplorer({ logInPage, activeTab, onBusyChange, datas
     });
   }, [dsQuery]);
 
-  useEffect(() => { loadExplore(); }, [loadExplore]);
+  useEffect(() => { loadExplore(); return () => exploreAbort.current?.abort(); }, [loadExplore]);
 
   const hasLog = summary?.has_log !== false;
   // Fall back to the views that always exist when a dataset has no log table.

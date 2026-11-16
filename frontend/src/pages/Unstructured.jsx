@@ -1504,7 +1504,9 @@ function HaqExplorer({ logInPage }) {
   useEffect(() => { setPage(1); }, [filtersParam, debouncedQuestion, debouncedAnswer, debouncedQuestionNumber, pageSize]);
 
   useEffect(() => {
-    fetchJson(`${API_BASE_URL}/api/haq/summary`).then(setSummary).catch(() => setSummary(null));
+    const ctl = new AbortController(); // cancelled on leave so it stops holding a browser connection
+    fetchJson(`${API_BASE_URL}/api/haq/summary`, { signal: ctl.signal }).then(setSummary).catch((e) => { if (e.name !== 'AbortError') setSummary(null); });
+    return () => ctl.abort();
   }, []);
 
   useEffect(() => {
@@ -1978,6 +1980,10 @@ export default function Unstructured() {
   const docTypeGroupEnd = 'rmwcreate';
   const urlDocType = searchParamsNav.get('doctype');
   const activeDocType = docTypeIds.includes(urlDocType) ? urlDocType : null;
+  // RIM Docs lives in this component, so its loads used to fire whichever
+  // explorer was open (9 Snowflake calls behind every VR / Q! / FDA visit,
+  // filling the browser's ~6 connections). They only run while RIM Docs is open.
+  const rimActive = canViewRimDocs && activeDocType === 'rimdocs';
   const setActiveDocType = (id) => {
     if (id !== activeDocType) {
       logInPage('doctype_change', `Switched to "${DOC_TYPE_LABELS[id] || id}" document set on Unstructured`);
@@ -2182,13 +2188,16 @@ export default function Unstructured() {
   const vrTabLabels = activeVrScope === 'internal' ? VR_INTERNAL_TAB_LABELS : VR_TAB_LABELS;
   useEffect(() => {
     if (!needVrSources) return;
+    // Cancel, not just ignore, on leave: a request left running holds one of the
+    // browser's ~6 connections to the server and the next screen queues behind it.
     let dead = false;
+    const ctl = new AbortController();
     setVrSourcesLoading(true);
-    apiJson(`/api/vr-external/sources${vrReloadKey ? '?bypass_cache=true' : ''}`)
+    apiJson(`/api/vr-external/sources${vrReloadKey ? '?bypass_cache=true' : ''}`, { signal: ctl.signal })
       .then(res => { if (!dead && res?.sources?.length) setVrSources(res.sources); })
       .catch(() => {}) // keep the fallback, press releases still works
       .finally(() => { if (!dead) setVrSourcesLoading(false); });
-    return () => { dead = true; };
+    return () => { dead = true; ctl.abort(); };
   }, [needVrSources, vrReloadKey]);
 
   // facets narrow the header dropdown + the open table. no facets = just this
@@ -2381,7 +2390,7 @@ export default function Unstructured() {
   // state internally so callers control exactly which page gets requested
   // (avoids the filter-change/page-reset double-fire race).
   const fetchRows = useCallback(async (targetPage, opts = {}) => {
-    if (!canViewRimDocs) return;
+    if (!rimActive) return;
     if (rowsAbortRef.current) rowsAbortRef.current.abort();
     const controller = new AbortController();
     rowsAbortRef.current = controller;
@@ -2422,10 +2431,10 @@ export default function Unstructured() {
       // Only the still-current request may clear the spinner.
       if (rowsAbortRef.current === controller) setRowsLoading(false);
     }
-  }, [searchParams, pageSize, sortCol, sortAsc, distinctOnly, canViewRimDocs]);
+  }, [searchParams, pageSize, sortCol, sortAsc, distinctOnly, rimActive]);
 
   const loadSummaryAndCharts = useCallback(async (opts = {}) => {
-    if (!canViewRimDocs) return;
+    if (!rimActive) return;
     if (chartsAbortRef.current) chartsAbortRef.current.abort();
     const controller = new AbortController();
     chartsAbortRef.current = controller;
@@ -2545,16 +2554,17 @@ export default function Unstructured() {
     // TA card only errors when both of its endpoints fail.)
     setChartsError(Object.keys(errors).length >= 5 ? (errors.summary || 'Failed to load summary and charts') : null);
     setChartsLoading(false);
-  }, [searchParams, canViewRimDocs]);
+  }, [searchParams, rimActive]);
 
   // Documents-over-time trend has its own load path (doesn't refetch every
   // other KPI + chart on the tab) and, on request, no longer surfaces its own
   // failures anywhere in the UI - it just keeps whatever it last had (or
   // stays empty) rather than showing an error card or feeding the top banner.
   const docsOverTimeAbortRef = useRef(null);
+  const breakdownAbortRef = useRef(null);
   const [docsOverTimeLoading, setDocsOverTimeLoading] = useState(true);
   const loadDocsOverTime = useCallback(async (opts = {}) => {
-    if (!canViewRimDocs) return;
+    if (!rimActive) return;
     if (docsOverTimeAbortRef.current) docsOverTimeAbortRef.current.abort();
     const controller = new AbortController();
     docsOverTimeAbortRef.current = controller;
@@ -2577,7 +2587,7 @@ export default function Unstructured() {
     } finally {
       if (docsOverTimeAbortRef.current === controller) setDocsOverTimeLoading(false);
     }
-  }, [searchParams, docsOverTimeGranularity, canViewRimDocs]);
+  }, [searchParams, docsOverTimeGranularity, rimActive]);
 
   useEffect(() => {
     loadDocsOverTime();
@@ -2587,22 +2597,27 @@ export default function Unstructured() {
   // Domain -> Therapeutic area -> Artifact drill-down. Always the full table,
   // no filters - loaded lazily on first visit to the tab.
   const loadBreakdown = useCallback(async (opts = {}) => {
-    if (!canViewRimDocs) return;
+    if (!rimActive) return;
+    breakdownAbortRef.current?.abort();
+    const controller = new AbortController();
+    breakdownAbortRef.current = controller;
     setBreakdownLoading(true);
     setBreakdownError(null);
     try {
       const params = new URLSearchParams(searchParams);
       if (opts.bypassCache) params.set('bypass_cache', 'true');
-      const data = await fetchJson(`${API_BASE_URL}/api/unstructured/chart/breakdown?${params.toString()}`);
+      const data = await fetchJson(`${API_BASE_URL}/api/unstructured/chart/breakdown?${params.toString()}`, { signal: controller.signal });
+      if (breakdownAbortRef.current !== controller) return;
       setBreakdownRows(data.rows || []);
       setBreakdownSql(data.sql || '');
       setBreakdownLoaded(true);
     } catch (e) {
+      if (e.name === 'AbortError') return;
       setBreakdownError(e.message || 'Failed to load breakdown');
     } finally {
-      setBreakdownLoading(false);
+      if (breakdownAbortRef.current === controller) setBreakdownLoading(false);
     }
-  }, [searchParams, canViewRimDocs]);
+  }, [searchParams, rimActive]);
 
   // Refetch whenever the filter bar changes, and also the first time this
   // tab is opened.
@@ -2718,7 +2733,7 @@ export default function Unstructured() {
   useEffect(() => {
     fetchRows(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersParam, debouncedFileName, debouncedObjectName, debouncedJjTitle, debouncedArtifactName, debouncedJjNumber, sortCol, sortAsc, pageSize, distinctOnly]);
+  }, [filtersParam, debouncedFileName, debouncedObjectName, debouncedJjTitle, debouncedArtifactName, debouncedJjNumber, sortCol, sortAsc, pageSize, distinctOnly, rimActive]);
 
   useEffect(() => {
     loadSummaryAndCharts();
@@ -2731,7 +2746,7 @@ export default function Unstructured() {
   // just means the sidebar falls back to the plain checkbox list (no
   // counts/bars); it's not worth surfacing as a page-level card error.
   useEffect(() => {
-    if (!canViewRimDocs) return;
+    if (!rimActive) return;
     const controller = new AbortController();
     fetchJson(`${API_BASE_URL}/api/unstructured/chart/ingestion-status?${ingestionStatusFacetParams.toString()}`, { signal: controller.signal })
       .then(data => {
@@ -2745,7 +2760,15 @@ export default function Unstructured() {
       })
       .catch(() => {}); // AbortError on superseded requests, or a genuine failure - either way, silently keep the last good value
     return () => controller.abort();
-  }, [ingestionStatusFacetParams, canViewRimDocs]);
+  }, [ingestionStatusFacetParams, rimActive]);
+
+  // Leaving RIM Docs for another explorer: cancel its loads so they stop
+  // holding browser connections. Coming back loads them again (rimActive is a dependency).
+  useEffect(() => {
+    if (rimActive) return;
+    [rowsAbortRef, chartsAbortRef, docsOverTimeAbortRef, breakdownAbortRef].forEach(r => r.current?.abort());
+    setBreakdownLoaded(false);
+  }, [rimActive]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -2754,6 +2777,7 @@ export default function Unstructured() {
       rowsAbortRef.current?.abort();
       chartsAbortRef.current?.abort();
       docsOverTimeAbortRef.current?.abort();
+      breakdownAbortRef.current?.abort();
       document.removeEventListener('mousemove', onColResizeMove);
       document.removeEventListener('mouseup', onColResizeEnd);
     };

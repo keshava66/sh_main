@@ -594,7 +594,8 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
     setLoading(true);
     setError(null);
     onBusyChange?.(true);
-    apiJson(`/api/vr-external/items${bypass ? '?bypass_cache=true' : ''}`)
+    const ctl = new AbortController(); // cancelled on leave, see cleanup
+    apiJson(`/api/vr-external/items${bypass ? '?bypass_cache=true' : ''}`, { signal: ctl.signal })
       .then(res => {
         if (dead) return;
         setData(res);
@@ -606,8 +607,9 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
         setLoading(false);
         onBusyChange?.(false);
       });
-    // leaving mid-load (scope / table switch) must not leave the header on "Syncing…"
-    return () => { dead = true; onBusyChange?.(false); };
+    // leaving mid-load (scope / table switch) must not leave the header on "Syncing…",
+    // and the request is cancelled so it stops holding a browser connection
+    return () => { dead = true; ctl.abort(); onBusyChange?.(false); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey, attempt]);
 

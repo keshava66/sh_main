@@ -1547,10 +1547,11 @@ function RecordDrawer({ meta, record, onClose, labelOf, facetColors }) {
   useEffect(() => {
     if (!record.key) return;
     let dead = false;
-    apiJson(`/api/cortellis/record/${meta.id}?key=${encodeURIComponent(record.key)}`)
+    const ctl = new AbortController(); // cancelled on close so it stops holding a browser connection
+    apiJson(`/api/cortellis/record/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
       .then(res => { if (!dead) setFull(res); })
-      .catch(e => { if (!dead) setError(e.message || String(e)); });
-    return () => { dead = true; };
+      .catch(e => { if (!dead && !isAbort(e)) setError(e.message || String(e)); });
+    return () => { dead = true; ctl.abort(); };
   }, [meta.id, record.key]);
 
   const cols = full?.columns || record.columns || [];
@@ -1765,11 +1766,12 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
 
   useEffect(() => {
     let dead = false;
+    const ctl = new AbortController(); // cancelled on leave so it stops holding a browser connection
     setMetaError(null);
-    apiJson(`/api/cortellis/meta/${source.id}`)
+    apiJson(`/api/cortellis/meta/${source.id}`, { signal: ctl.signal })
       .then(res => { if (!dead) setMeta(res); })
-      .catch(e => { if (!dead) setMetaError(e.message || String(e)); });
-    return () => { dead = true; };
+      .catch(e => { if (!dead && !isAbort(e)) setMetaError(e.message || String(e)); });
+    return () => { dead = true; ctl.abort(); };
   }, [source.id, metaAttempt]);
 
   // overview feeds the rail counts and most charts
