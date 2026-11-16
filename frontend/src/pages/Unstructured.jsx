@@ -2040,14 +2040,21 @@ export default function Unstructured() {
     setEpodDatasetMenuOpen(false);
   };
 
+  // Fetched once per visit to EPOD. (It used to re-run whenever loading ended
+  // with no datasets, so a failing or empty endpoint was called in a tight loop.)
+  const epodDatasetsTried = useRef(false);
   useEffect(() => {
-    if (activeDocType !== 'epod' || epodDatasets.length > 0 || epodDatasetsLoading) return;
+    if (activeDocType !== 'epod') { epodDatasetsTried.current = false; return undefined; }
+    if (epodDatasets.length > 0 || epodDatasetsTried.current) return undefined;
+    epodDatasetsTried.current = true;
+    const ctl = new AbortController();
     setEpodDatasetsLoading(true);
-    fetchJson(`${API_BASE_URL}/api/epod/datasets`)
+    fetchJson(`${API_BASE_URL}/api/epod/datasets`, { signal: ctl.signal })
       .then(data => setEpodDatasets(data.items || []))
-      .catch(() => {})
+      .catch(() => {}) // no list: the explorer falls back to its default dataset
       .finally(() => setEpodDatasetsLoading(false));
-  }, [activeDocType, epodDatasets.length, epodDatasetsLoading]);
+    return () => { ctl.abort(); epodDatasetsTried.current = false; };
+  }, [activeDocType, epodDatasets.length]);
 
   // Nipo's own Explore/Data table sub-tabs - same shape as EPOD's, since
   // Nipo is also a self-contained Postgres explorer (see NipoExplorer), just

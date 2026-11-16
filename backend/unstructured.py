@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -239,8 +240,16 @@ def _get_client():
 # Tiny in-process TTL cache for query results
 # ============================================================================
 
+# Entries are (stored_at, payload, size_bytes). Bounded by count and by an
+# approximate byte budget: a page of document chunks or a 5,000-row VR table
+# can be several MB, and expired entries used to sit in memory until 1,000
+# newer ones pushed them out. Expired ones are now swept every 30s.
 _cache: Dict[str, tuple] = {}
 _cache_lock = threading.Lock()
+_cache_bytes = 0
+_cache_swept = 0.0
+CACHE_MAX_BYTES = int(float(os.environ.get("UNSTRUCTURED_CACHE_MAX_MB") or 256) * 1024 * 1024)
+CACHE_SWEEP_SECONDS = 30
 
 
 def _cache_key(name: str, params: Dict[str, Any]) -> str:
@@ -248,23 +257,50 @@ def _cache_key(name: str, params: Dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _cache_drop(key: str):
+    global _cache_bytes
+    entry = _cache.pop(key, None)
+    if entry:
+        _cache_bytes -= entry[2]
+
+
 def _cache_get(key: str):
     with _cache_lock:
         entry = _cache.get(key)
         if not entry:
             return None
-        ts, payload = entry
+        ts, payload, _ = entry
         if time.time() - ts > CACHE_TTL_SECONDS:
+            _cache_drop(key)
             return None
         return payload
 
 
+def _payload_size(payload: Any) -> int:
+    try:
+        import orjson
+        return len(orjson.dumps(payload, default=str))
+    except Exception:
+        return len(json.dumps(payload, default=str))
+
+
 def _cache_set(key: str, payload: Any):
+    global _cache_bytes, _cache_swept
+    size = _payload_size(payload)  # outside the lock: can take a few ms for big payloads
+    if size > CACHE_MAX_BYTES // 4:
+        return  # one result that big would push out most of the cache; just don't keep it
+    now = time.time()
     with _cache_lock:
-        _cache[key] = (time.time(), payload)
-        if len(_cache) > CACHE_MAX_ENTRIES:
-            oldest_key = min(_cache, key=lambda k: _cache[k][0])
-            _cache.pop(oldest_key, None)
+        _cache_drop(key)
+        _cache[key] = (now, payload, size)
+        _cache_bytes += size
+        if now - _cache_swept > CACHE_SWEEP_SECONDS:
+            _cache_swept = now
+            for k in [k for k, e in _cache.items() if now - e[0] > CACHE_TTL_SECONDS]:
+                _cache_drop(k)
+        # dicts keep insertion order and every set re-inserts, so the first key is the oldest
+        while _cache and (len(_cache) > CACHE_MAX_ENTRIES or _cache_bytes > CACHE_MAX_BYTES):
+            _cache_drop(next(iter(_cache)))
 
 
 def _to_json_safe(val):

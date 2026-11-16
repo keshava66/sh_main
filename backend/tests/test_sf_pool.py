@@ -197,3 +197,63 @@ def test_pg_pool_sql_error_keeps_connection_usable():
         pool.run("select * from no_such_table")
     assert pool.run("select 1")[1] == [(1,)]
     pool.close_all()
+
+
+# ── Explorer result cache (unstructured._cache_*): bounded by age, count and bytes ──
+
+@pytest.fixture
+def ucache(monkeypatch):
+    import unstructured as U
+    U._cache.clear()
+    monkeypatch.setattr(U, "_cache_bytes", 0)
+    monkeypatch.setattr(U, "_cache_swept", 0.0)
+    yield U
+    U._cache.clear()
+    U._cache_bytes = 0
+
+
+def test_cache_roundtrip_and_expiry(ucache, monkeypatch):
+    U = ucache
+    U._cache_set("k", {"rows": [1, 2, 3]})
+    assert U._cache_get("k") == {"rows": [1, 2, 3]}
+    real = U.time.time
+    monkeypatch.setattr(U.time, "time", lambda: real() + U.CACHE_TTL_SECONDS + 1)
+    assert U._cache_get("k") is None
+    assert "k" not in U._cache and U._cache_bytes == 0  # expired entry is freed, not kept
+
+
+def test_cache_stays_under_byte_budget(ucache, monkeypatch):
+    U = ucache
+    monkeypatch.setattr(U, "CACHE_MAX_BYTES", 200_000)
+    blob = "x" * 30_000
+    for i in range(50):
+        U._cache_set(f"k{i}", {"text": blob})
+    assert U._cache_bytes <= 200_000
+    assert U._cache_get("k49") is not None   # newest kept
+    assert U._cache_get("k0") is None        # oldest evicted
+    assert U._cache_bytes == sum(e[2] for e in U._cache.values())
+
+
+def test_cache_skips_oversized_payload(ucache, monkeypatch):
+    U = ucache
+    monkeypatch.setattr(U, "CACHE_MAX_BYTES", 100_000)
+    U._cache_set("small", {"a": 1})
+    U._cache_set("huge", {"text": "x" * 60_000})  # over a quarter of the budget
+    assert U._cache_get("huge") is None and U._cache_get("small") == {"a": 1}
+
+
+def test_cache_sweeps_expired_entries(ucache, monkeypatch):
+    U = ucache
+    for i in range(20):
+        U._cache_set(f"old{i}", {"i": i})
+    real = U.time.time
+    monkeypatch.setattr(U.time, "time", lambda: real() + U.CACHE_TTL_SECONDS + U.CACHE_SWEEP_SECONDS + 1)
+    U._cache_set("fresh", {"i": -1})
+    assert list(U._cache) == ["fresh"]
+
+
+def test_cache_overwrite_keeps_byte_count_right(ucache):
+    U = ucache
+    U._cache_set("k", {"text": "x" * 1000})
+    U._cache_set("k", {"text": "x" * 10})
+    assert U._cache_bytes == U._cache["k"][2]

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
 import { useRBAC } from '../../context/RBACContext';
 import ReactDOM from 'react-dom';
 import LoadingSpinner from './LoadingSpinner';
@@ -102,6 +102,8 @@ function productsOf(text) {
   }
   return out;
 }
+
+const TABLE_PAGE = 100;
 
 function enrich(r) {
   const t = r.TITLE || '';
@@ -585,6 +587,8 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
   const [showSql, setShowSql] = useState(false);
   const [openItem, setOpenItem] = useState(null);
   const [feedLimit, setFeedLimit] = useState(15);
+  // Data table pages through rows instead of drawing thousands at once.
+  const [tablePage, setTablePage] = useState(0);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -621,11 +625,14 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
-  useEffect(() => { setFeedLimit(15); }, [period, cats, areas, signals, query]);
+  useEffect(() => { setFeedLimit(15); setTablePage(0); }, [period, cats, areas, signals, query]);
 
   const all = useMemo(() => (data?.items || []).map(enrich), [data]);
   const periodDays = PERIODS.find(p => p.id === period)?.days ?? null;
-  const q = query.trim().toLowerCase();
+  // The box shows every keystroke at once; filtering thousands of releases and
+  // recounting the facets follows a beat later instead of freezing the typing.
+  const deferredQuery = useDeferredValue(query);
+  const q = deferredQuery.trim().toLowerCase();
 
   // skip = leave one dimension out (so facet counts show siblings); shift = previous period
   const pass = useMemo(() => {
@@ -649,6 +656,9 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
     out.sort((a, b) => sortDesc ? (b.ts || 0) - (a.ts || 0) : (a.ts || 0) - (b.ts || 0));
     return out;
   }, [all, pass, sortDesc]);
+
+  const tablePages = Math.max(1, Math.ceil(rows.length / TABLE_PAGE));
+  const shownPage = Math.min(tablePage, tablePages - 1);
 
   const prevRows = useMemo(() => (periodDays ? all.filter(r => pass(r, null, 1)) : null), [all, pass, periodDays]);
 
@@ -1087,7 +1097,7 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(r => (
+                    {rows.slice(shownPage * TABLE_PAGE, (shownPage + 1) * TABLE_PAGE).map(r => (
                       <tr key={r.ITEM_KEY} onClick={() => openDetail(r)} className="hover:bg-jj-blue-03/5 cursor-pointer align-top">
                         <td className="px-3 py-2.5 border-b border-r border-jj-gray-01">
                           <div className="text-jj-gray-08 font-medium tabular-nums whitespace-nowrap">{fmtDate(r.ts)}</div>
@@ -1133,6 +1143,18 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
                   </tbody>
                 </table>
               </div>
+              {tablePages > 1 && (
+                <div className="flex-shrink-0 flex items-center justify-between px-[18px] py-2.5 border-t border-jj-gray-01 text-[11.5px] font-johnson-text text-jj-gray-06">
+                  <span className="tabular-nums">
+                    {(shownPage * TABLE_PAGE + 1).toLocaleString()}–{Math.min(rows.length, (shownPage + 1) * TABLE_PAGE).toLocaleString()} of {rows.length.toLocaleString()}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setTablePage(shownPage - 1)} disabled={shownPage === 0} className={btn}>Prev</button>
+                    <span className="tabular-nums">{shownPage + 1} / {tablePages}</span>
+                    <button onClick={() => setTablePage(shownPage + 1)} disabled={shownPage >= tablePages - 1} className={btn}>Next</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
