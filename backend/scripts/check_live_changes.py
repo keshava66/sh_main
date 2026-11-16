@@ -183,10 +183,23 @@ def main():
         asyncio.run(check_parallel(base, httpx, name, urls))
 
     srv.should_exit = True
+    # Log out of Snowflake cleanly instead of leaving it to interpreter exit.
+    for close in (A.it_report_pool.close_all, _close_explorer_snowflake):
+        try:
+            close()
+        except Exception:
+            pass
     fails = results.count("FAIL")
     warns = results.count("WARN")
     print(f"\n{len(results) - fails - warns} OK, {warns} WARN, {fails} FAIL")
     sys.exit(1 if fails else 0)
+
+
+def _close_explorer_snowflake():
+    import unstructured as U
+    client = getattr(U._conn_manager, "_client", None)
+    if client is not None:
+        client.close()
 
 
 def free_port():
