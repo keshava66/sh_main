@@ -121,6 +121,24 @@ const FitToBox = ({ children, className = '', align = 'center' }) => {
   );
 };
 
+// Chrome/Edge page zoom. outerWidth ignores page zoom, innerWidth doesn't,
+// so their ratio is the zoom level. Snapped so window borders don't count.
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+const readZoom = () => {
+  if (typeof window === 'undefined' || !window.innerWidth || !window.outerWidth) return 1;
+  const raw = window.outerWidth / window.innerWidth;
+  return ZOOM_STEPS.reduce((a, b) => (Math.abs(b - raw) < Math.abs(a - raw) ? b : a), 1);
+};
+const useBrowserZoom = () => {
+  const [zoom, setZoom] = useState(readZoom);
+  useEffect(() => {
+    const onResize = () => setZoom(readZoom());
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return zoom;
+};
+
 const VALID_CHECKS = ['IT_Checks', 'Data_Validation', 'Business_defined_checks', 'IND_CTA_DQ', 'Safety_DQ'];
 
 const NetworkCanvas = () => {
@@ -272,6 +290,7 @@ const NetworkCanvas = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 function DataQualityEngine() {
   const { hasPermission } = useRBAC();
+  const zoom = useBrowserZoom();
   const [searchParams, setSearchParams] = useSearchParams();
   const [reportData, setReportData] = useState(null);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -562,7 +581,12 @@ function DataQualityEngine() {
     ].filter(item => availableCheckTypes.includes(item.value));
 
     return (
-      <div className="h-full overflow-hidden flex bg-jj-gray-01" style={{ fontFamily: "'JohnsonText', Arial, sans-serif" }}>
+      <div
+        className="overflow-hidden flex bg-jj-gray-01"
+        // Zoomed in: lay out as if at 100% (zoom x the visible height) so the
+        // page grows and <main> scrolls, instead of shrinking to undo the zoom.
+        style={{ height: zoom > 1 ? `${zoom * 100}%` : '100%', fontFamily: "'JohnsonText', Arial, sans-serif" }}
+      >
 
         {/* ═══ LEFT PANEL ═══ */}
         <div className="hidden lg:flex relative overflow-hidden flex-col" style={{ flex: '0 0 58%' }}>
