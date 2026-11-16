@@ -257,3 +257,40 @@ def test_cache_overwrite_keeps_byte_count_right(ucache):
     U._cache_set("k", {"text": "x" * 1000})
     U._cache_set("k", {"text": "x" * 10})
     assert U._cache_bytes == U._cache["k"][2]
+
+
+def test_rim_source_is_configurable_and_validated():
+    import unstructured as U
+    try:
+        U.set_unstructured_dependencies({"source_object": "DB.SCH.RIM_NARROW"})
+        assert "FROM DB.SCH.RIM_NARROW" in U.BASE_CTE
+        U.set_unstructured_dependencies({"source_object": "T; DROP TABLE X"})
+        assert U.DEFAULT_SOURCE_OBJECT in U.BASE_CTE
+    finally:
+        U.set_unstructured_dependencies(None)
+    assert U.DEFAULT_SOURCE_OBJECT in U.BASE_CTE
+
+
+def test_warmer_only_runs_while_rim_docs_is_used(monkeypatch):
+    import unstructured as U
+    runs = []
+    monkeypatch.setattr(U, "_config", {"x": 1})
+    monkeypatch.setattr(U, "WARM_SECONDS", 0.05)
+    monkeypatch.setattr(U, "WARM_IDLE_SECONDS", 0.2)
+    monkeypatch.setattr(U, "warm_default_page", lambda: runs.append(1) or 9)
+    monkeypatch.setattr(U, "_last_used", 0.0)
+    monkeypatch.setattr(U, "_warm_thread", None)
+    U.start_warmer()
+    try:
+        _time.sleep(0.3)
+        assert len(runs) == 1  # startup warm only, nobody is using it
+        U._mark_used()
+        _time.sleep(0.15)
+        assert len(runs) >= 2
+        _time.sleep(0.4)
+        settled = len(runs)
+        _time.sleep(0.2)
+        assert len(runs) == settled  # idle again, stopped refreshing
+    finally:
+        U.stop_warmer()
+        U._warm_thread.join(1)

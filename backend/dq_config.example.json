@@ -115,6 +115,7 @@
     "warehouse": "RIMDOCS_WH",
     "database": "RIMDOCS_DB",
     "schema": "PUBLIC",
+    "source_object": "DEV_RAW.RIMDOCS_CONTROL_STG.ALL_METADATA_JOINED_WITH_TA_CTI",
     "virtual_regulator_table": "DEV_RAW.UNSTRUCTURED_EXPLORER.SUBX_FINAL",
     "immbot_table": "DEV_RAW.UNSTRUCTURED_EXPLORER.IMMBOT_FINAL",
     "vr_external_table": "DEV_RAW.UNSTRUCTURED_EXPLORER.FDA_PRESS_RELEASE_RSS",

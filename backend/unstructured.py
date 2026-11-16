@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -19,7 +20,18 @@ from cryptography.hazmat.primitives import serialization
 
 logger = logging.getLogger(__name__)
 
-unstructured_router = APIRouter(prefix="/api/unstructured", tags=["Unstructured"])
+# Last time a real user hit any RIM Docs endpoint. The cache warmer only runs
+# while people are actually using the page (see start_warmer).
+_last_used = 0.0
+
+
+def _mark_used():
+    global _last_used
+    _last_used = time.time()
+
+
+unstructured_router = APIRouter(prefix="/api/unstructured", tags=["Unstructured"],
+                                dependencies=[Depends(_mark_used)])
 
 # Wired in from app.py via set_unstructured_dependencies()
 _config: Optional[Dict[str, Any]] = None
@@ -50,8 +62,18 @@ DOWNLOAD_CHUNK_ROWS = 10_000  # rows per fetch while streaming a CSV download
 CACHE_TTL_SECONDS = 300  # 5 minutes
 CACHE_MAX_ENTRIES = 1000
 
-# Base view, reused (as a CTE) by every query below.
-BASE_CTE = """
+# Where RIM Docs metadata is read from. The default is the raw view, which
+# Snowflake recomputes on every query (~13.5 GB scan each). Point
+# unstructured.source_object at a narrow table/dynamic table holding just the
+# columns below to make every query read a fraction of that.
+DEFAULT_SOURCE_OBJECT = "DEV_RAW.RIMDOCS_CONTROL_STG.ALL_METADATA_JOINED_WITH_TA_CTI"
+_SOURCE_RE = re.compile(r'^("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)(\.("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)){0,2}$')
+
+
+def _build_base_cte(source: str) -> str:
+    # Only the raw columns the explorer actually uses. PRODUCT_CODE comes from
+    # DCTM_OBJ_LINK, so that one is read too.
+    return f"""
 WITH V AS (
     SELECT FILE_NAME,
            OBJ_ID,
@@ -62,7 +84,7 @@ WITH V AS (
            R_VERSION_LABEL_VIZ,
            OBJECT_NAME,
            ARTIFACT_NAME,
-           PRODUCT_CODE,
+           SPLIT(DCTM_OBJ_LINK, '/')[2]::STRING AS PRODUCT_CODE,
            DOMAIN,
            JJ_NUMBER,
            JJ_TITLE,
@@ -72,46 +94,27 @@ WITH V AS (
            CLINICAL_TRIAL_ID,
            INGESTED_AT,
            FILE_SIZE
-    FROM (
-        SELECT
-            ID_IN_SOURCE_SYSTEM,
-            CONTENT_LOCATION,
-            A_STATUS,
-            STATUS,
-            OBJECT_NAME,
-            GROUP_NAME,
-            R_OBJECT_TYPE,
-            PRIMARY_GROUP,
-            ARTIFACT_NAME,
-            CD_MIGRATED_SOURCE,
-            DCTM_OBJ_LINK,
-            SPLIT(DCTM_OBJ_LINK, '/')[2]::STRING AS PRODUCT_CODE,
-            R_VERSION_LABEL,
-            FILE_NAME,
-            FILE_PATH,
-            DOMAIN,
-            OBJ_ID,
-            JJ_NUMBER,
-            JJ_TITLE,
-            R_VERSION_LABEL_VIZ,
-            A_STATUS_VIZ,
-            R_OBJECT_TYPE_VIZ,
-            INSIGHT_FAMILY_CODE,
-            INSIGHT_THERAPEUTIC_AREA,
-            INSIGHT_FAMILY_NAME,
-            CLINICAL_TRIAL_ID,
-            INGESTED_AT,
-            FILE_SIZE
-        FROM DEV_RAW.RIMDOCS_CONTROL_STG.ALL_METADATA_JOINED_WITH_TA_CTI
-    )
+    FROM {source}
 )
 """
 
 
+# Base view, reused (as a CTE) by every query below. Rebuilt from config in
+# set_unstructured_dependencies().
+BASE_CTE = _build_base_cte(DEFAULT_SOURCE_OBJECT)
+
+
 def set_unstructured_dependencies(config: Optional[Dict[str, Any]]):
     """Called once from app.py with the 'unstructured' section of dq_config.json."""
-    global _config
+    global _config, BASE_CTE
     _config = config
+    source = ((config or {}).get("source_object") or DEFAULT_SOURCE_OBJECT).strip()
+    if not _SOURCE_RE.match(source):
+        logger.error("unstructured.source_object %r is not a valid object name, using default", source)
+        source = DEFAULT_SOURCE_OBJECT
+    BASE_CTE = _build_base_cte(source)
+    if source != DEFAULT_SOURCE_OBJECT:
+        logger.info("RIM Docs reading from %s", source)
     if not _config:
         logger.warning("⚠️ unstructured config not found - Unstructured endpoints will be unavailable")
 
@@ -1065,12 +1068,14 @@ def get_breakdown_chart(
 # Cold, these queries take several seconds each on the ~2.8M row table. Every
 # UNSTRUCTURED_WARM_SECONDS (default 240, inside the 5-minute cache) the
 # unfiltered page - the one everyone opens first - is refreshed in the
-# background, with exactly the parameters the page sends, so it is always
-# served from cache. Repeat runs mostly hit Snowflake's own result cache, so
-# they cost next to nothing until the data changes. 0 turns it off.
+# background, with exactly the parameters the page sends, so it is served from
+# cache. It warms once at startup, then only while someone has used RIM Docs
+# in the last UNSTRUCTURED_WARM_IDLE_MINUTES (default 30), so a quiet app does
+# not keep the warehouse busy re-reading the source. 0 seconds turns it off.
 # ============================================================================
 
 WARM_SECONDS = int(os.environ.get("UNSTRUCTURED_WARM_SECONDS") or 240)
+WARM_IDLE_SECONDS = 60 * int(os.environ.get("UNSTRUCTURED_WARM_IDLE_MINUTES") or 30)
 _warm_stop = threading.Event()
 _warm_thread: Optional[threading.Thread] = None
 
@@ -1125,13 +1130,16 @@ def start_warmer():
         return
 
     def loop():
+        first = True
         while not _warm_stop.is_set():
-            t0 = time.time()
-            try:
-                n = warm_default_page()
-                logger.info(f"Unstructured default page warmed ({n} parts) in {time.time() - t0:.1f}s")
-            except Exception as e:
-                logger.warning(f"Unstructured warm-up failed: {e}")
+            if first or time.time() - _last_used < WARM_IDLE_SECONDS:
+                t0 = time.time()
+                try:
+                    n = warm_default_page()
+                    logger.info(f"Unstructured default page warmed ({n} parts) in {time.time() - t0:.1f}s")
+                except Exception as e:
+                    logger.warning(f"Unstructured warm-up failed: {e}")
+            first = False
             _warm_stop.wait(WARM_SECONDS)
 
     _warm_stop.clear()

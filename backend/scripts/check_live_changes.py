@@ -192,7 +192,9 @@ def main():
 
     srv.should_exit = True
     # Log out of Snowflake cleanly instead of leaving it to interpreter exit.
-    for close in (A.it_report_pool.close_all, _close_explorer_snowflake):
+    bdc = getattr(A, "bdc_connection_manager", None)
+    for close in (A.it_report_pool.close_all, _close_explorer_snowflake,
+                  bdc.close_all if bdc else (lambda: None)):
         try:
             close()
         except Exception:
