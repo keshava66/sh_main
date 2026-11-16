@@ -674,7 +674,7 @@ function DataQualityEngine() {
           className="relative flex-1 flex flex-col bg-white overflow-hidden"
           style={{ backgroundImage: 'radial-gradient(circle, rgba(203,196,188,.22) 1px, transparent 1px)', backgroundSize: '24px 24px', borderLeft: '1px solid #e8e6e3' }}
         >
-          <div className="flex-1 min-h-0 flex flex-col justify-center mx-auto w-full" style={{ padding: 'clamp(16px,5vh,56px) 52px', maxWidth: 480 }}>
+          <div className="flex-1 min-h-0 flex flex-col mx-auto w-full" style={{ justifyContent: 'safe center', padding: 'clamp(12px,4vh,56px) 52px', maxWidth: 480 }}>
 
             {/* Compact hero — shown only when the left panel is hidden (small screens) */}
             <div className="lg:hidden text-center mb-8">
@@ -742,7 +742,7 @@ function DataQualityEngine() {
                           </span>
                         )}
                       </span>
-                      <span className="block font-johnson-text" style={{ fontSize: '12.5px', color: '#81766f', lineHeight: 1.45 }}>
+                      <span className="block font-johnson-text [@media(max-height:900px)]:truncate [@media(max-height:720px)]:hidden" style={{ fontSize: '12.5px', color: '#81766f', lineHeight: 1.45 }}>
                         {item.desc}
                       </span>
                     </span>
@@ -799,7 +799,7 @@ function DataQualityEngine() {
           </div>
 
           {/* Right panel footer */}
-          <div className="flex items-center justify-between flex-wrap" style={{ padding: '0 52px clamp(12px,3vh,32px)', gap: 16 }}>
+          <div className="flex items-center justify-between flex-wrap [@media(max-height:820px)]:hidden" style={{ padding: '0 52px clamp(12px,3vh,32px)', gap: 16 }}>
             <div className="flex items-center" style={{ gap: 8 }}>
               <Icon src={databaseIcon} alt="" className="w-3.5 h-3.5 text-jj-gray-05" style={{ opacity: .55 }} />
               <span className="font-johnson-text" style={{ fontSize: '11.5px', color: '#a39992' }}>
