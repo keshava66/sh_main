@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useSearchParams, Navigate } from 'react-router-dom';
-import LoadingSpinner from './components/LoadingSpinner';
 import BusinessDefinedChecks from './BusinessDefinedChecks';
 import DataValidation from './DataValidation';
 import IndCtaDataQuality from './IndCtaDataQuality';
@@ -334,12 +333,12 @@ function DataQualityEngine() {
   const zoom = useBrowserZoom();
   const engineStatus = ENGINE_STATUS[useEngineHealth()];
   const [searchParams, setSearchParams] = useSearchParams();
+  // The URL is the only record of which suite is open. Back, Forward, Switch check,
+  // a refresh or a pasted link all land on the same screen because nothing else decides it.
+  const rawCheck = searchParams.get('check') ?? '';
+  const activeCheck = VALID_CHECKS.includes(rawCheck) ? rawCheck : '';
+  const runsKey = searchParams.getAll('run').join('|');
   const [reportData, setReportData] = useState(null);
-  const [showWelcome, setShowWelcome] = useState(true);
-  const [selectedCheckType, setSelectedCheckType] = useState(() => {
-    const v = searchParams.get('check') ?? '';
-    return VALID_CHECKS.includes(v) ? v : '';
-  });
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [availableRuns, setAvailableRuns] = useState([]);
@@ -349,10 +348,7 @@ function DataQualityEngine() {
   const [runsLoading, setRunsLoading] = useState(false);
   const [oracleConnections, setOracleConnections] = useState({ configured: [], has_default: true });
 
-  // ── Unmount guard — prevents async callbacks (especially setSearchParams)
-  //    from firing after the user has already navigated away from /dqe.
-  //    Without this, a slow fetch completing after navigation calls setSearchParams
-  //    which acts like navigate() and yanks the user back to the DQE page.
+  // Stops async callbacks writing state after the page is gone.
   const isMountedRef = useRef(true);
   useEffect(() => {
     isMountedRef.current = true;
@@ -375,24 +371,14 @@ function DataQualityEngine() {
       .then(data => { if (data) setOracleConnections(data); })
       .catch(() => {});
   }, []);
-  // Skips the welcome screen entirely and jumps straight to the content.
-  const autoLoadedRef = useRef(false);
-  useEffect(() => {
-    if (autoLoadedRef.current) return;           // already fired
-    if (availableCheckTypes.length !== 1) return; // not a single-access user
-    if (searchParams.get('check')) return;        // URL already has a check (back/forward nav)
-    autoLoadedRef.current = true;
-    const only = availableCheckTypes[0];
-    setSelectedCheckType(only);
-    handleLoadData(null, only, false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableCheckTypes]);
 
-  // ── Track what params are currently "loaded" so the URL effect can compare
-  //    against the actual loaded state instead of stale closure values.
-  const loadedParamsRef = useRef({ check: '' });
-  // Only the newest load may write state; a slow earlier response must not overwrite it.
+  // Only the newest load may write state. Bumping this also cancels a load
+  // that is still running when the user leaves IT Checks.
   const loadSeq = useRef(0);
+  // Which runs the IT Checks data on screen (or in flight) belongs to; null = nothing loaded.
+  const loadedKeyRef = useRef(null);
+  const availableRunsRef = useRef(availableRuns);
+  availableRunsRef.current = availableRuns;
 
   // A table can be refreshed only if its source Oracle connection is configured.
   const canRefreshTable = useCallback((table) => {
@@ -404,63 +390,19 @@ function DataQualityEngine() {
     return connected ? 'active' : 'no-connection';
   }, [hasPermission, oracleConnections]);
 
-  const handleCheckTypeChange = useCallback((t) => {
-    setSelectedCheckType(t);
-    setLoadError('');
-  }, []);
-  // ref so the open handler doesn't need handleLoadData (declared below) in its deps
-  const loadRef = useRef(null);
-  const openCheckType = useCallback((t) => {
-    handleCheckTypeChange(t);
-    loadRef.current?.(null, t, false);
-  }, [handleCheckTypeChange]);
+  // Opening a suite or going back to the picker is just a URL change (a new history entry).
+  const openCheckType = useCallback((t) => setSearchParams({ check: t }), [setSearchParams]);
+  const resetState = useCallback(() => setSearchParams({}), [setSearchParams]);
 
-  const resetState = useCallback(() => {
-    // Do NOT clear loadedParamsRef here. The URL effect reads it to decide whether
-    // a reset is needed — if we clear it before setSearchParams fires, the guard
-    // (loadedParamsRef.current.env !== '') evaluates false and setShowWelcome(true)
-    // is never called, leaving the page stuck on the current view.
-    // The URL effect clears loadedParamsRef itself once it runs the reset.
-    setSearchParams({});
-  }, [setSearchParams]);
-
-  const handleLoadData = useCallback(async (loadDates = null, checkArg = null, fromNavigation = false) => {
-    // loadDates: null = all runs, string = single run, string[] = subset of runs
-    const check = checkArg ?? selectedCheckType;
-
-    if (!check) { setLoadError('Please select a check type.'); return; }
-
-    if (check === 'IT_Checks' && !hasPermission('viewITChecks')) {
-      setLoadError('You do not have permission to access IT Checks.');
-      return;
-    }
-
-    if (check === 'Business_defined_checks' || check === 'IND_CTA_DQ' || check === 'Safety_DQ') {
-      const perm = { IND_CTA_DQ: 'viewIndCtaQuality', Safety_DQ: 'viewSafetyDQ' }[check] || 'viewBusinessChecks';
-      const name = { IND_CTA_DQ: 'IND/CTA Data Quality', Safety_DQ: 'Safety' }[check] || 'Business Defined Checks';
-      if (!hasPermission(perm)) {
-        setLoadError(`You do not have permission to access ${name}.`);
-        return;
-      }
-      if (!fromNavigation) { setSearchParams({ check }); }
-      loadedParamsRef.current = { check };
-      setShowWelcome(false);
-      setLoadError('');
-      return;
-    }
-
+  // Loads IT Checks results. loadDates: null = all runs, string[] = those runs.
+  const loadReport = useCallback(async (loadDates = null) => {
+    const dates = Array.isArray(loadDates) ? loadDates : loadDates ? [loadDates] : [];
+    loadedKeyRef.current = dates.join('|');
     const seq = ++loadSeq.current;
     const stale = () => seq !== loadSeq.current || !isMountedRef.current;
     setIsLoading(true); setLoadError('');
-    // IT Checks opens straight away and shows its own placeholders while data loads.
-    // Mark it loaded first so the URL effect below doesn't fire a second load.
-    if (check === 'IT_Checks') {
-      loadedParamsRef.current = { check };
-      if (!fromNavigation) setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('check', check); return p; });
-      setShowWelcome(false);
-    }
     try {
-      if (!loadDates || !availableRuns.length) {
+      if (!dates.length || !availableRunsRef.current.length) {
         setRunsLoading(true);
         try {
           const datesRes = await apiFetch(`/dq/validation_report_dates`);
@@ -469,24 +411,18 @@ function DataQualityEngine() {
             if (!stale()) setAvailableRuns(datesData.runs || []);
           }
         } finally {
-          setRunsLoading(false);
+          if (!stale()) setRunsLoading(false);
         }
       }
+      if (stale()) return;
 
-      // Build URL based on what was selected
       let url = `/dq/validation_report`;
-      if (Array.isArray(loadDates) && loadDates.length > 0) {
-        url += loadDates.length === 1
-          ? `?load_date=${encodeURIComponent(loadDates[0])}`
-          : `?load_dates=${encodeURIComponent(loadDates.join(','))}`;
-      } else if (typeof loadDates === 'string' && loadDates) {
-        url += `?load_date=${encodeURIComponent(loadDates)}`;
-      }
-      // null → no params → all runs combined
+      if (dates.length === 1) url += `?load_date=${encodeURIComponent(dates[0])}`;
+      else if (dates.length > 1) url += `?load_dates=${encodeURIComponent(dates.join(','))}`;
 
       const res = await apiFetch(url);
       // 404 = no runs saved yet (fresh install / all runs trimmed): show the empty page, not an error
-      const data = res.status === 404 && !loadDates ? { report_data: { pipeline_results: [] }, runs_merged: 0 } : null;
+      const data = res.status === 404 && !dates.length ? { report_data: { pipeline_results: [] }, runs_merged: 0 } : null;
       if (!data && !res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || res.statusText || `HTTP ${res.status}`);
@@ -499,51 +435,36 @@ function DataQualityEngine() {
       setRunsMerged(payload.runs_merged ?? 1);
       setNewestDate(payload.newest_date || null);
       setOldestDate(payload.oldest_date || null);
-      // keep any view params (status, filters, open table…) already in the URL
-      if (!fromNavigation && check !== 'IT_Checks') setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('check', check); return p; });
-      loadedParamsRef.current = { check };
-      setShowWelcome(false);
     } catch (err) {
       if (stale()) return;
       console.error(err);
       setLoadError(`Failed to load data: ${err.message}`);
     } finally { if (!stale()) setIsLoading(false); }
-  }, [selectedCheckType, setSearchParams, hasPermission, availableRuns.length]);
-  loadRef.current = handleLoadData;
+  }, []);
 
-  // ── React to URL changes from back / forward navigation ──────────────────────
-  // Uses loadedParamsRef (not state closures) so the comparison is always fresh.
-  //
-  // History flow:
-  //   /dqe                        → welcome screen (params absent)
-  //   /dqe?check=IT_Checks → data view     (params present)
-  //
-  //  Back  from data view → URL loses params → restore welcome screen
-  //  Forward to data view → URL gains params  → auto-load data
+  // ── Keep IT Checks data in step with the URL ──
+  // Entering IT Checks (click, Forward, refresh, link) loads it; leaving it
+  // cancels any load in flight and drops the data so a late response can't
+  // pull the page back. ITChecksView loads run changes itself while it is open;
+  // loadedKeyRef stops this effect loading the same runs a second time.
+  const canViewIT = hasPermission('viewITChecks');
   useEffect(() => {
-    const check =  searchParams.get('check') ?? '';
-    const isValidNav = VALID_CHECKS.includes(check);
-
-    if (isValidNav) {
-      if (check !== loadedParamsRef.current.check) {
-        setSelectedCheckType(check);
-        const runs = searchParams.getAll('run');
-        handleLoadData(runs.length ? runs : null, check, true);
-      }
-    } else {
-      if (loadedParamsRef.current.check !== '') {
-        loadedParamsRef.current = { check: '' };
-        setShowWelcome(true);
-        setReportData(null);
-        setAvailableRuns([]);
-        setRunsMerged(null);
-        setNewestDate(null);
-        setOldestDate(null);
-        setSelectedCheckType('');
-      }
+    if (activeCheck === 'IT_Checks' && canViewIT) {
+      if (loadedKeyRef.current !== runsKey) loadReport(runsKey ? runsKey.split('|') : null);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]); // only re-run when the URL changes
+    if (loadedKeyRef.current === null) return;
+    loadSeq.current++;
+    loadedKeyRef.current = null;
+    setReportData(null);
+    setAvailableRuns([]);
+    setRunsMerged(null);
+    setNewestDate(null);
+    setOldestDate(null);
+    setIsLoading(false);
+    setRunsLoading(false);
+    setLoadError('');
+  }, [activeCheck, runsKey, canViewIT, loadReport]);
 
   // Re-validate one table and patch it into reportData. Returns the new
   // validation_result; throws on failure so the caller can report it.
@@ -595,15 +516,11 @@ function DataQualityEngine() {
   // ──────────────────────────────────────────────────────────────────────────
   // WELCOME SCREEN
   // ──────────────────────────────────────────────────────────────────────────
-  if (showWelcome) {
-    if (isLoading) return (
-      <div className="flex items-center justify-center h-full overflow-hidden bg-jj-gray-01">
-        <div className="text-center">
-          <LoadingSpinner />
-          <p className="font-johnson-text mt-4 text-sm font-bold text-jj-gray-07">Loading validation data…</p>
-        </div>
-      </div>
-    );
+  if (!activeCheck) {
+    // Only one suite: skip the picker. Replace, so Back doesn't land here and bounce.
+    if (availableCheckTypes.length === 1) {
+      return <Navigate to={{ search: `?check=${availableCheckTypes[0]}` }} replace />;
+    }
 
     const checkTypeOptions = [
       {
@@ -820,15 +737,12 @@ function DataQualityEngine() {
             {/* Suites: one click opens the suite */}
             <ul className="flex flex-col list-none p-0 m-0" style={{ gap: 'clamp(6px,1.4vh,14px)' }}>
               {checkTypeOptions.map(item => {
-                const busy = isLoading && selectedCheckType === item.value;
                 return (
                   <li key={item.value}>
                     <button
                       type="button"
                       onClick={() => openCheckType(item.value)}
-                      disabled={isLoading}
-                      aria-busy={busy}
-                      className="group flex items-center w-full text-left rounded-[14px] border-[1.5px] border-[#e8e6e3] bg-[#faf9f8] shadow-[0_1px_3px_rgba(49,44,42,.04)] transition-[transform,box-shadow,border-color,background-color] duration-200 ease-out hover:border-jj-red hover:bg-[#fff5f4] hover:translate-x-[3px] hover:shadow-[0_10px_28px_-12px_rgba(235,23,0,.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-jj-red focus-visible:ring-offset-2 disabled:cursor-wait disabled:hover:translate-x-0"
+                      className="group flex items-center w-full text-left rounded-[14px] border-[1.5px] border-[#e8e6e3] bg-[#faf9f8] shadow-[0_1px_3px_rgba(49,44,42,.04)] transition-[transform,box-shadow,border-color,background-color] duration-200 ease-out hover:border-jj-red hover:bg-[#fff5f4] hover:translate-x-[3px] hover:shadow-[0_10px_28px_-12px_rgba(235,23,0,.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-jj-red focus-visible:ring-offset-2"
                       style={{ gap: 18, padding: 'clamp(8px,1.8vh,18px) 20px' }}
                     >
                       <span
@@ -864,11 +778,7 @@ function DataQualityEngine() {
                         </span>
                       </span>
                       <span className="flex-none flex items-center justify-center" style={{ width: 20, height: 20 }}>
-                        {busy ? (
-                          <span className="block rounded-full" style={{ width: 16, height: 16, border: '2px solid rgba(235,23,0,.25)', borderTopColor: '#eb1700', animation: 'dqe-spin .75s linear infinite' }} />
-                        ) : (
-                          <Icon src={chevronRightIcon} alt="" className="w-4 h-4 text-jj-gray-05 opacity-60 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:opacity-100" />
-                        )}
+                        <Icon src={chevronRightIcon} alt="" className="w-4 h-4 text-jj-gray-05 opacity-60 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:opacity-100" />
                       </span>
                     </button>
                   </li>
@@ -876,12 +786,6 @@ function DataQualityEngine() {
               })}
             </ul>
 
-            {loadError && (
-              <div role="alert" className="flex items-start gap-3 px-4 py-3 bg-red-50 rounded-lg border border-jj-maroon-05 border-opacity-30" style={{ marginTop: 'clamp(12px,2.5vh,24px)' }}>
-                <Icon src={alertTriangleIcon} alt="" className="w-4 h-4 mt-0.5 flex-shrink-0 text-jj-maroon-05" />
-                <p className="font-johnson-text text-sm text-jj-gray-08">{loadError}</p>
-              </div>
-            )}
           </div>
           </FitToBox>
 
@@ -890,44 +794,32 @@ function DataQualityEngine() {
     );
   }
 
-  // ── Loading ── (IT Checks never gets this — it renders its own placeholders)
-  if (isLoading && selectedCheckType !== 'IT_Checks') return (
-    <div className="flex items-center justify-center min-h-full bg-jj-gray-01">
-      <div className="text-center">
-        <LoadingSpinner />
-        <p className="font-johnson-text mt-4 text-sm font-bold text-jj-gray-07">Loading validation data…</p>
-      </div>
-    </div>
-  );
-
   // ── Business Checks ──
-  if (selectedCheckType === 'Business_defined_checks') {
+  if (activeCheck === 'Business_defined_checks') {
     if (!hasPermission('viewBusinessChecks')) return <Navigate to="/dashboard" replace />;
     return <BusinessDefinedChecks onBack={resetState} />;
   }
 
   // ── IND/CTA Data Quality ──
-  if (selectedCheckType === 'IND_CTA_DQ') {
+  if (activeCheck === 'IND_CTA_DQ') {
     if (!hasPermission('viewIndCtaQuality')) return <Navigate to="/dashboard" replace />;
     return <ErrorBoundary><IndCtaDataQuality onBack={availableCheckTypes.length > 1 ? resetState : null} /></ErrorBoundary>;
   }
 
   // ── Safety (mock data for now) ──
-  if (selectedCheckType === 'Safety_DQ') {
+  if (activeCheck === 'Safety_DQ') {
     if (!hasPermission('viewSafetyDQ')) return <Navigate to="/dashboard" replace />;
     return <ErrorBoundary><SafetyDQ /></ErrorBoundary>;
   }
 
   // ── Data Validation ──
-  if (selectedCheckType === 'Data_Validation') {
+  if (activeCheck === 'Data_Validation') {
     if (!hasPermission('viewDataValidation')) return <Navigate to="/dashboard" replace />;
     return <DataValidation onBack={resetState} />;
   }
 
-  if (!reportData && selectedCheckType !== 'IT_Checks') return null;
-
   // Guard: user could land here via direct URL with no IT Checks permission
-  if (selectedCheckType === 'IT_Checks' && !hasPermission('viewITChecks')) {
+  if (!canViewIT) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -942,7 +834,7 @@ function DataQualityEngine() {
         runsLoading={runsLoading}
         isLoading={isLoading}
         loadError={loadError}
-        onLoadRuns={(dates) => handleLoadData(dates)}
+        onLoadRuns={loadReport}
         onRevalidateTable={handleRevalidateTable}
         canRefreshTable={canRefreshTable}
         canRun={hasPermission('runITChecks')}
