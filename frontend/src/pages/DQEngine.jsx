@@ -10,7 +10,9 @@ import { useRBAC } from '../context/RBACContext';
 // J&J Custom Icons
 import alertTriangleIcon from "/icons/JJ_Icon_Alert_RGB.svg";
 import databaseIcon from "/icons/JJ_Icon_Database_RGB.svg";
-import barChartIcon from "/icons/JJ_Icon_Graph_Chart_RGB.svg";
+import checkIcon from "/icons/JJ_Icon_Check_RGB.svg";
+import analysisIcon from "/icons/JJ_Icon_Analysis_RGB.svg";
+import recordsIcon from "/icons/JJ_Icon_Records_Information_RGB.svg";
 import shieldCheckIcon from "/icons/JJ_Icon_Safety.svg";
 import chevronRightIcon from "/icons/JJ_Icon_Chevron_Right.svg";
 import { apiFetch } from '../utils/apiClient';
@@ -137,6 +139,45 @@ const useBrowserZoom = () => {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   return zoom;
+};
+
+// Polls the backend /health route so the welcome badge shows real status.
+// 'checking' until the first answer, then 'online' | 'degraded' | 'offline'.
+const HEALTH_POLL_MS = 60_000;
+const useEngineHealth = () => {
+  const [status, setStatus] = useState('checking');
+  useEffect(() => {
+    let alive = true;
+    let timer;
+    const check = async () => {
+      try {
+        const res = await apiFetch('/health');
+        const body = res.ok ? await res.json().catch(() => ({})) : null;
+        if (!alive) return;
+        if (!body) setStatus('offline');
+        else setStatus(body.database && body.database.ok === false ? 'degraded' : 'online');
+      } catch {
+        if (alive) setStatus('offline');
+      }
+    };
+    const schedule = () => {
+      clearTimeout(timer);
+      if (document.visibilityState === 'visible') timer = setTimeout(async () => { await check(); schedule(); }, HEALTH_POLL_MS);
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') { check(); schedule(); } };
+    check();
+    schedule();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { alive = false; clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+  return status;
+};
+
+const ENGINE_STATUS = {
+  checking: { label: 'Checking engine',  color: '#a39992', pulse: false },
+  online:   { label: 'Engine online',    color: '#328714', pulse: true },
+  degraded: { label: 'Database degraded', color: '#c97a00', pulse: true },
+  offline:  { label: 'Engine offline',   color: '#eb1700', pulse: false },
 };
 
 const VALID_CHECKS = ['IT_Checks', 'Data_Validation', 'Business_defined_checks', 'IND_CTA_DQ', 'Safety_DQ'];
@@ -291,6 +332,7 @@ const NetworkCanvas = () => {
 function DataQualityEngine() {
   const { hasPermission } = useRBAC();
   const zoom = useBrowserZoom();
+  const engineStatus = ENGINE_STATUS[useEngineHealth()];
   const [searchParams, setSearchParams] = useSearchParams();
   const [reportData, setReportData] = useState(null);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -366,6 +408,12 @@ function DataQualityEngine() {
     setSelectedCheckType(t);
     setLoadError('');
   }, []);
+  // ref so the open handler doesn't need handleLoadData (declared below) in its deps
+  const loadRef = useRef(null);
+  const openCheckType = useCallback((t) => {
+    handleCheckTypeChange(t);
+    loadRef.current?.(null, t, false);
+  }, [handleCheckTypeChange]);
 
   const resetState = useCallback(() => {
     // Do NOT clear loadedParamsRef here. The URL effect reads it to decide whether
@@ -461,6 +509,7 @@ function DataQualityEngine() {
       setLoadError(`Failed to load data: ${err.message}`);
     } finally { if (!stale()) setIsLoading(false); }
   }, [selectedCheckType, setSearchParams, hasPermission, availableRuns.length]);
+  loadRef.current = handleLoadData;
 
   // ── React to URL changes from back / forward navigation ──────────────────────
   // Uses loadedParamsRef (not state closures) so the comparison is always fresh.
@@ -558,27 +607,30 @@ function DataQualityEngine() {
 
     const checkTypeOptions = [
       {
-        value: 'IT_Checks', num: '01', label: 'IT Checks',
+        value: 'IT_Checks', icon: databaseIcon, label: 'IT Checks',
         desc: 'Row counts, schema validation, constraint reconciliation etc.',
       },
       {
-        value: 'Data_Validation', num: '02', label: 'Data Validation',
+        value: 'Data_Validation', icon: checkIcon, label: 'Data Validation',
         desc: 'Guided source-to-target validation with a redesigned setup flow.',
         beta: true,
       },
       {
-        value: 'Business_defined_checks', num: '03', label: 'Business Defined Checks',
+        value: 'Business_defined_checks', icon: analysisIcon, label: 'Business Defined Checks',
         desc: 'Custom logic and data-quality rules tailored to your domain.',
       },
       {
-        value: 'IND_CTA_DQ', num: '04', label: 'IND/CTA Data Quality',
+        value: 'IND_CTA_DQ', icon: recordsIcon, label: 'IND/CTA Data Quality',
         desc: 'Live IND/CTA issue tracker: open vs fixed, rule hotspots, name match scores.',
       },
       {
-        value: 'Safety_DQ', num: '05', label: 'Safety',
+        value: 'Safety_DQ', icon: shieldCheckIcon, label: 'Safety',
         desc: 'Safety data quality dashboard: pass rates by dimension, domain and rule.',
       },
-    ].filter(item => availableCheckTypes.includes(item.value));
+    ]
+      .filter(item => availableCheckTypes.includes(item.value))
+      // number after filtering so a user with three suites sees 01-03, not 01, 03, 05
+      .map((item, i) => ({ ...item, num: String(i + 1).padStart(2, '0') }));
 
     return (
       <div
@@ -665,11 +717,13 @@ function DataQualityEngine() {
             {/* Engine status */}
             <div className="flex items-center justify-between flex-wrap" style={{ gap: 16 }}>
               <div className="inline-flex items-center" style={{ gap: 8, padding: '7px 14px', borderRadius: 999, background: 'rgba(255,255,255,.68)', border: '1px solid #e8e6e3', backdropFilter: 'blur(10px)' }}>
-                <span className="relative block flex-none rounded-full" style={{ width: 7, height: 7, background: '#328714' }}>
-                  <span className="absolute inset-0 block rounded-full" style={{ background: '#328714', animation: 'dqe-pulse 2.6s ease-out infinite' }} />
+                <span className="relative block flex-none rounded-full" style={{ width: 7, height: 7, background: engineStatus.color }}>
+                  {engineStatus.pulse && (
+                    <span className="absolute inset-0 block rounded-full" style={{ background: engineStatus.color, animation: 'dqe-pulse 2.6s ease-out infinite' }} />
+                  )}
                 </span>
-                <span className="font-johnson-text font-bold uppercase" style={{ fontSize: '10.5px', letterSpacing: '.08em', color: '#6e6259' }}>
-                  Engine Online
+                <span role="status" aria-live="polite" className="font-johnson-text font-bold uppercase" style={{ fontSize: '10.5px', letterSpacing: '.08em', color: '#6e6259' }}>
+                  {engineStatus.label}
                 </span>
               </div>
             </div>
@@ -689,7 +743,7 @@ function DataQualityEngine() {
             <FitToBox className="flex-1" align="start">
             <div style={{ padding: 'clamp(12px,3vh,28px) 0 clamp(8px,2vh,20px)' }}>
               <p className="font-johnson-text font-bold uppercase" style={{ fontSize: 11, letterSpacing: '.26em', color: '#0f68b2', margin: '0 0 clamp(10px,3vh,28px)' }}>
-                Source-to-Target Validation
+                Data Quality Suite
               </p>
               <h1 className="font-johnson-display" style={{ fontWeight: 700, fontSize: 'clamp(32px,min(4.6vw,7.5vh),72px)', lineHeight: .97, color: '#312c2a', margin: 0, letterSpacing: '-.025em' }}>
                 Data Quality
@@ -701,9 +755,8 @@ function DataQualityEngine() {
                 <div style={{ width: 52, height: 3, background: '#eb1700' }} />
               </div>
               <p className="font-johnson-text" style={{ fontWeight: 300, fontSize: 'clamp(14px,1.1vw,17px)', lineHeight: 1.55, color: '#6e6259', maxWidth: 380, margin: '0 0 clamp(12px,3.5vh,36px)' }}>
-                One platform, two lenses: automated IT checks confirm structural
-                integrity, while business-defined checks apply your own data-quality
-                rules — together catching anomalies before they reach production.
+                IT checks, source-to-target validation and business rules, plus
+                live IND/CTA and Safety quality dashboards, in one place.
               </p>
 
               {/* Connected environments */}
@@ -761,121 +814,77 @@ function DataQualityEngine() {
               Choose your check type
             </h2>
             <p className="font-johnson-text" style={{ fontWeight: 400, fontSize: 14, color: '#81766f', margin: '0 0 clamp(12px,3.5vh,36px)', lineHeight: 1.5 }}>
-              Select a suite to load its latest validation analysis.
+              Pick a suite to open its latest results.
             </p>
 
-            {/* Check type options */}
-            <div className="flex flex-col" style={{ gap: 'clamp(6px,1.4vh,14px)', marginBottom: 'clamp(12px,3vh,32px)' }}>
+            {/* Suites: one click opens the suite */}
+            <ul className="flex flex-col list-none p-0 m-0" style={{ gap: 'clamp(6px,1.4vh,14px)' }}>
               {checkTypeOptions.map(item => {
-                const selected = selectedCheckType === item.value;
+                const busy = isLoading && selectedCheckType === item.value;
                 return (
-                  <button
-                    key={item.value}
-                    onClick={() => handleCheckTypeChange(item.value)}
-                    aria-pressed={selected}
-                    className="flex items-center w-full text-left"
-                    style={{
-                      gap: 18, padding: 'clamp(8px,1.8vh,18px) 20px', borderRadius: 14, cursor: 'pointer',
-                      transition: 'box-shadow .18s ease, transform .18s ease, border-color .18s ease, background .18s ease',
-                      background: selected ? '#fff5f4' : '#faf9f8',
-                      border: selected ? '1.5px solid #eb1700' : '1.5px solid #e8e6e3',
-                      boxShadow: selected ? '0 10px 28px -12px rgba(235,23,0,.28)' : '0 1px 3px rgba(49,44,42,.04)',
-                      transform: selected ? 'translateX(3px)' : 'none',
-                    }}
-                  >
-                    <span
-                      className="flex-none text-right font-johnson-display italic"
-                      style={{ fontWeight: 300, fontSize: 30, lineHeight: 1, width: 32, color: selected ? '#eb1700' : '#cbc4bc', transition: 'color .18s ease' }}
+                  <li key={item.value}>
+                    <button
+                      type="button"
+                      onClick={() => openCheckType(item.value)}
+                      disabled={isLoading}
+                      aria-busy={busy}
+                      className="group flex items-center w-full text-left rounded-[14px] border-[1.5px] border-[#e8e6e3] bg-[#faf9f8] shadow-[0_1px_3px_rgba(49,44,42,.04)] transition-[transform,box-shadow,border-color,background-color] duration-200 ease-out hover:border-jj-red hover:bg-[#fff5f4] hover:translate-x-[3px] hover:shadow-[0_10px_28px_-12px_rgba(235,23,0,.28)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-jj-red focus-visible:ring-offset-2 disabled:cursor-wait disabled:hover:translate-x-0"
+                      style={{ gap: 18, padding: 'clamp(8px,1.8vh,18px) 20px' }}
                     >
-                      {item.num}
-                    </span>
-                    <span className="flex-1 min-w-0">
-                      <span className="flex items-center" style={{ gap: 10, marginBottom: 6 }}>
-                        <span className="flex items-center justify-center flex-none rounded-lg" style={{ width: 30, height: 30, background: 'rgba(235,23,0,.07)' }}>
-                          <Icon src={barChartIcon} alt="" className="w-4 h-4 text-jj-red" />
-                        </span>
-                        <span className="font-johnson-display" style={{ fontWeight: 700, fontSize: 16, color: '#312c2a', letterSpacing: '-.01em' }}>
-                          {item.label}
-                        </span>
-                        {item.beta && (
-                          <span
-                            className="flex-none font-johnson-text"
-                            style={{
-                              fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase',
-                              padding: '2px 7px', borderRadius: 999,
-                              color: '#eb1700', background: 'rgba(235,23,0,.08)', border: '1px solid rgba(235,23,0,.25)',
-                            }}
-                          >
-                            Beta
+                      <span
+                        aria-hidden="true"
+                        className="flex-none text-right font-johnson-display italic text-[#cbc4bc] transition-colors duration-200 group-hover:text-jj-red"
+                        style={{ fontWeight: 300, fontSize: 30, lineHeight: 1, width: 32 }}
+                      >
+                        {item.num}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center" style={{ gap: 10, marginBottom: 6 }}>
+                          <span className="flex items-center justify-center flex-none rounded-lg" style={{ width: 30, height: 30, background: 'rgba(235,23,0,.07)' }}>
+                            <Icon src={item.icon} alt="" className="w-4 h-4 text-jj-red" />
                           </span>
+                          <span className="font-johnson-display" style={{ fontWeight: 700, fontSize: 16, color: '#312c2a', letterSpacing: '-.01em' }}>
+                            {item.label}
+                          </span>
+                          {item.beta && (
+                            <span
+                              className="flex-none font-johnson-text"
+                              style={{
+                                fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase',
+                                padding: '2px 7px', borderRadius: 999,
+                                color: '#eb1700', background: 'rgba(235,23,0,.08)', border: '1px solid rgba(235,23,0,.25)',
+                              }}
+                            >
+                              Beta
+                            </span>
+                          )}
+                        </span>
+                        <span className="block font-johnson-text" style={{ fontSize: '13.5px', color: '#6e6259', lineHeight: 1.45 }}>
+                          {item.desc}
+                        </span>
+                      </span>
+                      <span className="flex-none flex items-center justify-center" style={{ width: 20, height: 20 }}>
+                        {busy ? (
+                          <span className="block rounded-full" style={{ width: 16, height: 16, border: '2px solid rgba(235,23,0,.25)', borderTopColor: '#eb1700', animation: 'dqe-spin .75s linear infinite' }} />
+                        ) : (
+                          <Icon src={chevronRightIcon} alt="" className="w-4 h-4 text-jj-gray-05 opacity-60 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:opacity-100" />
                         )}
                       </span>
-                      <span className="block font-johnson-text" style={{ fontSize: '12.5px', color: '#81766f', lineHeight: 1.45 }}>
-                        {item.desc}
-                      </span>
-                    </span>
-                    <span
-                      className="flex-none flex items-center justify-center rounded-full"
-                      style={{
-                        width: 20, height: 20,
-                        border: selected ? '2px solid #eb1700' : '2px solid #cbc4bc',
-                        background: selected ? '#fff0ef' : 'transparent',
-                        transition: 'border-color .18s ease, background .18s ease',
-                      }}
-                    >
-                      {selected && <span className="block rounded-full" style={{ width: 8, height: 8, background: '#eb1700' }} />}
-                    </span>
-                  </button>
+                    </button>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
 
-            {/* Error */}
             {loadError && (
-              <div className="flex items-start gap-3 px-4 py-3 bg-red-50 rounded-lg border border-jj-maroon-05 border-opacity-30 mb-6">
-                <Icon src={alertTriangleIcon} alt="Error" className="w-4 h-4 mt-0.5 flex-shrink-0 text-jj-maroon-05" />
+              <div role="alert" className="flex items-start gap-3 px-4 py-3 bg-red-50 rounded-lg border border-jj-maroon-05 border-opacity-30" style={{ marginTop: 'clamp(12px,2.5vh,24px)' }}>
+                <Icon src={alertTriangleIcon} alt="" className="w-4 h-4 mt-0.5 flex-shrink-0 text-jj-maroon-05" />
                 <p className="font-johnson-text text-sm text-jj-gray-08">{loadError}</p>
               </div>
             )}
-
-            {/* Submit */}
-            <button
-              onClick={() => handleLoadData()}
-              disabled={isLoading || !selectedCheckType}
-              className="flex items-center justify-center w-full font-johnson-display"
-              style={{
-                gap: 10, padding: 'clamp(10px,1.6vh,15px) 24px', borderRadius: 13, border: 'none', fontWeight: 700, fontSize: 16,
-                letterSpacing: '-.01em', color: '#fff', cursor: (!selectedCheckType || isLoading) ? 'not-allowed' : 'pointer',
-                transition: 'opacity .2s ease, box-shadow .2s ease',
-                background: (!selectedCheckType || isLoading) ? '#cbc4bc' : '#eb1700',
-                boxShadow: (!selectedCheckType || isLoading) ? 'none' : '0 12px 28px -10px rgba(235,23,0,.5)',
-                opacity: (!selectedCheckType || isLoading) ? .7 : 1,
-              }}
-            >
-              {isLoading ? (
-                <>
-                  <span className="block flex-none rounded-full" style={{ width: 17, height: 17, border: '2.5px solid rgba(255,255,255,.4)', borderTopColor: '#fff', animation: 'dqe-spin .75s linear infinite' }} />
-                  Loading validation data…
-                </>
-              ) : (
-                <>
-                  Load Validation Analysis
-                  {selectedCheckType && <Icon src={chevronRightIcon} alt="" className="w-4 h-4 text-white" />}
-                </>
-              )}
-            </button>
           </div>
           </FitToBox>
 
-          {/* Right panel footer */}
-          <div className="flex items-center justify-between flex-wrap" style={{ padding: '0 52px clamp(12px,3vh,32px)', gap: 16 }}>
-            <div className="flex items-center" style={{ gap: 8 }}>
-              <Icon src={databaseIcon} alt="" className="w-3.5 h-3.5 text-jj-gray-05" style={{ opacity: .55 }} />
-              <span className="font-johnson-text" style={{ fontSize: '11.5px', color: '#a39992' }}>
-                DEV · QA · PRD environments
-              </span>
-            </div>
-          </div>
         </div>
       </div>
     );
