@@ -2240,7 +2240,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
     let dead = false;
     const ctl = new AbortController();
     apiJson(`/api/cortellis/mirror/${meta.id}?key=${encodeURIComponent(key)}`, { signal: ctl.signal })
-      .then(res => { if (!dead) { setGot({ key, data: res }); onFound?.((res.forms || []).length > 0); } })
+      .then(res => { if (!dead) setGot({ key, data: res }); })
       .catch(e => { if (!dead && !isAbort(e)) setGot({ key, failed: true }); });
     return () => { dead = true; ctl.abort(); };
   }, [meta.id, key, onFound]);
@@ -2265,12 +2265,16 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
     const found = mine === 'rs' ? forms.some(f => stereoInfo(f.name)?.desc === flipRS(me.desc)) : forms.some(f => stereoKind(f.name) === other);
     if (!found) setFarWant({ key, n: 1 });
   }, [data, mine, me?.desc, key, farWant]);
-  if (failed || !data) return null;
+  // shown only when something was found, here or in another Cortellis table; otherwise
+  // the section (and its link in the drawer's section bar) stays hidden
+  const farFound = !!far && !far.error && (far.tables || []).length > 0;
+  const visible = !failed && !!data && ((data.forms || []).length > 0 || farFound);
+  useEffect(() => { onFound?.(visible); }, [visible, onFound]);
+  if (!visible) return null;
   const forms = data.forms || [];
   const single = (f) => ['minus', 'plus', 'rs'].includes(stereoKind(f.name));
   const hands = forms.filter(single);
   const originals = forms.filter(f => !single(f));
-  if (!forms.length && !mine) return null;
   // the other hand: (-) <-> (+), (R) <-> (S), (2R,4S) <-> (2S,4R)
   const otherDesc = mine === 'rs' ? flipRS(me.desc) : null;
   const twin = mine === 'minus' ? hands.find(f => stereoKind(f.name) === 'plus')
@@ -2304,7 +2308,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
   return (
     <Section icon={<><path d="M8 2v12" strokeDasharray="2 2" /><path d="M6 4 3 8l3 4M10 4l3 4-3 4" /></>} title="Mirror forms"
       sub={`Other records of the same molecule${plain ? ` (“${plain}”)` : ''}`}>
-      {mine && (
+      {mine && (twin || farTwin.length > 0) && (
         <div className="grid grid-cols-[1fr_30px_1fr] items-stretch">
           {formCard({ key: record.key, name: title, status, smiles }, true)}
           <div className="relative flex items-center justify-center" aria-hidden="true">
@@ -2314,19 +2318,14 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
           {twin ? formCard(twin, false) : (
             <div className="rounded-[14px] border-[1.5px] border-dashed border-jj-gray-03 bg-[#fbfaf9] p-3 flex flex-col justify-center gap-1 text-[12.5px] font-johnson-text text-jj-gray-07">
               <b className="text-jj-gray-08">{twinName}</b>
-              <span>Not in {meta.label}.</span>
-              {farWanted && !far && <span className="text-[11.5px] text-jj-gray-06 animate-pulse">Checking the other Cortellis tables…</span>}
-              {far?.error && <span className="text-[11.5px] text-jj-gray-06">Couldn't check the other tables. <button onClick={askFar} className="text-jj-blue-03 underline">Retry</button></span>}
-              {far && !far.error && (farTwin.length ? (
-                <span className="flex flex-col gap-1 mt-1">
-                  <span className="text-jj-gray-08">Found in:</span>
-                  {farTwin.map(t => (
-                    <button key={t.id} onClick={() => onSearchIn?.(t.id, far.twin || plain)} className="self-start text-left text-[12px] text-jj-blue-03 hover:underline">
-                      {t.label} · {t.twin_hits.length}{t.twin_hits.length === 25 ? '+' : ''} record{t.twin_hits.length === 1 ? '' : 's'} →
-                    </button>
-                  ))}
-                </span>
-              ) : <span className="text-[11.5px]">Not found in any other Cortellis table either.</span>)}
+              <span className="flex flex-col gap-1 mt-1">
+                <span className="text-jj-gray-08">Found in:</span>
+                {farTwin.map(t => (
+                  <button key={t.id} onClick={() => onSearchIn?.(t.id, far.twin || plain)} className="self-start text-left text-[12px] text-jj-blue-03 hover:underline">
+                    {t.label} · {t.twin_hits.length}{t.twin_hits.length === 25 ? '+' : ''} record{t.twin_hits.length === 1 ? '' : 's'} →
+                  </button>
+                ))}
+              </span>
             </div>
           )}
         </div>
@@ -2353,9 +2352,6 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
           this single-hand version is <b style={{ color: statusColor(status) }}>{status || 'status unknown'}</b>.
         </div>
       )}
-      {mine && !forms.length && (
-        <div className="text-[12px] font-johnson-text text-jj-gray-07">No other record named “{plain}” in {meta.label}. Names written differently in Cortellis won't match.</div>
-      )}
       {far && !far.error && far.tables.length > 0 && (
         <div className="rounded-xl border border-jj-gray-02 overflow-hidden">
           <div className="px-3.5 py-2.5 bg-[#faf9f8] border-b border-jj-gray-01 flex items-baseline justify-between gap-3">
@@ -2371,9 +2367,6 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
             </div>
           ))}
         </div>
-      )}
-      {far && !far.error && !far.tables.length && plain.length >= 4 && (
-        <div className="text-[11.5px] font-johnson-text text-jj-gray-06">“{plain}” isn't mentioned in any other Cortellis table{far.incomplete ? ' that answered in time' : ''}.</div>
       )}
       {far?.incomplete && far.tables.length > 0 && (
         <div className="text-[11px] font-johnson-text text-jj-gray-06">Some tables didn't answer in time, so this list may be short.</div>
@@ -2469,7 +2462,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
 
   const sections = [
     journey && ['journey', 'Journey'],
-    meta.facets.includes(STEREO) && (stereoKind(title) || mirrorFound) && ['mirror', 'Mirror forms'],
+    meta.facets.includes(STEREO) && mirrorFound && ['mirror', 'Mirror forms'],
     indicationCols.length > 0 && ['indications', 'Indications'],
     (structure || chemCols.length > 0) && ['chemistry', 'Chemistry'],
     events.length > 0 && ['timeline', 'Timeline'],
