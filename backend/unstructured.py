@@ -64,7 +64,7 @@ CACHE_MAX_ENTRIES = 1000
 
 # Where RIM Docs metadata is read from. The default is the raw view, which
 # Snowflake recomputes on every query (~13.5 GB scan each). Point
-# unstructured.source_object at a narrow table/dynamic table holding just the
+# unstructured.rimdocs_table at a narrow table/dynamic table holding just the
 # columns below to make every query read a fraction of that.
 DEFAULT_SOURCE_OBJECT = "DEV_RAW.RIMDOCS_CONTROL_STG.ALL_METADATA_JOINED_WITH_TA_CTI"
 _SOURCE_RE = re.compile(r'^("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)(\.("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)){0,2}$')
@@ -108,9 +108,9 @@ def set_unstructured_dependencies(config: Optional[Dict[str, Any]]):
     """Called once from app.py with the 'unstructured' section of dq_config.json."""
     global _config, BASE_CTE
     _config = config
-    source = ((config or {}).get("source_object") or DEFAULT_SOURCE_OBJECT).strip()
+    source = ((config or {}).get("rimdocs_table") or DEFAULT_SOURCE_OBJECT).strip()
     if not _SOURCE_RE.match(source):
-        logger.error("unstructured.source_object %r is not a valid object name, using default", source)
+        logger.error("unstructured.rimdocs_table %r is not a valid object name, using default", source)
         source = DEFAULT_SOURCE_OBJECT
     BASE_CTE = _build_base_cte(source)
     if source != DEFAULT_SOURCE_OBJECT:

@@ -262,9 +262,9 @@ def test_cache_overwrite_keeps_byte_count_right(ucache):
 def test_rim_source_is_configurable_and_validated():
     import unstructured as U
     try:
-        U.set_unstructured_dependencies({"source_object": "DB.SCH.RIM_NARROW"})
+        U.set_unstructured_dependencies({"rimdocs_table": "DB.SCH.RIM_NARROW"})
         assert "FROM DB.SCH.RIM_NARROW" in U.BASE_CTE
-        U.set_unstructured_dependencies({"source_object": "T; DROP TABLE X"})
+        U.set_unstructured_dependencies({"rimdocs_table": "T; DROP TABLE X"})
         assert U.DEFAULT_SOURCE_OBJECT in U.BASE_CTE
     finally:
         U.set_unstructured_dependencies(None)
