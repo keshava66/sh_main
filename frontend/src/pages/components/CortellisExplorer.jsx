@@ -53,7 +53,9 @@ const niceCol = (c) => c.replace(/^trailInfo_/, '').replace(/_/g, ' ').replace(/
 function fmtDate(v, opts = { month: 'short', day: 'numeric', year: 'numeric' }) {
   if (!v) return '';
   const d = new Date(typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T12:00:00` : v);
-  return isNaN(d) ? String(v) : d.toLocaleDateString('en-US', opts);
+  // midnight UTC is a plain calendar date: show that day, not the evening before in US time
+  const dayOnly = typeof v === 'string' && /T00:00:00(\.0+)?Z$/.test(v);
+  return isNaN(d) ? String(v) : d.toLocaleDateString('en-US', dayOnly ? { ...opts, timeZone: 'UTC' } : opts);
 }
 
 function daysAgo(v) {
@@ -1547,6 +1549,112 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
 
 /* ============================== record drawer ============================== */
 
+/* ---- nested values (JSON arrays / objects) in the record drawer ---- */
+
+// '["a","b"]' or '[{"x":1}]' in a cell -> the parsed value, anything else -> null
+function parseNested(v) {
+  if (v && typeof v === 'object') return v;
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (!(t.startsWith('[') || t.startsWith('{'))) return null;
+  try { return JSON.parse(t); } catch { return null; }
+}
+
+// keyEventDate -> Key event date
+const humanKey = (k) => String(k).replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/\s+/g, ' ').trim()
+  .replace(/^./, c => c.toUpperCase()).replace(/ (\w)/g, (m, c) => ' ' + c.toLowerCase())
+  .replace(/\b(icd\d*|mesh|id|url|fda|ema)\b/gi, w => w.toUpperCase());
+
+const isScalar = (v) => v == null || typeof v !== 'object';
+const scalarText = (v) => (looksLikeDate(v) ? fmtDate(v) : String(v));
+// the field that names an item: name, title, label, ...History, or the first text field
+const HEAD_RE = /(^|[a-z])(name|title|label|history|term|description)$/i;
+const headKey = (o) => Object.keys(o).find(k => HEAD_RE.test(k) && typeof o[k] === 'string' && o[k])
+  || Object.keys(o).find(k => typeof o[k] === 'string' && o[k] && !looksLikeDate(o[k]) && !/id$/i.test(k));
+const dateKey = (o) => Object.keys(o).find(k => looksLikeDate(o[k]));
+
+function NestedValue({ value, depth = 0 }) {
+  const [all, setAll] = useState(false);
+  if (isScalar(value)) return isEmpty(value) ? <span className="text-jj-gray-04">—</span> : <span>{scalarText(value)}</span>;
+
+  if (!Array.isArray(value)) {
+    const entries = Object.entries(value).filter(([, v]) => !isEmpty(v) && !(Array.isArray(v) && !v.length));
+    return (
+      <div className="flex flex-col gap-1">
+        {entries.map(([k, v]) => (
+          <div key={k} className="flex gap-2">
+            <span className="text-jj-gray-07 flex-shrink-0">{humanKey(k)}</span>
+            <span className="min-w-0 text-jj-gray-08">{isScalar(v) ? scalarText(v) : <NestedValue value={v} depth={depth + 1} />}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const items = value.filter(v => !isEmpty(v));
+  if (!items.length) return <span className="text-jj-gray-04">—</span>;
+  const cap = depth ? 12 : 20;
+  const shown = all ? items : items.slice(0, cap);
+  const more = items.length > cap && (
+    <button onClick={() => setAll(a => !a)} className="self-start text-[11px] font-johnson-text text-jj-blue-03 underline">
+      {all ? 'Show less' : `Show all ${items.length}`}
+    </button>
+  );
+
+  // plain values, or small objects like {id, name}: chips
+  const small = (o) => !isScalar(o) && !Array.isArray(o) && Object.values(o).every(isScalar) && Object.keys(o).length <= 2;
+  if (items.every(isScalar) || items.every(small)) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap gap-1">
+          {shown.map((o, i) => {
+            const head = isScalar(o) ? scalarText(o) : (o[headKey(o)] ?? scalarText(Object.values(o)[0]));
+            const sub = isScalar(o) ? null : Object.entries(o).find(([, v]) => v !== head && !isEmpty(v))?.[1];
+            return (
+              <span key={i} className="inline-flex items-center gap-1.5 rounded-md bg-[#f4f2f0] border border-jj-gray-02 px-2 py-[2px] text-[11.5px] text-jj-gray-08">
+                {head}{sub != null && <span className="text-jj-gray-07 tabular-nums">{scalarText(sub)}</span>}
+              </span>
+            );
+          })}
+        </div>
+        {more}
+      </div>
+    );
+  }
+
+  // dated items (key events, changes): a small timeline, oldest first as stored
+  const objs = items.filter(o => !isScalar(o) && !Array.isArray(o));
+  const dk = objs.length === items.length && objs.every(o => dateKey(o)) ? dateKey(objs[0]) : null;
+  return (
+    <div className={`flex flex-col gap-1.5 ${dk ? 'border-l-2 border-jj-gray-02 pl-3 ml-1' : ''}`}>
+      {shown.map((o, i) => {
+        if (isScalar(o) || Array.isArray(o)) return <NestedValue key={i} value={o} depth={depth + 1} />;
+        const hk = headKey(o);
+        const rest = Object.entries(o).filter(([k, v]) => k !== hk && k !== dk && !isEmpty(v) && !(Array.isArray(v) && !v.length) && !(k === 'id' && hk));
+        return (
+          <div key={i} className={dk ? 'relative' : 'rounded-lg border border-jj-gray-02 bg-[#faf9f8] px-2.5 py-2'}>
+            {dk && <span className="absolute -left-[17px] top-[5px] w-[8px] h-[8px] rounded-full bg-white border-2 border-jj-red" aria-hidden="true" />}
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="font-bold text-jj-gray-08">{hk ? o[hk] : `Item ${i + 1}`}</span>
+              {dk && <span className="flex-shrink-0 text-[11px] text-jj-gray-07 tabular-nums">{fmtDate(o[dk])}</span>}
+            </div>
+            {rest.length > 0 && (
+              <div className="mt-1 flex flex-col gap-1">
+                {rest.map(([k, v]) => (
+                  isScalar(v)
+                    ? <div key={k} className="text-[11.5px]"><span className="text-jj-gray-07">{humanKey(k)}: </span><span className="text-jj-gray-08">{scalarText(v)}</span></div>
+                    : <div key={k} className="text-[11.5px]"><div className="text-jj-gray-07 mb-1">{humanKey(k)}</div><NestedValue value={v} depth={depth + 1} /></div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {more}
+    </div>
+  );
+}
+
 function RecordDrawer({ meta, record, onClose, labelOf, facetColors }) {
   const [full, setFull] = useState(null);
   const [error, setError] = useState(null);
@@ -1620,7 +1728,18 @@ function RecordDrawer({ meta, record, onClose, labelOf, facetColors }) {
                 </button>
               )}
             </div>
-            {rows.map(([c, v]) => (
+            {rows.map(([c, v]) => {
+              const nested = parseNested(v);
+              // lists and objects get the full width, label on top
+              if (nested != null) return (
+                <div key={c} className="text-xs font-johnson-text border-b border-jj-gray-01 last:border-0 py-2.5">
+                  <div className="text-jj-gray-07 mb-1.5 flex items-center gap-2">{labelOf(c)}
+                    {Array.isArray(nested) && nested.length > 1 && <span className="text-[10.5px] tabular-nums px-1.5 rounded-full bg-[#ece9e6] text-jj-gray-07">{nested.length}</span>}
+                  </div>
+                  <div className="text-jj-gray-08 break-words max-h-[360px] overflow-y-auto ct-scroll pr-1"><NestedValue value={nested} /></div>
+                </div>
+              );
+              return (
               <div key={c} className="flex text-xs font-johnson-text border-b border-jj-gray-01 last:border-0 py-2 gap-3">
                 <div className="w-[36%] text-jj-gray-07 flex-shrink-0 break-words">{labelOf(c)}</div>
                 <div className="w-[64%] text-jj-gray-08 break-words whitespace-pre-wrap max-h-[180px] overflow-y-auto ct-scroll">
@@ -1630,7 +1749,8 @@ function RecordDrawer({ meta, record, onClose, labelOf, facetColors }) {
                     : show(v)}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
