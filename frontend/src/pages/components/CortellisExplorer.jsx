@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { useRBAC } from '../../context/RBACContext';
 import ReactDOM from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
@@ -1677,8 +1677,12 @@ function TableTabs({ source, sources, onPick }) {
         {sources.map((s, i) => {
           const on = s.id === source.id;
           const c = PALETTE[i % PALETTE.length];
+          // thin divider between tables, left out next to the selected one
+          const divider = i > 0 && !on && sources[i - 1].id !== source.id;
           return (
-            <button key={s.id} role="tab" aria-selected={on} data-on={on ? '1' : '0'} onClick={() => !on && onPick(s.id)} title={`${s.label} · ${fmtNum(s.rows)} records`}
+            <Fragment key={s.id}>
+            {i > 0 && <span aria-hidden="true" className={`w-px h-4 flex-shrink-0 mx-0.5 ${divider ? 'bg-jj-gray-03' : 'bg-transparent'}`} />}
+            <button role="tab" aria-selected={on} data-on={on ? '1' : '0'} onClick={() => !on && onPick(s.id)} title={`${s.label} · ${fmtNum(s.rows)} records`}
               className={`flex items-center gap-2 px-3 py-[6px] rounded-full border text-[12px] font-johnson-text whitespace-nowrap transition-all flex-shrink-0 ${on
                 ? 'bg-white border-jj-gray-03 text-jj-gray-08 font-bold shadow-[0_1px_4px_rgba(49,44,42,.12)]'
                 : 'bg-transparent border-transparent text-jj-gray-07 hover:bg-white hover:border-jj-gray-02 hover:text-jj-gray-08'}`}>
@@ -1686,6 +1690,7 @@ function TableTabs({ source, sources, onPick }) {
               {s.label}
               <span className={`text-[11px] tabular-nums px-1.5 rounded-full ${on ? 'bg-jj-red/10 text-[#c21300] font-bold' : 'bg-[#ece9e6] text-jj-gray-07'}`}>{compact(s.rows)}</span>
             </button>
+            </Fragment>
           );
         })}
       </div>
