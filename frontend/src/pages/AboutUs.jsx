@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
+import { useDirectoryPhotos } from "../hooks/useDirectoryPhotos";
 import jjLogo from "/jj-logo.png";
 import "./AboutUs.css";
 
@@ -14,11 +15,19 @@ const DELIVERS = [
 
 const initials = (name) => name.trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 
-function Person({ name, role, office }) {
+// Everyone on the page, so their directory photos load in one go
+const TEAM = [
+  "Steve French", "Brian Patti", "Ruchita Mehta", "Carolina Riso",
+  "Mike Martucci", "Rajan Gadkari", "Dhanumjaya Saggurthi",
+].map((name) => ({ name }));
+
+// Photo from the directory when there is one, initials until then (or if not)
+function Person({ name, role, office, photoFor }) {
+  const photo = !office && photoFor?.({ name });
   return (
     <li className="au-person">
       <div className="au-photo" aria-hidden="true">
-        {office ? <span className="au-office" /> : initials(name)}
+        {office ? <span className="au-office" /> : photo ? <img src={photo} alt="" /> : initials(name)}
       </div>
       <div className="au-name">{name}</div>
       <div className="au-role">{role}</div>
@@ -65,6 +74,7 @@ function useFitToScreen(rootRef) {
 export default function AboutUs() {
   const rootRef = useRef(null);
   useFitToScreen(rootRef);
+  const photoFor = useDirectoryPhotos(TEAM);
 
   return (
     <div className="au" ref={rootRef}>
@@ -102,7 +112,7 @@ export default function AboutUs() {
             </section>
             <section className="au-panel" aria-labelledby="au-sponsor">
               <h2 className="au-panel-title" id="au-sponsor">Sponsor</h2>
-              <ul className="au-row"><Person name="Steve French" role="JJT IM Regulatory Strategy" /></ul>
+              <ul className="au-row"><Person name="Steve French" role="JJT IM Regulatory Strategy" photoFor={photoFor} /></ul>
             </section>
           </div>
 
@@ -113,11 +123,11 @@ export default function AboutUs() {
                 <div className="au-bar"><h3>GRA Data Office</h3></div>
                 <p className="au-sub">Business product leaders</p>
                 <div className="au-tree">
-                  <ul className="au-row"><Person name="Brian Patti" role="Business Product Manager" /></ul>
+                  <ul className="au-row"><Person name="Brian Patti" role="Business Product Manager" photoFor={photoFor} /></ul>
                   <div className="au-link split" aria-hidden="true" />
                   <ul className="au-row pair">
-                    <Person name="Ruchita Mehta" role="Business Product Owner" />
-                    <Person name="Carolina Riso" role="Business Product Owner" />
+                    <Person name="Ruchita Mehta" role="Business Product Owner" photoFor={photoFor} />
+                    <Person name="Carolina Riso" role="Business Product Owner" photoFor={photoFor} />
                   </ul>
                 </div>
               </section>
@@ -126,11 +136,11 @@ export default function AboutUs() {
                 <p className="au-sub">Technology product leaders and architecture</p>
                 <div className="au-tree">
                   <ul className="au-row pair">
-                    <Person name="Mike Martucci" role="Technical Product Owner Manager" />
-                    <Person name="Rajan Gadkari" role="Technical Product Owner" />
+                    <Person name="Mike Martucci" role="Technical Product Owner Manager" photoFor={photoFor} />
+                    <Person name="Rajan Gadkari" role="Technical Product Owner" photoFor={photoFor} />
                   </ul>
                   <div className="au-link join" aria-hidden="true" />
-                  <ul className="au-row"><Person name="Dhanumjaya Saggurthi" role="AI Architect" /></ul>
+                  <ul className="au-row"><Person name="Dhanumjaya Saggurthi" role="AI Architect" photoFor={photoFor} /></ul>
                 </div>
               </section>
             </div>
