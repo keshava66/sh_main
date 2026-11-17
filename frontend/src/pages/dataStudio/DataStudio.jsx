@@ -81,11 +81,15 @@ export default function DataStudio() {
                     : 'border border-transparent text-jj-gray-06 hover:text-jj-gray-08 hover:bg-white/70'
                 }`}
               >
-                <span className={`flex items-center justify-center w-[19px] h-[19px] rounded-md transition-colors ${
-                  isActive ? 'bg-jj-red/10' : 'bg-jj-gray-02/70 group-hover:bg-jj-gray-02'
-                }`}>
-                  <Icon src={p.icon} tint={null} className="w-[12px] h-[12px]" />
-                </span>
+                {p.badge ? (
+                  <Icon src={p.icon} tint={null} className="w-[19px] h-[19px] rounded-[5px]" />
+                ) : (
+                  <span className={`flex items-center justify-center w-[19px] h-[19px] rounded-md transition-colors ${
+                    isActive ? 'bg-jj-red/10' : 'bg-jj-gray-02/70 group-hover:bg-jj-gray-02'
+                  }`}>
+                    <Icon src={p.icon} tint={null} className="w-[12px] h-[12px]" />
+                  </span>
+                )}
                 {p.label}
                 {isActive && <span className="absolute left-3 right-3 -bottom-px h-[2px] rounded-full bg-jj-red" />}
               </button>
