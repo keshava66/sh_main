@@ -57,7 +57,10 @@ export default function Header({ navOpen = true, onToggleNav }) {
     >
       {/* Logo sits in the left third; equal flex-basis on both side columns
           keeps the wordmark optically centred regardless of their contents. */}
-      <div className="flex items-center gap-2 flex-grow basis-0 min-w-0">
+      <div className="flex items-center flex-grow basis-0 min-w-0">
+        {/* Same width as the open sidebar below: logo lines up with the menu,
+            chevron sits at the sidebar's edge and stays put when it collapses */}
+        <div className="flex items-center justify-between w-[280px] max-w-full flex-shrink-0 pl-5 pr-3">
         <img src={jjLogo} alt="Johnson & Johnson" className="h-10 object-contain" />
         {onToggleNav && (
           <button
@@ -69,6 +72,7 @@ export default function Header({ navOpen = true, onToggleNav }) {
             <img src={navOpen ? collapseIcon : expandIcon} alt="" className="w-5 h-5" style={{ filter: FILTER_RED }} />
           </button>
         )}
+        </div>
       </div>
 
       {/* Wordmark */}
