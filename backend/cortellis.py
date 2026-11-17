@@ -336,6 +336,32 @@ def stereo_base(name: str) -> str:
     return s.split(",")[0].strip().lower()
 
 
+GREEK = {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsilon", "ζ": "zeta", "η": "eta",
+         "θ": "theta", "ι": "iota", "κ": "kappa", "λ": "lambda", "μ": "mu", "ν": "nu", "ξ": "xi",
+         "ο": "omicron", "π": "pi", "ρ": "rho", "σ": "sigma", "τ": "tau", "υ": "upsilon", "φ": "phi",
+         "χ": "chi", "ψ": "psi", "ω": "omega"}
+
+
+def _greek_variants(q: str) -> List[str]:
+    """The search text with Greek letters spelled out, and with spelled-out ones as letters."""
+    import re as _re
+    words = q
+    for ch, word in GREEK.items():
+        words = words.replace(ch, word).replace(ch.upper(), word)
+    letters = _re.sub(r"(?i)(?<![a-z])(" + "|".join(sorted(GREEK.values(), key=len, reverse=True)) + r")(?![a-z])",
+                      lambda m: next(ch for ch, w in GREEK.items() if w == m.group(1).lower()), q)
+    return [words, letters]
+
+
+def _sort_name_sql(col: str) -> str:
+    """Sort key for a name column: Greek letters read as words, so "β-sitosterol" sorts
+    with the B's (as "beta-sitosterol") instead of after Z, where Unicode puts it."""
+    expr = f"LOWER({_q(col)}::STRING)"
+    for ch, word in GREEK.items():
+        expr = f"REPLACE({expr}, '{ch}', '{word}')"
+    return expr
+
+
 def _like_escape(v: str) -> str:
     return v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -367,8 +393,14 @@ def _where(spec, filters: Dict[str, List[str]], q: str, years, params: Dict[str,
                 ors.append(f"TRIM({_q(col)}::STRING) = %({p})s")
         parts.append("(" + " OR ".join(ors) + ")")
     if q:
-        params["q"] = f"%{q}%"
-        parts.append("(" + " OR ".join(f"{_q(c)}::STRING ILIKE %(q)s" for c in spec["search"]) + ")")
+        # "beta-sitosterol" also finds "β-sitosterol" and the other way round
+        variants = [q] + [v for v in _greek_variants(q) if v != q]
+        ors = []
+        for i, v in enumerate(variants[:3]):
+            name = "q" if i == 0 else f"q{i}"
+            params[name] = f"%{v}%"
+            ors += [f"{_q(c)}::STRING ILIKE %({name})s" for c in spec["search"]]
+        parts.append("(" + " OR ".join(ors) + ")")
     ysql = _year_sql(spec)
     if years and ysql:
         params["y0"], params["y1"] = years
@@ -888,7 +920,11 @@ def get_table(
             show = show + [key]   # drawer needs it to load the full row
         params = {"limit": size, "offset": (page - 1) * size}
         where = _where(spec, f, args["q"], yrs, params)
-        order = f" ORDER BY {_q(sort)} {'DESC' if desc else 'ASC'} NULLS LAST" if sort in cols else ""
+        d = "DESC" if desc else "ASC"
+        if sort in cols and sort == spec["title"]:
+            order = f" ORDER BY {_sort_name_sql(sort)} {d} NULLS LAST, {_q(sort)} {d}"
+        else:
+            order = f" ORDER BY {_q(sort)} {d} NULLS LAST" if sort in cols else ""
         select = ", ".join(_q(c) for c in show)
         sql = f"SELECT {select} FROM {_fq(spec)}{where}{order} LIMIT %(limit)s OFFSET %(offset)s"
         res = _run_or_fail(sql, params, f"/table/{tid}")

@@ -155,3 +155,27 @@ def test_chiral_pairs_counted_in_snowflake(api):
     sql = next(s for w, s, _ in calls if w == "insights chiral")
     assert "QUALIFY ROW_NUMBER()" in sql and f"LIMIT {C.CHIRAL_EXAMPLES}" in sql and "COUNT(*) OVER ()" in sql
     assert re.search(r"x\.kind IN \('.+', '.+', '.+'\)", sql)
+
+
+# ---- Greek letters in drug names (β-sitosterol) -------------------------------------
+
+@pytest.mark.parametrize("q, expected", [
+    ("beta-sitosterol", ["beta-sitosterol", "β-sitosterol"]),
+    ("β-sitosterol", ["beta-sitosterol", "β-sitosterol"]),
+    ("Β3 agonists", ["beta3 agonists", "Β3 agonists"]),   # capital Greek Beta, as Cortellis stores it
+    ("beta3", ["beta3", "β3"]),
+    ("betamethasone", ["betamethasone", "betamethasone"]),  # a real word, left alone
+])
+def test_search_matches_greek_both_ways(q, expected):
+    assert C._greek_variants(q) == expected
+
+
+def test_search_sql_has_the_greek_variant():
+    params = {}
+    C._where(PRODUCTS, {}, "beta-sitosterol", None, params)
+    assert params == {"q": "%beta-sitosterol%", "q1": "%β-sitosterol%"}
+
+
+def test_name_sort_reads_greek_as_words():
+    expr = C._sort_name_sql("drugPrimaryName")
+    assert expr.count("REPLACE(") == len(C.GREEK) and "'β', 'beta'" in expr and 'LOWER("drugPrimaryName"::STRING)' in expr

@@ -46,6 +46,13 @@ const compact = (n) => (n == null ? '—' : new Intl.NumberFormat('en-US', { not
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 const isEmpty = (v) => v == null || v === '';
 const show = (v) => (isEmpty(v) ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+// Cortellis capitalises the first letter of a name, which turns β-sitosterol into
+// "Β-sitosterol" with a capital Greek Beta that looks exactly like a Latin B. Drug names
+// use the small letter, so show that (only for a lone leading Greek capital).
+const niceName = (v) => {
+  const t = show(v);
+  return /^[\u0391-\u03A9](?![\u0391-\u03A9])/.test(t) ? t[0].toLowerCase() + t.slice(1) : t;
+};
 const isUrl = (v) => typeof v === 'string' && /^https?:\/\/\S+$/i.test(v.trim());
 const looksLikeDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+Z?)?$/.test(v);
 const niceCol = (c) => c.replace(/^trailInfo_/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, x => x.toUpperCase());
@@ -1096,12 +1103,12 @@ function ChiralCard({ chiral, meta, openRecord }) {
         {chiral.examples.map((p, i) => (
           <div key={i} className="grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2 py-2 border-b border-jj-gray-01 last:border-0 text-[12.5px] font-johnson-text">
             <button onClick={() => openRecord({ key: p.single.key, title: p.single.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
-              <span className="font-bold truncate">{p.single.name}</span>
+              <span className="font-bold truncate">{niceName(p.single.name)}</span>
               <span className="flex gap-1.5 flex-wrap"><StereoTag kind={stereoInfo(p.single.name)?.kind || KIND_BY_LABEL[p.single.kind]} desc={stereoInfo(p.single.name)?.desc} />{p.single.status && <Pill color={statusColor(p.single.status)}>{p.single.status}</Pill>}</span>
             </button>
             <span className="text-jj-gray-06 text-center" aria-hidden="true">↔</span>
             <button onClick={() => openRecord({ key: p.original.key, title: p.original.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
-              <span className="font-bold truncate">{p.original.name}</span>
+              <span className="font-bold truncate">{niceName(p.original.name)}</span>
               <span className="flex gap-1.5 flex-wrap">{p.original.status && <Pill color={statusColor(p.original.status)}>{p.original.status}</Pill>}</span>
             </button>
           </div>
@@ -1309,7 +1316,7 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
             <div className="text-[11px] font-johnson-text font-bold text-jj-gray-08 leading-none mt-1">{fmtDate(r.date, { year: 'numeric' })}</div>
           </div>
           <div className="min-w-0 flex-1 flex items-center gap-3">
-            <div className="min-w-0 flex-1 text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug group-hover:text-[#c21300] transition-colors truncate" title={r.title || ''}>{highlight(r.title || 'Untitled', state.q)}</div>
+            <div className="min-w-0 flex-1 text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug group-hover:text-[#c21300] transition-colors truncate" title={r.title || ''}>{highlight(niceName(r.title) || 'Untitled', state.q)}</div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
               {r.tags.map(t => <Pill key={t.column} color={t.column === f0?.column && f0Colors.has(t.value) ? f0Colors.get(t.value) : colorFor(t.column)} title={labelOf(t.column)}>{t.value}</Pill>)}
               {isUrl(r.url) && (
@@ -1501,7 +1508,7 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
     if (facetColors[c]) return <Pill color={facetColors[c]}>{show(v)}</Pill>;
     if (c === meta.title) return (
       <>
-        <div className="font-medium text-jj-gray-08 leading-snug line-clamp-2 whitespace-normal">{highlight(show(v), state.q)}</div>
+        <div className="font-medium text-jj-gray-08 leading-snug line-clamp-2 whitespace-normal">{highlight(niceName(v), state.q)}</div>
         {meta.facets.includes(STEREO) && stereoInfo(v) && <StereoTag kind={stereoInfo(v).kind} desc={stereoInfo(v).desc} className="mt-1" />}
       </>
     );
@@ -2266,7 +2273,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
           <MoleculeView smiles={splitSmiles(f.smiles).main} width={220} height={130} />
         </div>
       )}
-      <div className="text-[13px] font-johnson-text font-bold text-jj-gray-08 break-words">{f.name}</div>
+      <div className="text-[13px] font-johnson-text font-bold text-jj-gray-08 break-words">{niceName(f.name)}</div>
       <div className="flex flex-wrap gap-1.5">
         {stereoInfo(f.name) && <StereoTag kind={stereoInfo(f.name).kind} desc={stereoInfo(f.name).desc} />}
         {f.status && <Pill color={statusColor(f.status)}>{f.status}</Pill>}
@@ -2406,7 +2413,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
   const cols = useMemo(() => full?.columns || record.columns || [], [full, record.columns]);
   const vals = useMemo(() => full?.row || record.row || [], [full, record.row]);
   const get = (c) => { const i = cols.indexOf(c); return i >= 0 ? vals[i] : null; };
-  const title = show(get(meta.title)) || record.title || 'Record';
+  const title = niceName(get(meta.title)) || niceName(record.title) || 'Record';
   const text = meta.text ? get(meta.text) : null;
   const link = meta.url ? get(meta.url) : null;
   const tags = meta.facets.map(c => [c, get(c)]).filter(([, v]) => !isEmpty(v));
