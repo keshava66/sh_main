@@ -1257,7 +1257,7 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
         <button onClick={() => goTo('records')} className={btn}>All records <Icon src={chevronRightIcon} tint="ink" className="w-2.5 h-2.5" /></button>
       </div>
       {latest.map((r, i) => (
-        <div key={`${r.key}-${i}`} onClick={() => openRecord({ key: r.key, title: r.title })}
+        <div key={`${r.key}-${i}`} onClick={() => openRecord({ key: r.key, title: r.title }, latest.map(x => ({ key: x.key, title: x.title })), i)}
           className="group flex items-center gap-3 px-5 py-2.5 border-b border-jj-gray-01 last:border-0 hover:bg-[#faf9f8] cursor-pointer transition-colors">
           <div className="w-[46px] flex-shrink-0 text-center rounded-lg py-1 bg-jj-red/[.06]">
             <div className="text-[10px] font-johnson-text font-bold uppercase text-[#c21300] leading-none">{fmtDate(r.date, { month: 'short' })}</div>
@@ -1446,6 +1446,7 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
   };
   const keyIdx = data && meta.key ? data.columns.indexOf(meta.key) : -1;
   const titleIdx = data ? data.columns.indexOf(meta.title) : -1;
+  const toRecord = (r) => ({ key: keyIdx >= 0 ? r[keyIdx] : null, title: titleIdx >= 0 ? r[titleIdx] : null, columns: data.columns, row: r });
 
   const cell = (c, v) => {
     if (isEmpty(v)) return <span className="text-jj-gray-04">—</span>;
@@ -1509,7 +1510,7 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
               </thead>
               <tbody>
                 {data.rows.map((r, ri) => (
-                  <tr key={ri} onClick={() => openRecord({ key: keyIdx >= 0 ? r[keyIdx] : null, title: titleIdx >= 0 ? r[titleIdx] : null, columns: data.columns, row: r })}
+                  <tr key={ri} onClick={() => openRecord(toRecord(r), data.rows.map(toRecord), ri)}
                     className={`hover:bg-jj-blue-03/[.04] cursor-pointer align-top transition-colors ${ri % 2 ? 'bg-[#fcfbfa]' : 'bg-white'}`}>
                     {visible.map(i => {
                       const c = data.columns[i];
@@ -1563,7 +1564,7 @@ function parseNested(v) {
 // keyEventDate -> Key event date
 const humanKey = (k) => String(k).replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/\s+/g, ' ').trim()
   .replace(/^./, c => c.toUpperCase()).replace(/ (\w)/g, (m, c) => ' ' + c.toLowerCase())
-  .replace(/\b(icd\d*|mesh|id|url|fda|ema)\b/gi, w => w.toUpperCase());
+  .replace(/\b(icd\d*|mesh|snomed|id|url|fda|ema|cas)\b/gi, w => w.toUpperCase()).replace(/\blog p\b/i, 'LogP');
 
 const isScalar = (v) => v == null || typeof v !== 'object';
 const scalarText = (v) => (looksLikeDate(v) ? fmtDate(v) : String(v));
@@ -1593,6 +1594,7 @@ function NestedValue({ value, depth = 0 }) {
 
   const items = value.filter(v => !isEmpty(v));
   if (!items.length) return <span className="text-jj-gray-04">—</span>;
+  if (items.length === 1 && !isScalar(items[0]) && !Array.isArray(items[0]) && !headKey(items[0])) return <NestedValue value={items[0]} depth={depth} />;
   const cap = depth ? 12 : 20;
   const shown = all ? items : items.slice(0, cap);
   const more = items.length > cap && (
@@ -1662,19 +1664,221 @@ function NestedValue({ value, depth = 0 }) {
   );
 }
 
-function RecordDrawer({ meta, record, onClose, labelOf, facetColors }) {
+/* ---- record drawer: structure, journey, timeline ---- */
+
+// "CC(N)c1ccccc1.Cl |r|" -> { main: biggest fragment, salt: true }. Extended-SMILES flags after the space are dropped.
+function splitSmiles(raw) {
+  const s = String(raw || '').trim().split(/\s+\|/)[0].trim();
+  if (!s || /\s/.test(s) || !/^[A-Za-z0-9@+\-[\]()=#\\/%.:*]+$/.test(s) || !/[cCnNoO]/.test(s)) return null;
+  const parts = s.split('.').filter(Boolean);
+  const main = parts.reduce((a, b) => (b.replace(/[^A-Za-z]/g, '').length > a.replace(/[^A-Za-z]/g, '').length ? b : a), parts[0]);
+  return { full: s, main, salt: parts.length > 1, relative: /\|.*\br\b.*\|/.test(String(raw)) };
+}
+
+let smilesLib = null; // loaded on first structure, kept for the rest of the session
+function MoleculeView({ smiles, width = 300, height = 220, onFail }) {
+  const ref = useRef(null);
+  const [state, setState] = useState('loading');
+  useEffect(() => {
+    let dead = false;
+    setState('loading');
+    (smilesLib ||= import('smiles-drawer').then(m => m.default || m))
+      .then(SD => {
+        if (dead || !ref.current) return;
+        const drawer = new SD.SvgDrawer({ width, height, bondThickness: 1.4, padding: 14, compactDrawing: false, fontSizeLarge: 7, fontSizeSmall: 5 });
+        SD.parse(smiles, tree => {
+          if (dead || !ref.current) return;
+          try { drawer.draw(tree, ref.current, 'light'); setState('ok'); } catch { setState('fail'); onFail?.(); }
+        }, () => { if (!dead) { setState('fail'); onFail?.(); } });
+      })
+      .catch(() => { if (!dead) { setState('fail'); onFail?.(); } });
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smiles, width, height]);
+  if (state === 'fail') return null;
+  return (
+    <div className="relative" style={{ width, height }}>
+      {state === 'loading' && <div className="absolute inset-0 ct-shimmer rounded-xl" role="status" aria-label="Drawing structure" />}
+      <svg ref={ref} role="img" aria-label="Chemical structure" style={{ width, height, opacity: state === 'ok' ? 1 : 0 }} />
+    </div>
+  );
+}
+
+const STAGES = [
+  ['Preclinical', /pre-?clinical/i],
+  ['Phase I', /phase\s*(1|i)(?![iv\d])/i],
+  ['Phase II', /phase\s*(2|ii)(?![i\d])/i],
+  ['Phase III', /phase\s*(3|iii)/i],
+  ['Registered', /regist|approv/i],
+  ['Launched', /launch|marketed/i],
+];
+const STOP_RE = /no development reported|discontinued|suspended|withdrawn|terminated/i;
+const yearOf = (d) => (d ? new Date(d).getUTCFullYear() : null);
+const monthYear = (d) => fmtDate(d, { month: 'short', year: 'numeric' });
+
+// everything the drawer shows, worked out once from the columns and values
+function readRecord(cols, vals, meta, labelOf) {
+  const L = (c) => labelOf(c) || c;
+  const nested = {};
+  cols.forEach((c, i) => { const n = parseNested(vals[i]); if (n != null) nested[c] = n; });
+  const get = (c) => vals[cols.indexOf(c)];
+
+  // the dated list with the most entries is the event history
+  let eventsCol = null, events = [];
+  Object.entries(nested).forEach(([c, v]) => {
+    if (!Array.isArray(v)) return;
+    const objs = v.filter(o => o && typeof o === 'object' && !Array.isArray(o) && dateKey(o));
+    if (objs.length > events.length) { eventsCol = c; events = objs; }
+  });
+  events = events.map(o => {
+    const dk = dateKey(o), hk = headKey(o);
+    const rest = Object.entries(o).filter(([k, v]) => k !== dk && k !== hk && isScalar(v) && !isEmpty(v)).map(([, v]) => String(v));
+    return { date: o[dk], title: hk ? o[hk] : 'Event', detail: rest.join(' · ') };
+  });
+  // "Latest Change Date" + "Latest Change": one more event
+  const eventCols = [];
+  cols.forEach(c => {
+    const lab = L(c);
+    if (!/ date$/i.test(lab) || !looksLikeDate(get(c))) return;
+    const twin = cols.find(x => x !== c && L(x).toLowerCase() === lab.replace(/ date$/i, '').toLowerCase());
+    if (twin && typeof get(twin) === 'string' && get(twin)) { events.push({ date: get(c), title: L(twin), detail: get(twin) }); eventCols.push(c, twin); }
+  });
+  events.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+  // development journey: furthest stage seen in the events or the record's status fields
+  // only drug status / phase fields count (a trial's own phase is not the drug's journey)
+  const statusText = meta.facets.filter(c => /status|phase/i.test(L(c)) && !/trial|meeting|vote/i.test(L(c)))
+    .map(c => get(c)).filter(v => typeof v === 'string').join(' | ');
+  const stageAt = (t) => { let hit = -1; STAGES.forEach(([, re], i) => { if (re.test(t)) hit = i; }); return hit; };
+  let reached = stageAt(statusText);
+  const stageDate = {};
+  events.forEach(e => {
+    const s = stageAt(`${e.title} ${e.detail}`);
+    if (s >= 0) { reached = Math.max(reached, s); if (!stageDate[s]) stageDate[s] = e.date; }
+  });
+  const stopEvent = [...events].reverse().find(e => STOP_RE.test(`${e.title} ${e.detail}`));
+  const stopped = STOP_RE.test(statusText) || !!stopEvent;
+  // "approved" on its own is too loose to draw a journey from
+  const onlyRegistered = reached === 4 && !STAGES.some(([, re], i) => i !== 4 && (re.test(statusText) || events.some(e => re.test(`${e.title} ${e.detail}`))));
+  const journey = reached >= 0 && !onlyRegistered ? { reached, stageDate, stopped, stopDate: stopEvent?.date } : null;
+
+  // structure
+  let smilesCol = null, smiles = null;
+  for (const c of cols) {
+    if (!/smiles|structure/i.test(L(c))) continue;
+    const s = splitSmiles(get(c));
+    if (s) { smilesCol = c; smiles = s; break; }
+  }
+  const chemCols = cols.filter(c => c !== smilesCol && /chemical|molecular|formula|cas number/i.test(L(c)) && !isEmpty(get(c)));
+  const indicationCols = cols.filter(c => /indication|therapeutic|mechanism|target|route|disease/i.test(L(c)) && !isEmpty(get(c)));
+
+  // first indication name, for the quick facts
+  let indication = null;
+  const dig = (v) => {
+    if (indication || v == null) return;
+    if (Array.isArray(v)) return v.forEach(dig);
+    if (typeof v === 'object') {
+      const k = Object.keys(v).find(x => /(disease|indication).?name/i.test(x));
+      if (k && typeof v[k] === 'string') { indication = v[k]; return; }
+      Object.values(v).forEach(dig);
+    }
+  };
+  indicationCols.forEach(c => dig(nested[c]));
+
+  return { nested, eventsCol, eventCols, events, journey, smilesCol, smiles, chemCols, indicationCols, indication };
+}
+
+function Journey({ journey }) {
+  const { reached, stageDate, stopped, stopDate } = journey;
+  const pct = (i) => `${(i / (STAGES.length - 1)) * 100}%`;
+  return (
+    <div className="relative rounded-2xl border border-jj-gray-02 bg-gradient-to-b from-white to-[#fbfaf9] px-2 pt-4 pb-3">
+      <div className="absolute top-[26px] h-[3px] rounded-full bg-[#ece9e6]" style={{ left: `${50 / STAGES.length}%`, right: `${50 / STAGES.length}%` }} />
+      <div className="absolute top-[26px] h-[3px] rounded-full" style={{ left: `${50 / STAGES.length}%`, width: `calc((100% - ${100 / STAGES.length}%) * ${parseFloat(pct(reached)) / 100})`, background: stopped ? 'linear-gradient(90deg,#312c2a,#eb1700)' : 'linear-gradient(90deg,#312c2a,#2a7a12)' }} />
+      <ol className="relative flex">
+        {STAGES.map(([name], i) => {
+          const done = i < reached || (i === reached && !stopped);
+          const stop = i === reached && stopped;
+          return (
+            <li key={name} className="flex-1 flex flex-col items-center gap-1.5 text-center">
+              {stop ? (
+                <span className="w-[22px] h-[22px] rounded-full bg-jj-red flex items-center justify-center shadow-[0_0_0_5px_rgba(235,23,0,.15)]" aria-label="Stopped here">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#fff" strokeWidth="2" aria-hidden="true"><path d="M3 3l4 4M7 3l-4 4" /></svg>
+                </span>
+              ) : done ? (
+                <span className="w-[22px] h-[22px] rounded-full bg-jj-gray-08 flex items-center justify-center" aria-label="Reached">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#fff" strokeWidth="2" aria-hidden="true"><path d="M2.5 6.2l2.2 2.2L9.5 3.6" /></svg>
+                </span>
+              ) : (
+                <span className="w-[22px] h-[22px] rounded-full bg-white border-2 border-dashed border-jj-gray-03" aria-label="Not reached" />
+              )}
+              <span className={`text-[12px] font-johnson-text font-bold ${i <= reached ? 'text-jj-gray-08' : 'text-jj-gray-06'}`}>{name}</span>
+              {stageDate[i] && <span className="text-[11px] font-johnson-text text-jj-gray-07">{monthYear(stageDate[i])}</span>}
+              {stop && <span className="text-[11px] font-johnson-text font-bold text-[#c21300]">Stopped{stopDate ? ` ${yearOf(stopDate)}` : ''}</span>}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function Section({ id, icon, title, sub, right, children }) {
+  return (
+    <section id={id} className="px-6 py-5 border-t border-jj-gray-01 flex flex-col gap-3.5 scroll-mt-14">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="w-[30px] h-[30px] rounded-[9px] bg-[#f4f2f0] flex items-center justify-center flex-shrink-0">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#312c2a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon}</svg>
+          </span>
+          <div className="min-w-0">
+            <div className="text-[15px] font-johnson-text font-bold text-jj-gray-08">{title}</div>
+            {sub && <div className="text-[11.5px] font-johnson-text text-jj-gray-07">{sub}</div>}
+          </div>
+        </div>
+        {right}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FieldValue({ v }) {
+  const n = parseNested(v);
+  if (n != null) return <NestedValue value={n} />;
+  if (isUrl(v)) return <a href={v} target="_blank" rel="noreferrer" className="text-jj-blue-03 underline break-all">{v}</a>;
+  if (looksLikeDate(v)) return <>{fmtDate(v)}</>;
+  return <>{show(v)}</>;
+}
+
+function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors }) {
+  const canDownload = useRBAC().hasPermission('downloadUnstructuredData');
   const [full, setFull] = useState(null);
   const [error, setError] = useState(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(null);
   const [showEmpty, setShowEmpty] = useState(false);
+  const [newestFirst, setNewestFirst] = useState(false);
+  const [drawFailed, setDrawFailed] = useState(false);
+  const scroller = useRef(null);
+  const list = record.list || [];
+  const at = record.index ?? -1;
+  const prev = at > 0 ? at - 1 : null;
+  const next = at >= 0 && at < list.length - 1 ? at + 1 : null;
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') return onClose();
+      if (/input|textarea|select/i.test(e.target?.tagName || '')) return;
+      if (e.key === 'ArrowLeft' && prev != null) onNavigate?.(prev);
+      if (e.key === 'ArrowRight' && next != null) onNavigate?.(next);
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, onNavigate, prev, next]);
 
   useEffect(() => {
+    setFull(null); setError(null); setDrawFailed(false);
+    scroller.current?.scrollTo({ top: 0 });
     if (!record.key) return;
     let dead = false;
     const ctl = new AbortController(); // cancelled on close so it stops holding a browser connection
@@ -1684,94 +1888,306 @@ function RecordDrawer({ meta, record, onClose, labelOf, facetColors }) {
     return () => { dead = true; ctl.abort(); };
   }, [meta.id, record.key]);
 
-  const cols = full?.columns || record.columns || [];
-  const vals = full?.row || record.row || [];
+  const cols = useMemo(() => full?.columns || record.columns || [], [full, record.columns]);
+  const vals = useMemo(() => full?.row || record.row || [], [full, record.row]);
   const get = (c) => { const i = cols.indexOf(c); return i >= 0 ? vals[i] : null; };
   const title = show(get(meta.title)) || record.title || 'Record';
   const text = meta.text ? get(meta.text) : null;
   const link = meta.url ? get(meta.url) : null;
   const tags = meta.facets.map(c => [c, get(c)]).filter(([, v]) => !isEmpty(v));
-  const skip = new Set([meta.title, meta.text, ...meta.facets]);
-  const rows = cols.map((c, i) => [c, vals[i]]).filter(([c, v]) => !skip.has(c) && (showEmpty || !isEmpty(v)));
-  const emptyCount = cols.filter((c, i) => !skip.has(c) && isEmpty(vals[i])).length;
-  const copy = () => {
-    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
-    const fail = () => { setCopied('fail'); setTimeout(() => setCopied(false), 2000); };
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(link || '').then(done).catch(fail);
-    else fail();
+  const info = useMemo(() => readRecord(cols, vals, meta, labelOf), [cols, vals, meta, labelOf]);
+  const { journey, events, smiles, chemCols, indicationCols, indication } = info;
+  const structure = smiles && !drawFailed;
+
+  // fields shown in a section above stay out of "All fields"
+  const placed = new Set([meta.title, meta.text, ...meta.facets, info.eventsCol, ...info.eventCols, info.smilesCol, ...chemCols, ...indicationCols].filter(Boolean));
+  const rows = cols.map((c, i) => [c, vals[i]]).filter(([c, v]) => !placed.has(c) && (showEmpty || !isEmpty(v)));
+  const emptyCount = cols.filter((c, i) => !placed.has(c) && isEmpty(vals[i])).length;
+
+  const lastChange = events.length ? events[events.length - 1].date : null;
+  const facts = [
+    journey && ['Furthest phase', STAGES[journey.reached][0]],
+    events.length > 1 && ['In development', journey?.stopped && journey.stopDate
+      ? `${yearOf(events[0].date)} – ${yearOf(journey.stopDate)}` : `Since ${yearOf(events[0].date)}`],
+    indication && ['Indication', indication],
+    lastChange && ['Last change', monthYear(lastChange)],
+  ].filter(Boolean);
+
+  const flash = (what) => { setCopied(what); setTimeout(() => setCopied(null), 1500); };
+  const copy = (value, what) => {
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(value).then(() => flash(what)).catch(() => flash('fail'));
+    else flash('fail');
   };
+  const exportJson = () => {
+    const obj = Object.fromEntries(cols.map((c, i) => [c, parseNested(vals[i]) ?? vals[i]]));
+    const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `cortellis-${meta.id}-${String(record.key || 'record').replace(/[^\w.-]+/g, '_')}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const sections = [
+    journey && ['journey', 'Journey'],
+    indicationCols.length > 0 && ['indications', 'Indications'],
+    (structure || chemCols.length > 0) && ['chemistry', 'Chemistry'],
+    events.length > 0 && ['timeline', 'Timeline'],
+    ['fields', 'All fields'],
+  ].filter(Boolean);
+  const jump = (id) => scroller.current?.querySelector(`#ct-rec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const navBtn = 'w-8 h-8 rounded-[9px] border border-jj-gray-03 bg-white flex items-center justify-center hover:bg-jj-gray-01 disabled:opacity-35 disabled:hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-jj-blue-03/40';
+
+  const chemTiles = [];
+  chemCols.forEach(c => {
+    const n = info.nested[c];
+    const objs = Array.isArray(n) ? n.filter(o => o && typeof o === 'object' && !Array.isArray(o)) : n && typeof n === 'object' ? [n] : [];
+    if (objs.length === 1 && Object.values(objs[0]).every(isScalar)) {
+      Object.entries(objs[0]).forEach(([k, v]) => { if (!isEmpty(v)) chemTiles.push([humanKey(k), scalarText(v), false]); });
+    } else if (isScalar(get(c)) && String(get(c)).length <= 24) {
+      chemTiles.push([labelOf(c), String(get(c)), /formula/i.test(labelOf(c))]);
+    }
+  });
+  const chemLong = chemCols.filter(c => !(isScalar(get(c)) && String(get(c)).length <= 24) && !(() => {
+    const n = info.nested[c]; const objs = Array.isArray(n) ? n : n ? [n] : [];
+    return objs.length === 1 && objs[0] && typeof objs[0] === 'object' && Object.values(objs[0]).every(isScalar);
+  })());
+  const formula = (v) => v.replace(/(\d+)/g, (d) => d.split('').map(x => '₀₁₂₃₄₅₆₇₈₉'[x]).join(''));
+
+  const timeline = newestFirst ? [...events].reverse() : events;
 
   return ReactDOM.createPortal(
     <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
-      <div className="w-full max-w-[620px] h-full bg-white shadow-2xl flex flex-col" onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
-        <div className="flex-shrink-0 px-5 py-4 border-b border-jj-gray-02 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[10.5px] font-johnson-text uppercase tracking-wider text-jj-gray-07">Cortellis · {meta.label}</div>
-            <h3 className="font-johnson-display font-bold text-[17px] leading-snug text-jj-gray-08 break-words mt-0.5">{title}</h3>
-            {tags.length > 0 && (
-              <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                {tags.map(([c, v]) => <Pill key={c} color={facetColors[c]} title={labelOf(c)}>{show(v)}</Pill>)}
+      <div className="w-full max-w-[720px] h-full bg-white shadow-[-24px_0_60px_rgba(49,44,42,.18)] flex flex-col" onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
+        <div ref={scroller} className="flex-1 overflow-y-auto ct-scroll">
+          <header className="px-6 pt-4 pb-4 border-b border-jj-gray-01 flex flex-col gap-3.5" style={{ background: 'linear-gradient(135deg,#fff5f3 0%,#ffffff 55%,#f3f7fb 100%)' }}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0 text-[11.5px] font-johnson-text text-jj-gray-07">
+                <span className="font-bold tracking-wider">CORTELLIS</span><span aria-hidden="true">/</span>
+                <span className="truncate">{meta.label}</span>
+                {record.key != null && <span className="flex-shrink-0 font-mono text-[11px] bg-white border border-jj-gray-02 rounded-md px-1.5">ID {String(record.key)}</span>}
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {list.length > 1 && (
+                  <>
+                    <span className="text-[11px] font-johnson-text text-jj-gray-07 tabular-nums mr-1">{at + 1} of {list.length}</span>
+                    <button className={navBtn} disabled={prev == null} onClick={() => onNavigate?.(prev)} aria-label="Previous record" title="Previous record (←)">
+                      <Icon src={chevronRightIcon} tint="ink" className="w-2.5 h-2.5 rotate-180" />
+                    </button>
+                    <button className={navBtn} disabled={next == null} onClick={() => onNavigate?.(next)} aria-label="Next record" title="Next record (→)">
+                      <Icon src={chevronRightIcon} tint="ink" className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                )}
+                <button autoFocus className={navBtn} onClick={onClose} aria-label="Close" title="Close (Esc)"><Icon src={closeIcon} alt="" tint="ink" className="w-3 h-3" /></button>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 min-w-0">
+              {structure && (
+                <div className="w-[104px] h-[84px] flex-shrink-0 rounded-[14px] bg-white border border-jj-gray-02 flex items-center justify-center overflow-hidden">
+                  <MoleculeView smiles={smiles.main} width={100} height={80} onFail={() => setDrawFailed(true)} />
+                </div>
+              )}
+              <div className="min-w-0 flex flex-col gap-2">
+                <h3 className="font-johnson-display font-bold text-[26px] leading-[1.1] text-jj-gray-08 break-words">{title}</h3>
+                {tags.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {tags.map(([c, v]) => <Pill key={c} color={facetColors[c]} title={labelOf(c)}>{show(v)}</Pill>)}
+                  </div>
+                )}
+              </div>
+            </div>
+            {facts.length > 0 && (
+              <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${facts.length}, minmax(0, 1fr))` }}>
+                {facts.map(([k, v]) => (
+                  <div key={k} className="bg-white border border-jj-gray-02 rounded-xl px-3 py-2 min-w-0">
+                    <div className="text-[11px] font-johnson-text text-jj-gray-07">{k}</div>
+                    <div className="text-[15px] font-johnson-text font-bold text-jj-gray-08 leading-tight line-clamp-2 break-words" title={v}>{v}</div>
+                  </div>
+                ))}
               </div>
             )}
-          </div>
-          <button autoFocus onClick={onClose} aria-label="Close" className="flex-shrink-0 p-1 rounded hover:bg-jj-gray-01 focus:outline-none focus-visible:ring-2 focus-visible:ring-jj-blue-03/40"><Icon src={closeIcon} alt="Close" tint="ink" className="w-4 h-4" /></button>
-        </div>
+          </header>
 
-        <div className="flex-1 overflow-y-auto ct-scroll">
-          {!full && record.key && !error && <div className="px-5 pt-3 text-[11px] font-johnson-text text-jj-gray-06">Loading full record…</div>}
-          {error && <div className="px-5 pt-3"><LoadFailed what="the full record (showing the table copy)" error={error} /></div>}
+          {sections.length > 1 && (
+            <nav aria-label="Record sections" className="sticky top-0 z-[2] flex gap-1 px-5 py-2 border-b border-jj-gray-01 bg-white/95 backdrop-blur overflow-x-auto ct-noscroll">
+              {sections.map(([id, label]) => (
+                <button key={id} onClick={() => jump(id)} className="flex-shrink-0 text-[12.5px] font-johnson-text text-jj-gray-07 rounded-full px-3 py-1.5 hover:bg-[#f4f2f0] hover:text-jj-gray-08">{label}</button>
+              ))}
+            </nav>
+          )}
+
+          {!full && record.key && !error && <div className="px-6 pt-3 text-[11px] font-johnson-text text-jj-gray-06">Loading full record…</div>}
+          {error && <div className="px-6 pt-3"><LoadFailed what="the full record (showing the table copy)" error={error} /></div>}
+
           {!isEmpty(text) && (
-            <div className="px-5 py-4 border-b border-jj-gray-01">
+            <div className="px-6 py-4">
               <div className="text-[11px] font-johnson-text font-bold uppercase tracking-wider text-jj-gray-07 mb-2">{labelOf(meta.text)}</div>
-              <p className="text-[12.5px] font-johnson-text text-jj-gray-08 leading-relaxed whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto ct-scroll">{show(text)}</p>
+              <p className="text-[13px] font-johnson-text text-jj-gray-08 leading-relaxed whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto ct-scroll">{show(text)}</p>
             </div>
           )}
-          <div className="px-5 py-4">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-[11px] font-johnson-text font-bold uppercase tracking-wider text-jj-gray-07">Record</div>
-              {emptyCount > 0 && (
-                <button onClick={() => setShowEmpty(s => !s)} className="text-[11px] font-johnson-text text-jj-blue-03 underline">
-                  {showEmpty ? 'Hide empty fields' : `Show ${emptyCount} empty fields`}
-                </button>
-              )}
+
+          {journey && (
+            <div id="ct-rec-journey">
+              <Section icon={<><circle cx="8" cy="8" r="6" /><path d="M8 5v3.5l2 1.5" /></>} title="Development journey" sub="Worked out from the record's status and key events">
+                <Journey journey={journey} />
+              </Section>
             </div>
-            {rows.map(([c, v]) => {
-              const nested = parseNested(v);
-              // lists and objects get the full width, label on top
-              if (nested != null) return (
-                <div key={c} className="text-xs font-johnson-text border-b border-jj-gray-01 last:border-0 py-2.5">
-                  <div className="text-jj-gray-07 mb-1.5 flex items-center gap-2">{labelOf(c)}
-                    {Array.isArray(nested) && nested.length > 1 && <span className="text-[10.5px] tabular-nums px-1.5 rounded-full bg-[#ece9e6] text-jj-gray-07">{nested.length}</span>}
+          )}
+
+          {indicationCols.length > 0 && (
+            <div id="ct-rec-indications">
+              <Section icon={<path d="M8 14s-5-3-5-7a3 3 0 0 1 5-2 3 3 0 0 1 5 2c0 4-5 7-5 7z" />} title="Indications & classes">
+                {indicationCols.map(c => {
+                  const v = get(c);
+                  const n = info.nested[c];
+                  const items = n == null && typeof v === 'string' && v.includes(',') ? v.split(',').map(x => x.trim()).filter(Boolean) : null;
+                  return (
+                    <div key={c} className="flex flex-col gap-1.5 text-xs font-johnson-text">
+                      <div className="text-jj-gray-07 flex items-center gap-2">{labelOf(c)}
+                        {Array.isArray(n) && n.length > 1 && <span className="text-[10.5px] tabular-nums px-1.5 rounded-full bg-[#ece9e6]">{n.length}</span>}
+                      </div>
+                      {items ? (
+                        <div className="flex flex-wrap gap-1.5">{items.map(x => <span key={x} className="text-[12px] text-jj-gray-08 bg-[#f4f2f0] rounded-full px-3 py-1">{x}</span>)}</div>
+                      ) : <div className="text-[13px] text-jj-gray-08 break-words"><FieldValue v={v} /></div>}
+                    </div>
+                  );
+                })}
+              </Section>
+            </div>
+          )}
+
+          {(structure || chemCols.length > 0) && (
+            <div id="ct-rec-chemistry">
+              <Section icon={<path d="M6 2h4M7 2v4L3 13a1 1 0 0 0 .9 1.5h8.2A1 1 0 0 0 13 13L9 6V2" />} title="Chemistry"
+                sub={structure ? 'Structure drawn from the SMILES in the record' : null}>
+                <div className={`grid gap-3.5 ${structure ? 'grid-cols-[300px_1fr]' : ''}`}>
+                  {structure && (
+                    <div className="relative rounded-2xl border border-jj-gray-02 flex items-center justify-center" style={{ background: 'radial-gradient(circle at 50% 40%,#ffffff,#f7f5f3)' }}>
+                      <MoleculeView smiles={smiles.main} width={296} height={230} onFail={() => setDrawFailed(true)} />
+                      <div className="absolute top-2 left-2 flex gap-1">
+                        {smiles.salt && <span className="text-[10.5px] font-johnson-text text-jj-gray-07 bg-white border border-jj-gray-02 rounded-full px-2 py-[1px]">Salt form, main part drawn</span>}
+                        {smiles.relative && <span className="text-[10.5px] font-johnson-text text-jj-gray-07 bg-white border border-jj-gray-02 rounded-full px-2 py-[1px]">Relative stereo</span>}
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-2.5 min-w-0">
+                    {chemLong.map(c => (
+                      <div key={c} className="min-w-0">
+                        <div className="text-[11px] font-johnson-text text-jj-gray-07">{labelOf(c)}</div>
+                        <div className="text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug break-words"><FieldValue v={get(c)} /></div>
+                      </div>
+                    ))}
+                    {chemTiles.length > 0 && (
+                      <div className="grid grid-cols-2 gap-2">
+                        {chemTiles.map(([k, v, isFormula]) => (
+                          <div key={k} className="bg-[#f7f5f3] rounded-[10px] px-2.5 py-2 min-w-0">
+                            <div className="text-[11px] font-johnson-text text-jj-gray-07 truncate">{k}</div>
+                            <div className={`text-[15px] font-bold text-jj-gray-08 truncate ${isFormula ? 'font-mono' : 'font-johnson-text'}`} title={v}>{isFormula ? formula(v) : v}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="text-jj-gray-08 break-words max-h-[360px] overflow-y-auto ct-scroll pr-1"><NestedValue value={nested} /></div>
                 </div>
-              );
-              return (
-              <div key={c} className="flex text-xs font-johnson-text border-b border-jj-gray-01 last:border-0 py-2 gap-3">
-                <div className="w-[36%] text-jj-gray-07 flex-shrink-0 break-words">{labelOf(c)}</div>
-                <div className="w-[64%] text-jj-gray-08 break-words whitespace-pre-wrap max-h-[180px] overflow-y-auto ct-scroll">
-                  {isEmpty(v) ? <span className="text-jj-gray-04">—</span>
-                    : isUrl(v) ? <a href={v} target="_blank" rel="noreferrer" className="text-jj-blue-03 underline break-all">{v}</a>
-                    : looksLikeDate(v) ? `${fmtDate(v)} · ${v}`
-                    : show(v)}
-                </div>
+                {smiles && (
+                  <div className="flex items-center gap-2 border border-jj-gray-02 rounded-[10px] pl-3 pr-1.5 py-1.5">
+                    <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07">SMILES</span>
+                    <code className="flex-1 min-w-0 font-mono text-[12px] text-jj-gray-08 truncate" title={String(get(info.smilesCol))}>{String(get(info.smilesCol))}</code>
+                    <button onClick={() => copy(String(get(info.smilesCol)), 'smiles')} className="flex-shrink-0 border border-jj-gray-03 bg-white rounded-lg px-2.5 py-1 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
+                      {copied === 'smiles' ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                )}
+              </Section>
+            </div>
+          )}
+
+          {events.length > 0 && (
+            <div id="ct-rec-timeline">
+              <Section icon={<path d="M3 4h10M3 8h10M3 12h6" />} title="Timeline" sub={`${events.length} event${events.length === 1 ? '' : 's'}`}
+                right={events.length > 1 && (
+                  <button onClick={() => setNewestFirst(v => !v)} className="flex-shrink-0 border border-jj-gray-03 bg-white rounded-full px-3 py-1 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
+                    {newestFirst ? 'Oldest first' : 'Newest first'}
+                  </button>
+                )}>
+                <ol className="flex flex-col">
+                  {timeline.map((e, i) => {
+                    const t = `${e.title} ${e.detail}`;
+                    const c = STOP_RE.test(t) ? '#eb1700' : STAGES.some(([, re]) => re.test(t)) ? '#0f68b2' : '#b9b1aa';
+                    return (
+                      <li key={i} className="grid grid-cols-[92px_20px_1fr] gap-2.5">
+                        <span className="text-[12px] font-johnson-text text-jj-gray-07 text-right pt-[1px] tabular-nums">{fmtDate(e.date)}</span>
+                        <span className="flex flex-col items-center" aria-hidden="true">
+                          <span className="w-2.5 h-2.5 rounded-full mt-1" style={{ background: c, boxShadow: `0 0 0 3px #fff, 0 0 0 4px ${c}55` }} />
+                          {i < timeline.length - 1 && <span className="flex-1 w-0.5 bg-[#ece9e6] mt-1 min-h-[18px]" />}
+                        </span>
+                        <span className="flex flex-col gap-0.5 pb-3.5 min-w-0">
+                          <span className="text-[13px] font-johnson-text font-bold text-jj-gray-08">{e.title}</span>
+                          {e.detail && <span className="text-[12px] font-johnson-text text-jj-gray-07 break-words">{e.detail}</span>}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </Section>
+            </div>
+          )}
+
+          <div id="ct-rec-fields">
+            <Section icon={<><rect x="2.5" y="2.5" width="11" height="11" rx="2" /><path d="M2.5 6.5h11M6.5 6.5v7" /></>} title="All fields"
+              sub="Everything else in the record"
+              right={emptyCount > 0 && (
+                <button onClick={() => setShowEmpty(s => !s)} className="flex-shrink-0 text-[11.5px] font-johnson-text text-jj-blue-03 underline">
+                  {showEmpty ? 'Hide empty fields' : `Show ${emptyCount} empty`}
+                </button>
+              )}>
+              <div className="flex flex-col">
+                {rows.map(([c, v]) => {
+                  const nested = parseNested(v);
+                  if (nested != null) return (
+                    <div key={c} className="text-xs font-johnson-text border-b border-jj-gray-01 last:border-0 py-2.5">
+                      <div className="text-jj-gray-07 mb-1.5 flex items-center gap-2">{labelOf(c)}
+                        {Array.isArray(nested) && nested.length > 1 && <span className="text-[10.5px] tabular-nums px-1.5 rounded-full bg-[#ece9e6] text-jj-gray-07">{nested.length}</span>}
+                      </div>
+                      <div className="text-jj-gray-08 break-words max-h-[360px] overflow-y-auto ct-scroll pr-1"><NestedValue value={nested} /></div>
+                    </div>
+                  );
+                  return (
+                    <div key={c} className="flex text-[12.5px] font-johnson-text border-b border-jj-gray-01 last:border-0 py-2 gap-3">
+                      <div className="w-[36%] text-jj-gray-07 flex-shrink-0 break-words">{labelOf(c)}</div>
+                      <div className="w-[64%] text-jj-gray-08 break-words whitespace-pre-wrap max-h-[180px] overflow-y-auto ct-scroll">
+                        {isEmpty(v) ? <span className="text-jj-gray-04">—</span>
+                          : isUrl(v) ? <a href={v} target="_blank" rel="noreferrer" className="text-jj-blue-03 underline break-all">{v}</a>
+                          : looksLikeDate(v) ? `${fmtDate(v)} · ${v}`
+                          : show(v)}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              );
-            })}
+            </Section>
           </div>
         </div>
 
-        {isUrl(link) && (
-          <div className="flex-shrink-0 px-5 py-3.5 border-t border-jj-gray-02 flex items-center gap-2">
+        <div className="flex-shrink-0 px-6 py-3 border-t border-jj-gray-02 flex items-center gap-2 bg-white">
+          {isUrl(link) && (
             <a href={link} target="_blank" rel="noreferrer"
-              className="flex-1 text-center px-[18px] py-[9px] rounded-full bg-jj-red text-white text-[12.5px] font-johnson-text font-medium hover:bg-[#c91400] transition-colors shadow-[0_2px_8px_rgba(235,23,0,.25)]">
+              className="flex-1 text-center px-[18px] py-[10px] rounded-full bg-jj-red text-white text-[13px] font-johnson-text font-medium hover:bg-[#c91400] transition-colors shadow-[0_6px_16px_rgba(235,23,0,.25)]">
               Open source ↗
             </a>
-            <button onClick={copy} className="px-[18px] py-[9px] rounded-full border border-jj-gray-03 text-[12.5px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
-              {copied === 'fail' ? 'Copy blocked' : copied ? 'Copied' : 'Copy link'}
+          )}
+          {isUrl(link) && (
+            <button onClick={() => copy(link, 'link')} className="px-[18px] py-[10px] rounded-full border border-jj-gray-03 text-[13px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
+              {copied === 'link' ? 'Copied' : 'Copy link'}
             </button>
-          </div>
-        )}
+          )}
+          {canDownload && (
+            <button onClick={exportJson} className={`${isUrl(link) ? '' : 'ml-auto '}px-[18px] py-[10px] rounded-full border border-jj-gray-03 text-[13px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01`}>
+              Export
+            </button>
+          )}
+          {copied === 'fail' && <span className="text-[11.5px] font-johnson-text text-jj-maroon-05">Copy blocked by the browser</span>}
+        </div>
       </div>
     </div>,
     document.body
@@ -1969,10 +2385,12 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
   };
   const searchFor = (v) => { lastQ.current = v; setQuery(v); setView({ ctq: v || null }); };
   const clearAll = () => { lastQ.current = ''; setQuery(''); setView({ ctf: null, ctq: null, cty: null }); };
-  const openRecord = (r) => {
+  // list + index (when opened from a list) give the drawer previous / next
+  const openRecord = (r, list = null, index = -1) => {
     logInPage?.('cortellis_record', `Opened Cortellis ${source.label} record "${String(r.title || r.key || '').slice(0, 80)}"`);
-    setRecord(r);
+    setRecord(list ? { ...r, list, index } : r);
   };
+  const stepRecord = (i) => setRecord(cur => (cur?.list?.[i] ? { ...cur.list[i], list: cur.list, index: i } : cur));
 
   // filters on columns this table doesn't have (old link) are ignored by the API, don't show them either
   const knownFilters = meta ? Object.fromEntries(Object.entries(filters).filter(([c]) => meta.facets.includes(c))) : filters;
@@ -2071,7 +2489,7 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
           )}
         </div>
       </div>
-      {record && meta && <RecordDrawer meta={meta} record={record} onClose={() => setRecord(null)} labelOf={labelOf} facetColors={facetColors} />}
+      {record && meta && <RecordDrawer meta={meta} record={record} onClose={() => setRecord(null)} onNavigate={stepRecord} labelOf={labelOf} facetColors={facetColors} />}
     </div>
   );
 }
