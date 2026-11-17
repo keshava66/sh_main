@@ -116,7 +116,7 @@ export default function AboutUs() {
               <h2 className="au-panel-title" id="au-owner">Business owner</h2>
               <ul className="au-row"><Person name="GRA Data Office" office /></ul>
             </section>
-            <section className="au-panel au-sponsor" aria-labelledby="au-sponsor">
+            <section className="au-panel" aria-labelledby="au-sponsor">
               <h2 className="au-panel-title" id="au-sponsor">Sponsor</h2>
               <ul className="au-row"><Person name="Steve French" role="JJT IM Regulatory Strategy" photoFor={photoFor} nameFor={nameFor} /></ul>
             </section>
@@ -136,7 +136,7 @@ export default function AboutUs() {
                   </ul>
                 </div>
               </section>
-              <section className="au-group au-jjt">
+              <section className="au-group">
                 <div className="au-bar"><h3>JJT Regulatory Data Intelligence</h3><p className="au-sub">Technology product leaders and architecture</p></div>
                 <div className="au-tree">
                   <ul className="au-row pair">
