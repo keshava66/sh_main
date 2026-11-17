@@ -5,10 +5,10 @@ import StreamsetsPane from './streamsets/StreamsetsPane';
 import DataShuttle from './DataShuttle';
 
 import sfIcon from "/icons/snowflake_badge.svg";
-import s3Icon from "/icons/s3_badge.svg";
+import s3Icon from "/icons/s3_bucket.svg";
 import pgIcon from "/icons/postgres_badge.svg";
 import ssIcon from "/streamsets_badge.png";
-import shuttleIcon from "/icons/JJ_Icon_Refresh_RGB.svg";
+import shuttleIcon from "/icons/data_shuttle.svg";
 
 // The tabs across the top of Data Studio, in the order they show.
 //
