@@ -125,8 +125,7 @@ export default function AboutUs() {
             <h2 className="au-panel-title" id="au-core">Core members</h2>
             <div className="au-groups">
               <section className="au-group">
-                <div className="au-bar"><h3>GRA Data Office</h3></div>
-                <p className="au-sub">Business product leaders</p>
+                <div className="au-bar"><h3>GRA Data Office</h3><p className="au-sub">Business product leaders</p></div>
                 <div className="au-tree">
                   <ul className="au-row"><Person name="Brian Patti" role="Business Product Manager" photoFor={photoFor} nameFor={nameFor} /></ul>
                   <div className="au-link split" aria-hidden="true" />
@@ -137,8 +136,7 @@ export default function AboutUs() {
                 </div>
               </section>
               <section className="au-group">
-                <div className="au-bar"><h3>JJT Regulatory Data Intelligence</h3></div>
-                <p className="au-sub">Technology product leaders and architecture</p>
+                <div className="au-bar"><h3>JJT Regulatory Data Intelligence</h3><p className="au-sub">Technology product leaders and architecture</p></div>
                 <div className="au-tree">
                   <ul className="au-row pair">
                     <Person name="Mike Martucci" role="Technical Product Owner Manager" photoFor={photoFor} nameFor={nameFor} />
