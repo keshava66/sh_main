@@ -380,15 +380,27 @@ export function useDirectoryPhotos(people = []) {
 }
 const NAME_KEY = (who) => `dir_name_v2_${who}`; // v2: exact directory display name
 
+// Same handle as useDirectoryPhotos: the email when there is one, else the name
+const handleOf = (p) => (p.email && p.email.includes('@') ? p.email.toLowerCase() : tokens(p.name).join(' '));
+
+async function displayNameByEmail(email, token) {
+  const res = await fetch(`${GRAPH}/users/${encodeURIComponent(email)}?$select=displayName`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(String(res.status)); // couldn't check, try next time
+  return (await res.json()).displayName || null;
+}
+
 /*
- * names: array of display names. Returns nameFor(name): the person's display
- * name exactly as the directory has it, or null until it is known (or if
- * nobody matches).
+ * people: array of { name, email } (email optional, and exact when given).
+ * Returns nameFor(person): their display name exactly as the directory has
+ * it, or null until it is known (or if nobody matches).
  */
-export function useDirectoryNames(names = []) {
+export function useDirectoryNames(people = []) {
   const { instance, accounts } = useMsal();
   const [found, setFound] = useState({});
-  const wanted = [...new Set(names.map((n) => tokens(n).join(' ')).filter(Boolean))].sort();
+  const wanted = [...new Set(people.filter(Boolean).map(handleOf).filter(Boolean))].sort();
   const key = wanted.join('|');
 
   useEffect(() => {
@@ -414,8 +426,9 @@ export function useDirectoryNames(names = []) {
       if (!token) return;
       const results = await Promise.all(todo.map(async (who) => {
         try {
-          const best = (await rankMatches(who, token))[0];
-          const name = best?.u.displayName || null;
+          const name = who.includes('@')
+            ? await displayNameByEmail(who, token)
+            : (await rankMatches(who, token))[0]?.u.displayName || null;
           remember(NAME_KEY(who), name || NONE);
           return [who, name];
         } catch {
@@ -429,5 +442,5 @@ export function useDirectoryNames(names = []) {
     return () => { cancelled = true; };
   }, [key, accounts.length, instance]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return useCallback((name) => found[tokens(name).join(' ')] || null, [found]);
+  return useCallback((person) => (person ? found[handleOf(person)] || null : null), [found]);
 }

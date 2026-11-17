@@ -16,15 +16,18 @@ const DELIVERS = [
 const initials = (name) => name.trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 
 // Everyone on the page, so their directory photos load in one go
+// An email makes the lookup exact; a name alone is matched against the directory.
 const TEAM = [
-  "Steve French", "Brian Patti", "Ruchita Mehta", "Carolina Riso",
-  "Mike Martucci", "Rajan Gadkari", "Dhanumjaya Saggurthi",
-].map((name) => ({ name }));
+  { name: "Steve French", email: "sfrench5@its.jnj.com" },
+  { name: "Brian Patti" }, { name: "Ruchita Mehta" }, { name: "Carolina Riso" },
+  { name: "Mike Martucci" }, { name: "Rajan Gadkari" }, { name: "Dhanumjaya Saggurthi" },
+];
+const who = (name) => TEAM.find((p) => p.name === name) || { name };
 
 // Photo and name from the directory when it has them; our own until then (or if not)
 function Person({ name, role, office, photoFor, nameFor }) {
-  const photo = !office && photoFor?.({ name });
-  const shown = (!office && nameFor?.(name)) || name;
+  const photo = !office && photoFor?.(who(name));
+  const shown = (!office && nameFor?.(who(name))) || name;
   return (
     <li className="au-person">
       <div className="au-photo" aria-hidden="true">
@@ -76,7 +79,7 @@ export default function AboutUs() {
   const rootRef = useRef(null);
   useFitToScreen(rootRef);
   const photoFor = useDirectoryPhotos(TEAM);
-  const nameFor = useDirectoryNames(TEAM.map((p) => p.name));
+  const nameFor = useDirectoryNames(TEAM);
 
   return (
     <div className="au" ref={rootRef}>
