@@ -1054,8 +1054,10 @@ function Rail({ meta, overview, error, filters, onToggle, query, setQuery, years
 
 function KpiTile({ label, value, sub, color, title, children, loading }) {
   return (
-    <div className="relative overflow-hidden rounded-[16px] bg-white border border-jj-gray-02 shadow-[0_1px_3px_rgba(49,44,42,.06)] px-4 py-3 min-w-0" style={{ borderTop: `3px solid ${color}` }}>
-      <div className="relative flex items-center gap-1.5 text-[11px] font-johnson-text font-bold uppercase tracking-wider truncate" style={{ color }}>
+    <div className="relative overflow-hidden rounded-[16px] bg-white border border-jj-gray-02 shadow-[0_1px_2px_rgba(49,44,42,.04),0_4px_14px_rgba(49,44,42,.03)] px-4 py-3 min-w-0">
+      <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full pointer-events-none" style={{ background: `radial-gradient(circle, ${color}1f, transparent 70%)` }} />
+      <div className="relative flex items-center gap-1.5 text-[11px] font-johnson-text font-bold uppercase tracking-wider truncate text-jj-gray-07">
+        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
         {label}
       </div>
       <div className="relative flex items-end justify-between gap-3 mt-1.5">
@@ -1211,9 +1213,9 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
   const takeaways = (
     <Card className="px-5 py-4 min-w-0 xl:col-span-2">
       <CardTitle title="Key takeaways" sub="Worked out from the records in view" />
-      <ul className="flex flex-col gap-3">
+      <ul className="flex flex-col gap-2">
         {insightsList.map((t, i) => (
-          <li key={i} className="flex gap-2.5 text-[12.5px] font-johnson-text text-jj-gray-08 leading-relaxed">
+          <li key={i} className="flex gap-2.5 items-start rounded-xl bg-[#faf9f8] border border-jj-gray-01 px-3 py-2.5 text-[12.5px] font-johnson-text text-jj-gray-08 leading-relaxed">
             <span className="flex-shrink-0 w-[22px] h-[22px] rounded-full text-[11px] font-bold flex items-center justify-center mt-[1px] text-white"
               style={{ background: PALETTE[i % PALETTE.length] }}>{i + 1}</span>
             <span className="min-w-0 [&_b]:text-jj-gray-08 [&_b]:font-bold">{t}</span>
@@ -1240,22 +1242,21 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
       </div>
       {latest.map((r, i) => (
         <div key={`${r.key}-${i}`} onClick={() => openRecord({ key: r.key, title: r.title })}
-          className="group flex items-start gap-4 px-5 py-3 border-b border-jj-gray-01 last:border-0 hover:bg-[#faf9f8] cursor-pointer transition-colors">
-          <div className="w-[50px] flex-shrink-0 text-center rounded-xl py-1.5 bg-jj-red/[.07] border border-jj-red/15">
-            <div className="text-[11px] font-johnson-text font-bold uppercase text-[#c21300] leading-none">{fmtDate(r.date, { month: 'short' })}</div>
-            <div className="font-johnson-display font-bold text-[17px] leading-tight text-jj-gray-08">{fmtDate(r.date, { day: 'numeric' })}</div>
-            <div className="text-[11px] font-johnson-text text-jj-gray-07 leading-none">{fmtDate(r.date, { year: 'numeric' })}</div>
+          className="group flex items-center gap-3 px-5 py-2.5 border-b border-jj-gray-01 last:border-0 hover:bg-[#faf9f8] cursor-pointer transition-colors">
+          <div className="w-[46px] flex-shrink-0 text-center rounded-lg py-1 bg-jj-red/[.06]">
+            <div className="text-[10px] font-johnson-text font-bold uppercase text-[#c21300] leading-none">{fmtDate(r.date, { month: 'short' })}</div>
+            <div className="text-[11px] font-johnson-text font-bold text-jj-gray-08 leading-none mt-1">{fmtDate(r.date, { year: 'numeric' })}</div>
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug group-hover:text-[#c21300] transition-colors line-clamp-2">{highlight(r.title || 'Untitled', state.q)}</div>
-            <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+          <div className="min-w-0 flex-1 flex items-center gap-3">
+            <div className="min-w-0 flex-1 text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug group-hover:text-[#c21300] transition-colors truncate" title={r.title || ''}>{highlight(r.title || 'Untitled', state.q)}</div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               {r.tags.map(t => <Pill key={t.column} color={t.column === f0?.column && f0Colors.has(t.value) ? f0Colors.get(t.value) : colorFor(t.column)} title={labelOf(t.column)}>{t.value}</Pill>)}
               {isUrl(r.url) && (
                 <a href={r.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[11.5px] font-johnson-text font-medium text-jj-blue-03 hover:underline">Source ↗</a>
               )}
             </div>
           </div>
-          <span className="flex-shrink-0 text-[11px] font-johnson-text text-jj-gray-07 pt-[2px]">{daysAgo(r.date)}</span>
+          <span className="flex-shrink-0 w-[56px] text-right text-[11px] font-johnson-text text-jj-gray-07">{daysAgo(r.date)}</span>
         </div>
       ))}
     </Card>
