@@ -23,6 +23,7 @@ import graDomainsIcon from "/icons/JJ_Icon_Presentation_RGB.svg";
 import dataStudioIcon from "/icons/JJ_Icon_Database_RGB.svg";
 import pipelineIcon from "/icons/JJ_Icon_Link_RGB.svg";
 import infoIcon from "/icons/JJ_Icon_Info_RGB.svg";
+import logoFull from "/sh_logo.png";
 import logoMark from "/sh_logo_small_black.svg";
 
 const OPEN_W = 280;
@@ -118,12 +119,8 @@ const CSS = `
 /* the list slides under the logo and About us: a shadow shows only where something is hidden */
 .sb.sb-scrolled .sb-brand { box-shadow:0 8px 12px -10px rgba(40,20,10,.35); }
 .sb-brand img { display:block; user-select:none; }
-/* The logo as live text in Johnson Display: sharp at any size, unlike the
-   scaled-down PNG it replaces. */
-.sb-logo-full { display:inline-flex; flex-direction:column; color:#eb1700; font-family:'JohnsonDisplay', Arial, sans-serif; line-height:1; white-space:nowrap; user-select:none; --s:13px; }
-.sb-logo-full .l1 { font-size:var(--s); font-weight:400; letter-spacing:-.005em; padding-left:.12em; }
-.sb-logo-full .l1 b { font-weight:700; letter-spacing:-.02em; }
-.sb-logo-full .l2 { font-size:calc(var(--s) * 2.02); font-weight:700; letter-spacing:-.018em; margin-top:calc(var(--s) * .12); }
+/* same image and size as the Unstructured Explorer header */
+.sb-logo-full { width:96px; height:auto; }
 .sb-logo-mark { width:40px; height:40px; }
 
 .sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:10px 13px 16px; overscroll-behavior:contain; }
@@ -411,7 +408,7 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
         {showLogo && (
           <div className="sb-brand">
             {open
-              ? <span className="sb-logo-full" role="img" aria-label="J&J Innovative Medicine, GRA SmartHub"><span className="l1"><b>J&amp;J</b> Innovative Medicine</span><span className="l2">GRA SmartHub</span></span>
+              ? <img src={logoFull} alt="GRA SmartHub" className="sb-logo-full" draggable={false} />
               : <img src={logoMark} alt="GRA SmartHub" className="sb-logo-mark" draggable={false} />}
           </div>
         )}
