@@ -1054,11 +1054,11 @@ function Rail({ meta, overview, error, filters, onToggle, query, setQuery, years
 
 function KpiTile({ label, value, sub, color, title, children, loading }) {
   return (
-    <div className="relative overflow-hidden rounded-[16px] bg-white border border-jj-gray-02 shadow-[0_1px_3px_rgba(49,44,42,.06)] px-5 py-4 min-w-0" style={{ borderTop: `3px solid ${color}` }}>
+    <div className="relative overflow-hidden rounded-[16px] bg-white border border-jj-gray-02 shadow-[0_1px_3px_rgba(49,44,42,.06)] px-4 py-3 min-w-0" style={{ borderTop: `3px solid ${color}` }}>
       <div className="relative flex items-center gap-1.5 text-[11px] font-johnson-text font-bold uppercase tracking-wider truncate" style={{ color }}>
         {label}
       </div>
-      <div className="relative flex items-end justify-between gap-3 mt-2">
+      <div className="relative flex items-end justify-between gap-3 mt-1.5">
         {loading ? (
           <div className="min-w-0 flex-1 flex flex-col gap-2.5 pt-1" role="status" aria-label="Loading">
             <Bar w="55%" h={22} className="!rounded-lg" />
@@ -1066,8 +1066,8 @@ function KpiTile({ label, value, sub, color, title, children, loading }) {
           </div>
         ) : (
           <div className="min-w-0">
-            <div className="font-johnson-display font-bold text-[28px] leading-none text-jj-gray-08 tabular-nums truncate" title={title}>{value}</div>
-            <div className="text-[12px] font-johnson-text text-jj-gray-07 mt-2 truncate" title={typeof sub === 'string' ? sub : undefined}>{sub}</div>
+            <div className="font-johnson-display font-bold text-[22px] leading-none text-jj-gray-08 tabular-nums truncate" title={title}>{value}</div>
+            <div className="text-[12px] font-johnson-text text-jj-gray-07 mt-1.5 truncate" title={typeof sub === 'string' ? sub : undefined}>{sub}</div>
           </div>
         )}
         {children}
@@ -1132,7 +1132,7 @@ function ExploreSkeleton() {
       <div className="grid gap-3.5 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
         {['#eb1700', '#0f68b2', '#2a7a12', '#7d33b0'].map(c => <KpiTile key={c} label={<Bar w={90} h={9} />} color={c} loading />)}
       </div>
-      <div className="grid gap-4 xl:grid-cols-3"><SkelCard height={330} className="xl:col-span-2" /><SkelCard height={330} /></div>
+      <div className="grid gap-4 xl:grid-cols-3"><SkelCard height={280} className="xl:col-span-2" /><SkelCard height={280} /></div>
       <div className="grid gap-4 xl:grid-cols-5"><SkelCard height={300} lines={5} className="xl:col-span-2" /><SkelCard height={300} lines={6} className="xl:col-span-3" /></div>
     </div>
   );
@@ -1178,7 +1178,7 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
     <div className="grid gap-3.5 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 flex-shrink-0">
       <KpiTile label="Records" color="#eb1700" value={compact(total)} title={fmtNum(total)}
         sub={anyFilter ? `${fmtNum(total)} matching` : `${fmtNum(total)} total`}>
-        <Sparkline values={spark} color="#eb1700" width={96} />
+        <Sparkline values={spark} color="#eb1700" width={84} />
       </KpiTile>
       {wait.kpis || wait.trend ? <KpiTile label="Last 12 months" color="#0f68b2" loading /> : kpis.last_12m != null && (kpis.last_12m > 0 || kpis.prior_12m > 0) ? (
         <KpiTile label="Last 12 months" color="#0f68b2" value={fmtNum(kpis.last_12m)}
@@ -1194,17 +1194,17 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
     </div>
   );
 
-  const trendCard = (tall) => meta.has_years && (wait.trend ? <SkelCard height={tall ? 410 : 330} className={tall ? '' : 'xl:col-span-2'} /> : (
+  const trendCard = (tall) => meta.has_years && (wait.trend ? <SkelCard height={tall ? 350 : 280} className={tall ? '' : 'xl:col-span-2'} /> : (
     <Card className={`px-5 py-4 min-w-0 ${tall ? '' : 'xl:col-span-2'}`}>
-      <YearActivity trend={trend} stack={stack} years={state.years} onPickYear={setYears} labelOf={labelOf} height={tall ? 340 : 260} valueColor={valueColor}
+      <YearActivity trend={trend} stack={stack} years={state.years} onPickYear={setYears} labelOf={labelOf} height={tall ? 280 : 210} valueColor={valueColor}
         title="Records over time" sub={`By ${meta.year_label.toLowerCase()}${stack?.column ? `, split by ${labelOf(stack.column).toLowerCase()}` : ''} · hover for detail · click to focus a year`} />
     </Card>
   ));
 
-  const mixCard = (center = true) => wait.facets ? <SkelCard height={330} /> : f0 && (
+  const mixCard = (center = true) => wait.facets ? <SkelCard height={280} /> : f0 && (
     <Card className={`px-5 py-4 min-w-0 flex flex-col ${meta.has_years ? '' : 'xl:col-span-3'}`}>
       <CardTitle title={`${labelOf(f0.column)} mix`} sub="Share of records · click to filter" />
-      <div className={`flex-1 flex justify-center py-2 ${center ? 'items-center' : 'items-start pt-4'}`}><DonutCard big size={188} values={f0.values} total={total} active={state.filters[f0.column] || []} onPick={(v) => onToggle(f0.column, v)} colors={STACK} /></div>
+      <div className={`flex-1 flex justify-center py-2 ${center ? 'items-center' : 'items-start pt-4'}`}><DonutCard big size={156} values={f0.values} total={total} active={state.filters[f0.column] || []} onPick={(v) => onToggle(f0.column, v)} colors={STACK} /></div>
     </Card>
   );
 
