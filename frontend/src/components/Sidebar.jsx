@@ -119,8 +119,8 @@ const CSS = `
 /* the list slides under the logo and About us: a shadow shows only where something is hidden */
 .sb.sb-scrolled .sb-brand { box-shadow:0 8px 12px -10px rgba(40,20,10,.35); }
 .sb-brand img { display:block; user-select:none; }
-/* same image and size as the Unstructured Explorer header */
-.sb-logo-full { width:96px; height:auto; }
+/* same image as the Unstructured Explorer header, a little larger */
+.sb-logo-full { width:124px; height:auto; }
 .sb-logo-mark { width:40px; height:40px; }
 
 .sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:10px 13px 16px; overscroll-behavior:contain; }
