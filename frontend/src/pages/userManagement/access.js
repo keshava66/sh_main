@@ -302,6 +302,7 @@ export const PERMISSION_GROUPS = [
       { key: 'editGraDataDomains', label: 'Edit Records', description: 'Edit the domain records inline from the records table' },
     ],
   },
+  { key: 'viewEvidenceFlow', label: 'EvidenceFlow', icon: aiIcon, description: 'Access to the EvidenceFlow PDF evidence extraction and review app', children: [] },
   {
     key: 'viewRAG', label: 'RAG', icon: infographicIcon, description: 'Access to RAG documents',
     children: [

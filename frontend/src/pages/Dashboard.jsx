@@ -25,7 +25,7 @@ const ORBIT_LABEL = {
   dqe: 'DQE', rag: 'RAG', 'fuzzy-match': 'Fuzzy', 'ai-chatbot': 'Assistant',
   'ingestion-lab': 'Ingestion', 'data-api': 'Data API', unstructured: 'Unstructured',
   'gra-data-domains': 'Structured', 'data-studio': 'Studio', 'user-management': 'Users',
-  'communication-center': 'Comms', audit: 'Audit',
+  'communication-center': 'Comms', audit: 'Audit', evidenceflow: 'Evidence',
 };
 
 const HEADLINES = ['Where shall we begin?', 'Your data, already in order.', 'Every check, one hub.', 'Ask. Explore. Validate.'];

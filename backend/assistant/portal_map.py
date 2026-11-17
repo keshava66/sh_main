@@ -152,6 +152,11 @@ d("ingest", "Ingestion Lab", "/ingestion-lab", perms=("viewIngestionLab",),
            "run ingestion", "run extraction", "extraction script", "ingestion runs", "ingestion history"),
   about="Run the configured ingestion steps on the server: inputs, live output, stop, run history.")
 
+# ---- EvidenceFlow ----
+d("evidenceflow", "EvidenceFlow", "/evidenceflow", perms=("viewEvidenceFlow",),
+  aliases=("evidenceflow", "evidence flow", "evidence", "pbrer", "dsur", "original pdf review"),
+  about="Embedded EvidenceFlow app: extract and review evidence from original PBRER / DSUR PDFs, review queue, CSV export.")
+
 # ---- Fuzzy match ----
 d("fuzzy", "Fuzzy match", "/fuzzy-match", perms=("viewFuzzyMatch",),
   aliases=("fuzzy match", "fuzzy matching", "fuzzy search", "catalog search", "denodo",
@@ -444,7 +449,7 @@ ALLOWED_PARAMS = {
                "action": None, "from": None, "to": None, "event": None},
     # q runs the search on arrival (with ~0.9 / ~0.8 for typos), m=meta searches the catalog metadata
     "/fuzzy-match": {"q": None, "m": {"meta"}}, "/dashboard": {}, "/ai-assistant": {},
-    "/ingestion-lab": {},
+    "/ingestion-lab": {}, "/evidenceflow": {},
 }
 ROUTES = set(ALLOWED_PARAMS)
 

@@ -23,6 +23,7 @@ import graDomainsIcon from "/icons/JJ_Icon_Presentation_RGB.svg";
 import dataStudioIcon from "/icons/JJ_Icon_Database_RGB.svg";
 import pipelineIcon from "/icons/JJ_Icon_Link_RGB.svg";
 import infoIcon from "/icons/JJ_Icon_Info_RGB.svg";
+import evidenceFlowIcon from "/icons/JJ_Icon_AI_RGB.svg";
 import logoFull from "/sh_logo.png";
 import logoMark from "/sh_logo_small_black.svg";
 
@@ -42,6 +43,7 @@ const MENU_GROUPS = [
     { id: "pipeline-studio",       label: "Pipeline Studio",       icon: pipelineIcon,       path: "/pipeline-studio",       permission: "runStreamsetsExtractor" },
     { id: "ingestion-lab",  label: "Ingestion Lab",  icon: validationIcon,     path: "/ingestion-lab",  permission: "viewIngestionLab" },
     { id: "fuzzy-match",           label: "Fuzzy match",           icon: searchIcon,         path: "/fuzzy-match",           permission: "viewFuzzyMatch" },
+    { id: "evidenceflow",          label: "EvidenceFlow",          icon: evidenceFlowIcon,   path: "/evidenceflow",          permission: "viewEvidenceFlow" },
   ]],
   ["Explorers", [
     { id: "unstructured-explorer", label: "Unstructured Explorer", icon: unstructuredIcon,   path: "/unstructured-explorer", permission: "viewUnstructured" },

@@ -37,6 +37,7 @@ const DataApiTableView = lazyPage(() => import("./pages/dataApi/DataApiTableView
 const CommunicationCenter = lazyPage(() => import("./pages/CommunicationCenter"), "/communication-center");
 const PipelineValidation = lazyPage(() => import("./pages/PipelineValidation"), "/pipeline-studio");
 const AboutUs = lazyPage(() => import("./pages/AboutUs"), "/about");
+const EvidenceFlow = lazyPage(() => import("./pages/EvidenceFlow"), "/evidenceflow");
 
 // What to fetch in the background once the first screen is up, only for
 // pages this person can open
@@ -290,6 +291,14 @@ const AppLayoutInner = () => {
               element={
                 <PermissionRoute permission="runStreamsetsExtractor">
                   <PipelineValidation />
+                </PermissionRoute>
+              }
+            />
+            <Route
+              path="/evidenceflow"
+              element={
+                <PermissionRoute permission="viewEvidenceFlow">
+                  <EvidenceFlow />
                 </PermissionRoute>
               }
             />

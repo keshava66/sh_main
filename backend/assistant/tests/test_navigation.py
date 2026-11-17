@@ -107,6 +107,7 @@ CASES = [
     ("open the immbot data table", "un.immbot.table"),
     ("take me to the immbot breakdown", "un.immbot.breakdown"),
     # --- Structured Explorer ---
+    ("open evidenceflow", "evidenceflow"),
     ("open structured explorer", "structured"),
     ("take me to structured packages", "structured"),
     ("who are the data stewards", "structured"),

@@ -61,7 +61,7 @@ ALL_PERMISSIONS = [
     "useAllSnowflakeRoles", "writeSnowflake", "copySnowflakeTables",
     "runPostgresStudio", "runS3Explorer", "runStreamsetsExtractor", "runDataShuttle",
     "viewStreamsetsSecrets", "viewGraDataDomains",
-    "editGraDataDomains", "viewAudit", "viewUserManagement",
+    "editGraDataDomains", "viewEvidenceFlow", "viewAudit", "viewUserManagement",
     "manageUsers", "manageRoles", "runBDCOperations", "viewBDCSuperuser",
     "viewBDCExecutive", "viewBDCStandard", "downloadBDCData",
     "viewAssistantAvatar", "manageDataAPIExports", "viewPGindexer", "buildPGindexer",
@@ -568,6 +568,14 @@ def with_snowflake_subperms(perms: Dict[str, Any], role: str) -> Dict[str, Any]:
     return {**perms, **{p: on for p in missing}}
 
 
+def with_evidence_flow(perms: Dict[str, Any], role: str) -> Dict[str, Any]:
+    """Roles saved before EvidenceFlow existed: admin gets it, everyone else
+    needs it ticked in User Management."""
+    if "viewEvidenceFlow" in perms:
+        return perms
+    return {**perms, "viewEvidenceFlow": role == "admin"}
+
+
 def get_role_permissions(role: str, config: Optional[dict] = None) -> Dict[str, bool]:
     """Custom roles (and custom overrides of built-ins) win over defaults."""
     if config is None:
@@ -575,8 +583,9 @@ def get_role_permissions(role: str, config: Optional[dict] = None) -> Dict[str, 
     custom = (config.get("custom_roles") or {}).get(role)
     if custom and isinstance(custom.get("permissions"), dict):
         merged = {p: False for p in ALL_PERMISSIONS}
+        stored = with_evidence_flow(custom["permissions"], role)
         stored = with_unstructured_downloads(with_snowflake_subperms(
-            with_ind_cta_quality(with_bdc_standard(with_bdc_downloads(with_unstructured_tabs(with_data_studio_access(custom["permissions"])))), role), role), role)
+            with_ind_cta_quality(with_bdc_standard(with_bdc_downloads(with_unstructured_tabs(with_data_studio_access(stored)))), role), role), role)
         merged.update({k: bool(v) for k, v in stored.items() if k in merged})
         return merged
     definition = BUILTIN_ROLES.get(role)

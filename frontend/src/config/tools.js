@@ -10,6 +10,7 @@ import dataStudioIcon    from "/icons/JJ_Icon_Database_RGB.svg";
 import dataApiIcon       from "/icons/JJ_Icon_Network_RGB.svg";
 import auditIcon         from "/icons/JJ_Icon_Stationery_RGB.svg";
 import pipelineIcon      from "/icons/JJ_Icon_Link_RGB.svg";
+import evidenceFlowIcon  from "/icons/JJ_Icon_AI_RGB.svg";
 
 export const TOOL_CATALOG = [
   {
@@ -69,6 +70,13 @@ export const TOOL_CATALOG = [
     description: 'Search every Denodo view for a word or value, with typo tolerance, metadata search and Excel export.',
     icon: searchIcon, badge: null, path: '/fuzzy-match',
     permission: 'viewFuzzyMatch', colorKey: 'dgray', category: 'Data',
+  },
+  {
+    id: 'evidenceflow',
+    title: 'EvidenceFlow',
+    description: 'Review original PBRER and DSUR PDFs, extract evidence linked to the source page, and export it for review.',
+    icon: evidenceFlowIcon, badge: 'NEW', path: '/evidenceflow',
+    permission: 'viewEvidenceFlow', colorKey: 'gray', category: 'Data',
   },
   {
     id: 'ai-chatbot',

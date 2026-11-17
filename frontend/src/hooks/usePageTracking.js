@@ -18,6 +18,7 @@ const ROUTE_LABELS = {
   '/data-studio':           'Data Studio',
   '/communication-center':  'Communication Center',
   '/pipeline-studio':       'Pipeline Studio',
+  '/evidenceflow':          'EvidenceFlow',
   '/audit-edit':            'Audit Log Edit Mode',
 };
 export function usePageTracking(userEmail) {

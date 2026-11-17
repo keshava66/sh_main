@@ -72,6 +72,7 @@ const ROLE_DEFINITIONS = {
       viewRimDocsAgentic: true,
       viewUnstructured: true,
       viewGraDataDomains: true,
+      viewEvidenceFlow: true,
       editGraDataDomains: true,
       viewUnstructuredSQL: true,
       downloadUnstructuredData: true,
@@ -133,6 +134,7 @@ const ROLE_DEFINITIONS = {
       viewRimDocsAgentic: false,
       viewUnstructured: false,
       viewGraDataDomains: false,
+      viewEvidenceFlow: false,
       editGraDataDomains: false,
       viewUnstructuredSQL: false,
       downloadUnstructuredData: false,
@@ -189,6 +191,7 @@ const ROLE_DEFINITIONS = {
       viewRimDocsAgentic: false,
       viewUnstructured: false,
       viewGraDataDomains: false,
+      viewEvidenceFlow: false,
       editGraDataDomains: false,
       viewUnstructuredSQL: false,
       downloadUnstructuredData: false,
@@ -240,6 +243,7 @@ const ROLE_DEFINITIONS = {
       viewRimDocsAgentic: false,
       viewUnstructured: false,
       viewGraDataDomains: false,
+      viewEvidenceFlow: false,
       editGraDataDomains: false,
       viewUnstructuredSQL: false,
       downloadUnstructuredData: false,
@@ -301,6 +305,8 @@ const withDataStudioAccess = (roles) => Object.fromEntries(
     if (!('viewIndCtaQuality' in perms)) perms = { ...perms, viewIndCtaQuality: ['admin', 'it_viewer'].includes(id) && perms.viewDQE === true };
     if (!('viewIndCtaSql' in perms)) perms = { ...perms, viewIndCtaSql: id === 'admin' && perms.viewIndCtaQuality === true };
     if (!('viewSafetyDQ' in perms)) perms = { ...perms, viewSafetyDQ: id === 'admin' && perms.viewDQE === true };
+    // Same as auth.py with_evidence_flow: admin only until ticked in User Management
+    if (!('viewEvidenceFlow' in perms)) perms = { ...perms, viewEvidenceFlow: id === 'admin' };
     // Same as auth.py with_unstructured_tabs: children missing from older roles follow their parent
     TAB_GROUPS.forEach(([parent, kids]) => {
       if (!kids.some(k => k in perms)) perms = { ...perms, ...Object.fromEntries(kids.map(k => [k, perms[parent] === true])) };

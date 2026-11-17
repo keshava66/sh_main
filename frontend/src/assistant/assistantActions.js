@@ -75,6 +75,7 @@ const ROUTE_ALIASES = {
   '/rag': ['rags', 'knowledge-base', 'knowledge-bases'],
   '/fuzzy-match': ['fuzzy', 'fuzzymatch', 'matching'],
   '/ingestion-lab': ['ingestion', 'ingestion-lab'],
+  '/evidenceflow': ['evidenceflow', 'evidence-flow', 'evidence'],
   '/data-api': ['data-api-export', 'api-export', 'exports'],
   '/unstructured-explorer': ['unstructured'],
   '/data-studio': [
