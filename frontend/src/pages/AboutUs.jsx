@@ -1,6 +1,6 @@
 import React, { useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { useDirectoryPhotos } from "../hooks/useDirectoryPhotos";
+import { useDirectoryNames, useDirectoryPhotos } from "../hooks/useDirectoryPhotos";
 import jjLogo from "/jj-logo.png";
 import "./AboutUs.css";
 
@@ -21,15 +21,16 @@ const TEAM = [
   "Mike Martucci", "Rajan Gadkari", "Dhanumjaya Saggurthi",
 ].map((name) => ({ name }));
 
-// Photo from the directory when there is one, initials until then (or if not)
-function Person({ name, role, office, photoFor }) {
+// Photo and name from the directory when it has them; our own until then (or if not)
+function Person({ name, role, office, photoFor, nameFor }) {
   const photo = !office && photoFor?.({ name });
+  const shown = (!office && nameFor?.(name)) || name;
   return (
     <li className="au-person">
       <div className="au-photo" aria-hidden="true">
-        {office ? <span className="au-office" /> : photo ? <img src={photo} alt="" /> : initials(name)}
+        {office ? <span className="au-office" /> : photo ? <img src={photo} alt="" /> : initials(shown)}
       </div>
-      <div className="au-name">{name}</div>
+      <div className="au-name">{shown}</div>
       <div className="au-role">{role}</div>
     </li>
   );
@@ -75,6 +76,7 @@ export default function AboutUs() {
   const rootRef = useRef(null);
   useFitToScreen(rootRef);
   const photoFor = useDirectoryPhotos(TEAM);
+  const nameFor = useDirectoryNames(TEAM.map((p) => p.name));
 
   return (
     <div className="au" ref={rootRef}>
@@ -112,7 +114,7 @@ export default function AboutUs() {
             </section>
             <section className="au-panel" aria-labelledby="au-sponsor">
               <h2 className="au-panel-title" id="au-sponsor">Sponsor</h2>
-              <ul className="au-row"><Person name="Steve French" role="JJT IM Regulatory Strategy" photoFor={photoFor} /></ul>
+              <ul className="au-row"><Person name="Steve French" role="JJT IM Regulatory Strategy" photoFor={photoFor} nameFor={nameFor} /></ul>
             </section>
           </div>
 
@@ -123,11 +125,11 @@ export default function AboutUs() {
                 <div className="au-bar"><h3>GRA Data Office</h3></div>
                 <p className="au-sub">Business product leaders</p>
                 <div className="au-tree">
-                  <ul className="au-row"><Person name="Brian Patti" role="Business Product Manager" photoFor={photoFor} /></ul>
+                  <ul className="au-row"><Person name="Brian Patti" role="Business Product Manager" photoFor={photoFor} nameFor={nameFor} /></ul>
                   <div className="au-link split" aria-hidden="true" />
                   <ul className="au-row pair">
-                    <Person name="Ruchita Mehta" role="Business Product Owner" photoFor={photoFor} />
-                    <Person name="Carolina Riso" role="Business Product Owner" photoFor={photoFor} />
+                    <Person name="Ruchita Mehta" role="Business Product Owner" photoFor={photoFor} nameFor={nameFor} />
+                    <Person name="Carolina Riso" role="Business Product Owner" photoFor={photoFor} nameFor={nameFor} />
                   </ul>
                 </div>
               </section>
@@ -136,11 +138,11 @@ export default function AboutUs() {
                 <p className="au-sub">Technology product leaders and architecture</p>
                 <div className="au-tree">
                   <ul className="au-row pair">
-                    <Person name="Mike Martucci" role="Technical Product Owner Manager" photoFor={photoFor} />
-                    <Person name="Rajan Gadkari" role="Technical Product Owner" photoFor={photoFor} />
+                    <Person name="Mike Martucci" role="Technical Product Owner Manager" photoFor={photoFor} nameFor={nameFor} />
+                    <Person name="Rajan Gadkari" role="Technical Product Owner" photoFor={photoFor} nameFor={nameFor} />
                   </ul>
                   <div className="au-link join" aria-hidden="true" />
-                  <ul className="au-row"><Person name="Dhanumjaya Saggurthi" role="AI Architect" photoFor={photoFor} /></ul>
+                  <ul className="au-row"><Person name="Dhanumjaya Saggurthi" role="AI Architect" photoFor={photoFor} nameFor={nameFor} /></ul>
                 </div>
               </section>
             </div>

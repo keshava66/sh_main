@@ -89,7 +89,7 @@ function nameScore(wanted, candidate) {
   return pool.length > 2 ? score * 0.9 : score;
 }
 
-const FIELDS = 'id,displayName,mail,userPrincipalName,accountEnabled,jobTitle,department';
+const FIELDS = 'id,displayName,givenName,surname,mail,userPrincipalName,accountEnabled,jobTitle,department';
 
 async function searchUsers(name, token) {
   const runs = [
@@ -126,18 +126,20 @@ function accountWeight(u) {
   return w;
 }
 
-async function resolveCandidates(rawName, token) {
+// Directory accounts that match a name, best first
+async function rankMatches(rawName, token) {
   const wanted = tokens(rawName);
   if (wanted.length < 2) return []; // single word is too weak to match on
 
   const found = await searchUsers(cleanName(rawName), token);
-  if (!found.length) return [];
-
-  const ranked = found
-    .map((u) => ({ id: u.id, score: nameScore(wanted, tokens(u.displayName)), weight: accountWeight(u) }))
+  return found
+    .map((u) => ({ u, id: u.id, score: nameScore(wanted, tokens(u.displayName)), weight: accountWeight(u) }))
     .filter((c) => c.score >= MIN_SCORE)
     .sort((a, b) => b.score - a.score || b.weight - a.weight);
+}
 
+async function resolveCandidates(rawName, token) {
+  const ranked = await rankMatches(rawName, token);
   if (!ranked.length) return [];
 
   const top = ranked[0].score;
@@ -375,4 +377,65 @@ export function useDirectoryPhotos(people = []) {
       : tokens(person.name).join(' ');
     return photos[who] || null;
   }, [photos]);
+}
+const NAME_KEY = (who) => `dir_name_v1_${who}`;
+
+// "Brian Patti", not the directory's "Patti, Brian [JNJUS]"
+function readableName(u) {
+  const full = [u.givenName, u.surname].filter(Boolean).join(' ').trim();
+  if (full) return full;
+  const plain = cleanName(u.displayName);
+  const [last, first] = plain.split(',').map((x) => x.trim());
+  return first ? `${first} ${last}` : plain;
+}
+
+/*
+ * names: array of display names. Returns nameFor(name): the person's name as
+ * the directory has it, or null until it is known (or if nobody matches).
+ */
+export function useDirectoryNames(names = []) {
+  const { instance, accounts } = useMsal();
+  const [found, setFound] = useState({});
+  const wanted = [...new Set(names.map((n) => tokens(n).join(' ')).filter(Boolean))].sort();
+  const key = wanted.join('|');
+
+  useEffect(() => {
+    if (!wanted.length || !accounts.length) return undefined;
+    const cached = {};
+    const todo = [];
+    wanted.forEach((who) => {
+      const hit = sessionStorage.getItem(NAME_KEY(who));
+      if (hit === null) todo.push(who);
+      else if (hit !== NONE) cached[who] = hit;
+    });
+    if (Object.keys(cached).length) setFound((prev) => ({ ...prev, ...cached }));
+    if (!todo.length) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      let token;
+      try {
+        token = (await instance.acquireTokenSilent({ scopes: ['User.Read.All'], account: accounts[0] }))?.accessToken;
+      } catch {
+        return; // names are a nicety, never prompt for them
+      }
+      if (!token) return;
+      const results = await Promise.all(todo.map(async (who) => {
+        try {
+          const best = (await rankMatches(who, token))[0];
+          const name = best ? readableName(best.u) : null;
+          remember(NAME_KEY(who), name || NONE);
+          return [who, name];
+        } catch {
+          return [who, null]; // couldn't check, try next time
+        }
+      }));
+      if (cancelled) return;
+      const updates = Object.fromEntries(results.filter(([, n]) => n));
+      if (Object.keys(updates).length) setFound((prev) => ({ ...prev, ...updates }));
+    })();
+    return () => { cancelled = true; };
+  }, [key, accounts.length, instance]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return useCallback((name) => found[tokens(name).join(' ')] || null, [found]);
 }
