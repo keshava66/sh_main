@@ -27,7 +27,8 @@ const who = (name) => TEAM.find((p) => p.name === name) || { name };
 // Photo and name from the directory when it has them; our own until then (or if not)
 function Person({ name, role, office, photoFor, nameFor }) {
   const photo = !office && photoFor?.(who(name));
-  const shown = (!office && nameFor?.(who(name))) || name;
+  // The directory name as-is, minus its [JRDUS]-style tag
+  const shown = ((!office && nameFor?.(who(name))) || name).replace(/\s*\[[^\]]*\]/g, "").trim();
   return (
     <li className="au-person">
       <div className="au-photo" aria-hidden="true">
@@ -115,7 +116,7 @@ export default function AboutUs() {
               <h2 className="au-panel-title" id="au-owner">Business owner</h2>
               <ul className="au-row"><Person name="GRA Data Office" office /></ul>
             </section>
-            <section className="au-panel" aria-labelledby="au-sponsor">
+            <section className="au-panel au-sponsor" aria-labelledby="au-sponsor">
               <h2 className="au-panel-title" id="au-sponsor">Sponsor</h2>
               <ul className="au-row"><Person name="Steve French" role="JJT IM Regulatory Strategy" photoFor={photoFor} nameFor={nameFor} /></ul>
             </section>
@@ -135,7 +136,7 @@ export default function AboutUs() {
                   </ul>
                 </div>
               </section>
-              <section className="au-group">
+              <section className="au-group au-jjt">
                 <div className="au-bar"><h3>JJT Regulatory Data Intelligence</h3><p className="au-sub">Technology product leaders and architecture</p></div>
                 <div className="au-tree">
                   <ul className="au-row pair">
