@@ -119,13 +119,11 @@ const CSS = `
 .sb.sb-scrolled .sb-brand { border-bottom-color:#efeae6; box-shadow:0 8px 12px -10px rgba(40,20,10,.35); }
 .sb-brand img { display:block; user-select:none; }
 /* The logo as live text in Johnson Display: sharp at any size, unlike the
-   scaled-down PNG it replaces. Display Medium is loaded for the logo only, so
-   nothing else in the app changes. */
-@font-face { font-family:'SbLogoMedium'; src:url('/fonts/JohnsonDisplay-Medium.otf') format('opentype'); font-weight:500; font-display:swap; }
+   scaled-down PNG it replaces. */
 .sb-logo-full { display:inline-flex; flex-direction:column; color:#eb1700; font-family:'JohnsonDisplay', Arial, sans-serif; line-height:1; white-space:nowrap; user-select:none; --s:13px; }
 .sb-logo-full .l1 { font-size:var(--s); font-weight:400; letter-spacing:-.005em; padding-left:.12em; }
 .sb-logo-full .l1 b { font-weight:700; letter-spacing:-.02em; }
-.sb-logo-full .l2 { font-family:'SbLogoMedium', 'JohnsonDisplay', Arial, sans-serif; font-size:calc(var(--s) * 2.02); font-weight:500; letter-spacing:-.018em; margin-top:calc(var(--s) * .12); }
+.sb-logo-full .l2 { font-size:calc(var(--s) * 2.02); font-weight:700; letter-spacing:-.018em; margin-top:calc(var(--s) * .12); }
 .sb-logo-mark { width:40px; height:40px; }
 
 .sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:10px 13px 16px; overscroll-behavior:contain; }
