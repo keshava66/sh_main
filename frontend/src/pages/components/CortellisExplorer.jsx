@@ -116,7 +116,7 @@ function useChartTip() {
   }, [open]);
   const node = tip ? ReactDOM.createPortal(
     <div
-      className="fixed z-[60] pointer-events-none rounded-xl bg-white/95 backdrop-blur border border-jj-gray-02 text-jj-gray-08 shadow-[0_10px_30px_rgba(49,44,42,.14)] px-3 py-2"
+      className="fixed z-[60] pointer-events-none rounded-xl bg-white border border-jj-gray-02 text-jj-gray-08 shadow-[0_10px_30px_rgba(49,44,42,.14)] px-3 py-2"
       style={{
         left: Math.max(8, Math.min(tip.x + 14, window.innerWidth - 280)),
         top: (() => {
@@ -199,8 +199,8 @@ const STYLES = `
 @keyframes ct-shine { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes ct-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .ct-rise { animation: ct-rise .4s cubic-bezier(.2,.7,.3,1) both; }
-@keyframes ct-pop { from { opacity: 0; transform: scale(.96) translateY(10px); } to { opacity: 1; transform: none; } }
-.ct-pop { animation: ct-pop .32s cubic-bezier(.2,.8,.3,1) both; }
+@keyframes ct-pop { from { opacity: 0; transform: translate3d(0, 10px, 0) scale(.97); } to { opacity: 1; transform: none; } }
+.ct-pop { animation: ct-pop .28s cubic-bezier(.2,.8,.3,1) both; will-change: transform, opacity; }
 .ct-dots { background-image: radial-gradient(rgba(49,44,42,.07) 1px, transparent 1px); background-size: 14px 14px; }
 .ct-shimmer { background: linear-gradient(90deg, #ece8e4 30%, #f9f8f7 50%, #ece8e4 70%); background-size: 200% 100%; animation: ct-shine 1.6s linear infinite; }
 /* scrollbar look comes from the explorer-wide ue-scrollbars style */
@@ -1709,7 +1709,7 @@ function MoleculeView({ smiles, width = 300, height = 220, onFail, theme = 'ligh
   if (state === 'fail') return null;
   return (
     <div className="relative" style={{ width, height }}>
-      {state === 'loading' && <div className={`absolute inset-0 rounded-xl ${theme === 'lab' ? 'bg-white/[.04] animate-pulse' : 'ct-shimmer'}`} role="status" aria-label="Drawing structure" />}
+      {state === 'loading' && <div className={`absolute inset-0 rounded-xl animate-pulse ${theme === 'lab' ? 'bg-white/[.04]' : 'bg-[#ece8e4]/60'}`} role="status" aria-label="Drawing structure" />}
       <svg ref={(el) => { ref.current = el; if (svgRef) svgRef.current = el; }} role="img" aria-label="Chemical structure"
         style={{ width, height, opacity: state === 'ok' ? 1 : 0, transition: 'opacity .5s ease' }} />
     </div>
@@ -1880,8 +1880,12 @@ const ELEMENT_NAME = { C: 'Carbon', N: 'Nitrogen', O: 'Oxygen', S: 'Sulfur', F: 
 const elColor = (el, theme) => MOL_THEMES[theme][el.toUpperCase()] || (theme === 'lab' ? '#f4efe9' : '#312c2a');
 
 function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, copied, canDownload }) {
-  const [theme, setTheme] = useState('lab');
-  const [view, setView] = useState({ k: 1, x: 0, y: 0 });
+  const [theme, setTheme] = useState('light');
+  // draw only once the window has finished opening: drawing is the one heavy step,
+  // and doing it mid-animation is what makes slow machines stutter
+  const [opened, setOpened] = useState(false);
+  // no animation (reduced motion, Windows "animation effects" off) means no animationend: don't wait for it
+  useEffect(() => { const t = setTimeout(() => setOpened(true), 360); return () => clearTimeout(t); }, []);
   const drag = useRef(null);
   const svgRef = useRef(null);
   const dark = theme === 'lab';
@@ -1893,34 +1897,61 @@ function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, cop
   const otherFacts = facts.filter(f => f !== formulaFact);
   const sub = (v) => String(v).replace(/(\d+)/g, (d) => d.split('').map(x => '₀₁₂₃₄₅₆₇₈₉'[x]).join(''));
 
-  // the drawing keeps a fixed bond length, so small molecules sit small: zoom to fill on open
-  const [fitK, setFitK] = useState(1);
+  // Zoom and pan never go through React: the transform is written straight to the
+  // stage once per frame, so dragging stays smooth even on a cloud PC with no GPU.
+  // will-change is only on while moving; at rest it comes off so the drawing is
+  // re-rendered crisp at the new size.
+  const stage = useRef(null);
+  const pctRef = useRef(null);
+  const v = useRef({ k: 1, x: 0, y: 0 });
   const fitRef = useRef(1);
+  const fitted = useRef(false);
+  const raf = useRef(0);
+  const idle = useRef(0);
+  const paint = (animate) => {
+    cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(() => {
+      const el = stage.current;
+      if (!el) return;
+      const { k, x, y } = v.current;
+      el.style.transition = animate ? 'transform .22s cubic-bezier(.2,.8,.3,1)' : 'none';
+      el.style.willChange = 'transform';
+      el.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${k})`;
+      if (pctRef.current) pctRef.current.textContent = `${Math.round((k / fitRef.current) * 100)}%`;
+      clearTimeout(idle.current);
+      idle.current = setTimeout(() => { if (stage.current) stage.current.style.willChange = 'auto'; }, animate ? 320 : 180);
+    });
+  };
+  const moveTo = (next, animate) => { v.current = next; paint(animate); };
+  const zoomBy = (f, animate = true) => moveTo({ ...v.current, k: Math.min(6, Math.max(0.5, v.current.k * f)) }, animate);
+  const reset = () => moveTo({ k: fitRef.current, x: 0, y: 0 }, true);
+  // the drawing keeps a fixed bond length, so small molecules sit small: zoom to fill on open
   const fit = (svg) => {
+    if (fitted.current) return;
+    fitted.current = true;
     const box = svg.getBoundingClientRect();
     let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
     svg.querySelectorAll('*').forEach(el => {
-      if (!el.getBoundingClientRect || el.children.length) return;
+      if (el.children.length) return;
       const q = el.getBoundingClientRect();
       if (!q.width && !q.height) return;
       l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom);
     });
     if (!isFinite(l) || !box.width) return;
-    const cur = view.k || 1;
-    const k = Math.min(2.4, Math.max(1, Math.min((box.width / cur) * 0.84 / ((r - l) / cur), (box.height / cur) * 0.84 / ((b - t) / cur))));
-    setFitK(k); fitRef.current = k;
-    setView({ k, x: 0, y: 0 });
+    const cur = v.current.k || 1;
+    const k = cur * Math.min(2.4, Math.max(1, Math.min((box.width * 0.84) / (r - l), (box.height * 0.84) / (b - t))));
+    fitRef.current = k;
+    moveTo({ k, x: 0, y: 0 }, true);
   };
-  const zoomBy = (f) => setView(v => ({ ...v, k: Math.min(6, Math.max(0.5, v.k * f)) }));
-  const reset = () => setView({ k: fitK, x: 0, y: 0 });
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === '+' || e.key === '=') zoomBy(1.2);
       else if (e.key === '-') zoomBy(1 / 1.2);
-      else if (e.key === '0') setView({ k: fitRef.current, x: 0, y: 0 });
+      else if (e.key === '0') moveTo({ k: fitRef.current, x: 0, y: 0 }, true);
     };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    return () => { document.removeEventListener('keydown', onKey); cancelAnimationFrame(raf.current); clearTimeout(idle.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = (kind) => {
@@ -1954,10 +1985,11 @@ function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, cop
     : 'bg-white border border-jj-gray-03 text-jj-gray-08 hover:bg-jj-gray-01 focus-visible:ring-jj-blue-03/40'}`;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0b0908]/75 backdrop-blur-[3px] p-4"
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0b0908]/70 p-4"
       onClick={(e) => { e.stopPropagation(); onClose(); }}>
       <div onClick={e => e.stopPropagation()} role="dialog" aria-label={`Structure of ${title}`}
-        className="ct-pop relative grid rounded-[24px] overflow-hidden shadow-[0_40px_120px_rgba(0,0,0,.45)]"
+        onAnimationEnd={(e) => { if (e.target !== e.currentTarget) return; e.currentTarget.style.willChange = 'auto'; setOpened(true); }}
+        className="ct-pop relative grid rounded-[24px] overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,.35)]"
         style={{ width: W + 340 + 48, maxWidth: '96vw', gridTemplateColumns: `minmax(0,1fr) 340px` }}>
 
         {/* canvas */}
@@ -1985,7 +2017,7 @@ function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, cop
               <button className={tool} onClick={() => zoomBy(1 / 1.2)} aria-label="Zoom out" title="Zoom out (−)">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h8" /></svg>
               </button>
-              <button className={`${tool} w-[58px] tabular-nums`} onClick={reset} title="Reset view (0)">{Math.round((view.k / fitK) * 100)}%</button>
+              <button className={`${tool} w-[58px] tabular-nums`} onClick={reset} title="Reset view (0)"><span ref={pctRef}>100%</span></button>
               <button className={tool} onClick={() => zoomBy(1.2)} aria-label="Zoom in" title="Zoom in (+)">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h8M7 3v8" /></svg>
               </button>
@@ -2008,13 +2040,16 @@ function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, cop
 
           <div className="relative flex-1 flex items-center justify-center overflow-hidden select-none cursor-grab active:cursor-grabbing"
             style={{ height: H, touchAction: 'none' }}
-            onWheel={(e) => zoomBy(Math.exp(-e.deltaY * 0.0015))}
+            onWheel={(e) => zoomBy(Math.exp(-e.deltaY * 0.0015), false)}
             onDoubleClick={reset}
-            onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; e.currentTarget.setPointerCapture(e.pointerId); }}
-            onPointerMove={(e) => { const d = drag.current; if (d) setView(v => ({ ...v, x: d.vx + e.clientX - d.x, y: d.vy + e.clientY - d.y })); }}
-            onPointerUp={() => { drag.current = null; }}>
-            <div style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`, transition: drag.current ? 'none' : 'transform .18s ease-out' }}>
-              <MoleculeView smiles={smiles.main} width={W} height={H - 20} theme={theme} bond={dark ? 1.8 : 1.5} svgRef={svgRef} onDrawn={fitK === 1 ? fit : undefined} />
+            onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, vx: v.current.x, vy: v.current.y }; e.currentTarget.setPointerCapture(e.pointerId); }}
+            onPointerMove={(e) => { const d = drag.current; if (d) moveTo({ ...v.current, x: d.vx + e.clientX - d.x, y: d.vy + e.clientY - d.y }, false); }}
+            onPointerUp={() => { drag.current = null; }}
+            onPointerCancel={() => { drag.current = null; }}>
+            <div ref={stage}>
+              {opened
+                ? <MoleculeView smiles={smiles.main} width={W} height={H - 20} theme={theme} bond={dark ? 1.8 : 1.5} svgRef={svgRef} onDrawn={fit} />
+                : <div style={{ width: W, height: H - 20 }} />}
             </div>
             <div className={`absolute bottom-3 left-6 text-[11px] font-johnson-text ${dark ? 'text-white/45' : 'text-jj-gray-06'}`}>Scroll to zoom · drag to move · double-click to reset</div>
           </div>
@@ -2236,7 +2271,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
           </header>
 
           {sections.length > 1 && (
-            <nav aria-label="Record sections" className="sticky top-0 z-[2] flex gap-1 px-5 py-2 border-b border-jj-gray-01 bg-white/95 backdrop-blur overflow-x-auto ct-noscroll">
+            <nav aria-label="Record sections" className="sticky top-0 z-[2] flex gap-1 px-5 py-2 border-b border-jj-gray-01 bg-white overflow-x-auto ct-noscroll">
               {sections.map(([id, label]) => (
                 <button key={id} onClick={() => jump(id)} className="flex-shrink-0 text-[12.5px] font-johnson-text text-jj-gray-07 rounded-full px-3 py-1.5 hover:bg-[#f4f2f0] hover:text-jj-gray-08">{label}</button>
               ))}
