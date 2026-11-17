@@ -81,8 +81,12 @@ export default function DataStudio() {
                     : 'border border-transparent text-jj-gray-06 hover:text-jj-gray-08 hover:bg-white/70'
                 }`}
               >
-                {p.badge ? (
+                {p.look === 'badge' ? (
                   <Icon src={p.icon} tint={null} className="w-[19px] h-[19px] rounded-[5px]" />
+                ) : p.look === 'logo' ? (
+                  <span className="flex items-center justify-center w-[19px] h-[19px] rounded-md bg-white shadow-[inset_0_0_0_1px_#e8e6e3]">
+                    <Icon src={p.icon} tint={null} className="w-[15px] h-[15px]" />
+                  </span>
                 ) : (
                   <span className={`flex items-center justify-center w-[19px] h-[19px] rounded-md transition-colors ${
                     isActive ? 'bg-jj-red/10' : 'bg-jj-gray-02/70 group-hover:bg-jj-gray-02'
