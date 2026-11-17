@@ -54,6 +54,8 @@ function fixMojibake(t) {
     .replace(/[\u00C2-\u00DF][\u0080-\u00BF]/g, m => String.fromCharCode(((m.charCodeAt(0) & 0x1F) << 6) | (m.charCodeAt(1) & 0x3F)));
 }
 const show = (v) => (isEmpty(v) ? '' : typeof v === 'object' ? JSON.stringify(v) : fixMojibake(String(v)));
+// for showing a stored value; filters keep sending the raw one so they still match
+const txt = (v) => (v == null ? '' : fixMojibake(String(v)));
 // Cortellis capitalises the first letter of a name, which turns β-sitosterol into
 // "Β-sitosterol" with a capital Greek Beta that looks exactly like a Latin B. Drug names
 // use the small letter, so show that (only for a lone leading Greek capital).
@@ -143,11 +145,11 @@ function useChartTip() {
       }}
     >
       {tip.rows.map((r, i) => r.header ? (
-        <div key={i} className="text-[11.5px] font-johnson-text font-bold mb-1 whitespace-nowrap max-w-[250px] truncate text-jj-gray-08">{r.label}</div>
+        <div key={i} className="text-[11.5px] font-johnson-text font-bold mb-1 whitespace-nowrap max-w-[250px] truncate text-jj-gray-08">{txt(r.label)}</div>
       ) : (
         <div key={i} className="flex items-center gap-2 text-[11px] font-johnson-text whitespace-nowrap leading-relaxed">
           {r.color && <span className="w-2 h-2 rounded-[2px] flex-shrink-0" style={{ background: r.color }} />}
-          <span className="text-jj-gray-07 max-w-[170px] truncate">{r.label}</span>
+          <span className="text-jj-gray-07 max-w-[170px] truncate">{txt(r.label)}</span>
           <span className="ml-auto pl-4 tabular-nums font-medium">{r.value}</span>
         </div>
       ))}
@@ -409,7 +411,7 @@ function RankedBars({ rows, active = [], onPick, color, total, unit = 'Records',
             )}
             <div className="flex-1 min-w-0">
               <div className="flex justify-between text-[11.5px] font-johnson-text mb-[4px] gap-2">
-                <span className={`truncate text-jj-gray-08 ${on ? 'font-bold' : ''}`} title={r.value}>{r.value}</span>
+                <span className={`truncate text-jj-gray-08 ${on ? 'font-bold' : ''}`} title={txt(r.value)}>{txt(r.value)}</span>
                 <span className="text-jj-gray-07 tabular-nums flex-shrink-0">
                   {fmtNum(r.count)}{total ? <span className="text-jj-gray-06 ml-1.5">{pct(r.count, total)}%</span> : null}
                 </span>
@@ -468,7 +470,7 @@ function DonutCard({ values, total, active = [], onPick, colors, centerLabel = '
             <button key={s.value} disabled={s.other} onClick={() => onPick?.(s.value)} title={`${s.value}: ${fmtNum(s.count)}`}
               className={`flex items-center gap-2.5 text-left rounded-lg px-2 py-[5px] -mx-2 hover:bg-[#faf9f8] disabled:hover:bg-transparent disabled:cursor-default transition-opacity ${active.length && !on ? 'opacity-60' : ''}`}>
               <span className="w-3 h-3 rounded-[4px] flex-shrink-0" style={{ background: s.color }} />
-              <span className={`flex-1 min-w-0 truncate text-[12.5px] font-johnson-text text-jj-gray-08 ${on ? 'font-bold' : ''}`}>{s.value}</span>
+              <span className={`flex-1 min-w-0 truncate text-[12.5px] font-johnson-text text-jj-gray-08 ${on ? 'font-bold' : ''}`}>{txt(s.value)}</span>
               {big && <span className="text-[11.5px] font-johnson-text text-jj-gray-07 tabular-nums">{compact(s.count)}</span>}
               <span className="w-[38px] text-right text-[12px] font-johnson-text font-bold text-jj-gray-08 tabular-nums">{pct(s.count, total)}%</span>
             </button>
@@ -603,7 +605,7 @@ function YearActivity({ trend, stack, years, onPickYear, height = 250, title, su
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 min-w-0">
             {order.map(v => (
               <span key={v} className="inline-flex items-center gap-1.5 text-[11.5px] font-johnson-text text-jj-gray-08 max-w-[220px]">
-                <span className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0" style={{ background: colorOf(v) }} /><span className="truncate">{v}</span>
+                <span className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0" style={{ background: colorOf(v) }} /><span className="truncate">{txt(v)}</span>
               </span>
             ))}
           </div>
@@ -658,7 +660,7 @@ function Heatmap({ cross, total, filters, onToggle, labelOf }) {
             </th>
             {cross.cols.map(c => (
               <th key={c} className="text-[10.5px] font-johnson-text font-medium text-jj-gray-07 pb-1 px-1 align-bottom max-w-[110px]">
-                <div className="truncate" title={c}>{c}</div>
+                <div className="truncate" title={txt(c)}>{txt(c)}</div>
               </th>
             ))}
             <th className="text-[11px] font-johnson-text font-normal text-jj-gray-06 pb-1 pl-1 align-bottom">Total</th>
@@ -667,7 +669,7 @@ function Heatmap({ cross, total, filters, onToggle, labelOf }) {
         <tbody>
           {cross.rows.map(r => (
             <tr key={r}>
-              <td className="text-[11.5px] font-johnson-text text-jj-gray-08 pr-2 max-w-[170px]"><div className="truncate" title={r}>{r}</div></td>
+              <td className="text-[11.5px] font-johnson-text text-jj-gray-08 pr-2 max-w-[170px]"><div className="truncate" title={txt(r)}>{txt(r)}</div></td>
               {cross.cols.map(c => {
                 const n = get(r, c);
                 const a = n ? 0.12 + 0.83 * Math.sqrt(n / max) : 0;
@@ -1005,7 +1007,7 @@ function Facet({ label, options, selected, onToggle, color, defaultOpen, more })
               <label key={o.value} className="flex flex-col gap-1.5 py-2 px-1 -mx-1 rounded cursor-pointer hover:bg-jj-gray-01/60">
                 <div className="flex items-center gap-2">
                   <input type="checkbox" checked={checked} onChange={() => onToggle(o.value)} className="accent-[#0f68b2] flex-shrink-0" />
-                  <span className={`flex-1 truncate text-[12.5px] font-johnson-text ${checked ? 'font-bold' : 'font-medium'} text-jj-gray-08`} title={o.value}>{o.value}</span>
+                  <span className={`flex-1 truncate text-[12.5px] font-johnson-text ${checked ? 'font-bold' : 'font-medium'} text-jj-gray-08`} title={txt(o.value)}>{txt(o.value)}</span>
                   <span className="text-[11px] font-johnson-text text-jj-gray-07 tabular-nums flex-shrink-0">{compact(o.count)}</span>
                 </div>
                 <div className="h-[5px] rounded-full bg-[#ece9e6] ml-[22px] overflow-hidden">
@@ -1114,7 +1116,7 @@ function ChiralCard({ chiral, meta, openRecord }) {
           <div key={i} className="grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2 py-2 border-b border-jj-gray-01 last:border-0 text-[12.5px] font-johnson-text">
             <button onClick={() => openRecord({ key: p.single.key, title: p.single.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
               <span className="font-bold truncate">{niceName(p.single.name)}</span>
-              <span className="flex gap-1.5 flex-wrap"><StereoTag kind={stereoInfo(p.single.name)?.kind || KIND_BY_LABEL[p.single.kind]} desc={stereoInfo(p.single.name)?.desc} />{p.single.status && <Pill color={statusColor(p.single.status)}>{p.single.status}</Pill>}</span>
+              <span className="flex gap-1.5 flex-wrap"><StereoTag kind={stereoInfo(p.single.name)?.kind || KIND_BY_LABEL[p.single.kind]} desc={stereoInfo(p.single.name)?.desc} focusable={false} />{p.single.status && <Pill color={statusColor(p.single.status)}>{p.single.status}</Pill>}</span>
             </button>
             <span className="text-jj-gray-06 text-center" aria-hidden="true">↔</span>
             <button onClick={() => openRecord({ key: p.original.key, title: p.original.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
@@ -1328,7 +1330,7 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
           <div className="min-w-0 flex-1 flex items-center gap-3">
             <div className="min-w-0 flex-1 text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug group-hover:text-[#c21300] transition-colors truncate" title={r.title || ''}>{highlight(niceName(r.title) || 'Untitled', state.q)}</div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
-              {r.tags.map(t => <Pill key={t.column} color={t.column === f0?.column && f0Colors.has(t.value) ? f0Colors.get(t.value) : colorFor(t.column)} title={labelOf(t.column)}>{t.value}</Pill>)}
+              {r.tags.map(t => <Pill key={t.column} color={t.column === f0?.column && f0Colors.has(t.value) ? f0Colors.get(t.value) : colorFor(t.column)} title={labelOf(t.column)}>{txt(t.value)}</Pill>)}
               {isUrl(r.url) && (
                 <a href={r.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[11.5px] font-johnson-text font-medium text-jj-blue-03 hover:underline">Source ↗</a>
               )}
@@ -1635,7 +1637,7 @@ const humanKey = (k) => String(k).replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/
   .replace(/\b(icd\d*|mesh|snomed|id|url|fda|ema|cas)\b/gi, w => w.toUpperCase()).replace(/\blog p\b/i, 'LogP');
 
 const isScalar = (v) => v == null || typeof v !== 'object';
-const scalarText = (v) => (looksLikeDate(v) ? fmtDate(v) : String(v));
+const scalarText = (v) => (looksLikeDate(v) ? fmtDate(v) : txt(v));
 // the field that names an item: name, title, label, ...History, or the first text field
 const HEAD_RE = /(^|[a-z])(name|title|label|history|term|description)$/i;
 const headKey = (o) => Object.keys(o).find(k => HEAD_RE.test(k) && typeof o[k] === 'string' && o[k])
@@ -2205,12 +2207,12 @@ function stereoInfo(name) {
 const stereoKind = (name) => stereoInfo(name)?.kind || null;
 // the mirror image of an R/S form flips every centre: (2R,4S) <-> (2S,4R)
 const flipRS = (desc) => desc.replace(/[RS]/g, c => (c === 'R' ? 'S' : 'R'));
-function StereoTag({ kind, desc, className = '' }) {
+function StereoTag({ kind, desc, className = '', focusable = true }) {
   const k = STEREO_KINDS[kind];
   if (!k) return null;
   const label = kind === 'rs' && desc ? (desc.includes(',') ? `Single isomer (${desc})` : `Single hand (${desc})`) : k.label;
   return (
-    <span tabIndex={0} title={k.tip} aria-label={`${label}: ${k.tip}`}
+    <span tabIndex={focusable ? 0 : undefined} title={k.tip} aria-label={`${label}: ${k.tip}`}
       className={`inline-flex items-center gap-[5px] text-[11px] font-johnson-text font-bold rounded-md px-[7px] py-[2px] whitespace-nowrap cursor-help ${k.cls} ${className}`}>
       <span aria-hidden="true" className="w-2.5 h-2.5 rounded-[2px] flex-shrink-0"
         style={kind === 'mix' ? { background: 'currentColor' } : { background: 'linear-gradient(90deg,currentColor 50%,transparent 50%)', boxShadow: 'inset 0 0 0 1.4px currentColor' }} />
@@ -2222,41 +2224,47 @@ const statusColor = (s) => (/launch|marketed|registered/i.test(s || '') ? '#2a7a
 
 // other records of the same molecule (the other hand, the mixture, the original)
 function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onSearchIn }) {
-  const [data, setData] = useState(null);
-  const [far, setFar] = useState(null); // the same molecule in the other Cortellis tables
-  const [farWanted, setFarWanted] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const key = record.key;
+  // every result remembers the record it belongs to, so stepping to the next record
+  // never shows, or acts on, the previous record's answer
+  const [got, setGot] = useState(null);           // { key, data } | { key, failed }
+  const [farGot, setFarGot] = useState(null);     // { key, far }
+  const [farWant, setFarWant] = useState(null);   // { key, n }: search every table for this record
+  const data = got?.key === key ? got.data : null;
+  const failed = got?.key === key && !!got.failed;
+  const far = farGot?.key === key ? farGot.far : null;
+  const farWanted = farWant?.key === key;
+  const askFar = () => { setFarGot(null); setFarWant(w => ({ key, n: (w?.key === key ? w.n : 0) + 1 })); };
   useEffect(() => {
-    setData(null); setFailed(false);
-    if (!record.key) return;
+    if (!key) return;
     let dead = false;
     const ctl = new AbortController();
-    setFar(null); setFarWanted(false);
-    apiJson(`/api/cortellis/mirror/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
-      .then(res => { if (!dead) { setData(res); onFound?.((res.forms || []).length > 0); } })
-      .catch(e => { if (!dead && !isAbort(e)) setFailed(true); });
+    apiJson(`/api/cortellis/mirror/${meta.id}?key=${encodeURIComponent(key)}`, { signal: ctl.signal })
+      .then(res => { if (!dead) { setGot({ key, data: res }); onFound?.((res.forms || []).length > 0); } })
+      .catch(e => { if (!dead && !isAbort(e)) setGot({ key, failed: true }); });
     return () => { dead = true; ctl.abort(); };
-  }, [meta.id, record.key, onFound]);
+  }, [meta.id, key, onFound]);
   const me = stereoInfo(title);
   const mine = me && me.kind !== 'mix' ? me.kind : null;
   // searching every table is 9 queries: do it by itself only when the other hand is
   // missing here (the question the reader has), otherwise on request
+  const farRun = farWant?.key === key ? farWant.n : 0;
   useEffect(() => {
-    if (!farWanted || !record.key) return;
+    if (!farRun || !key) return;
     let dead = false;
     const ctl = new AbortController();
-    apiJson(`/api/cortellis/mirror-elsewhere/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
-      .then(res => { if (!dead) setFar(res); })
-      .catch(e => { if (!dead && !isAbort(e)) setFar({ error: true, tables: [] }); });
+    apiJson(`/api/cortellis/mirror-elsewhere/${meta.id}?key=${encodeURIComponent(key)}`, { signal: ctl.signal })
+      .then(res => { if (!dead) setFarGot({ key, far: res }); })
+      .catch(e => { if (!dead && !isAbort(e)) setFarGot({ key, far: { error: true, tables: [] } }); });
     return () => { dead = true; ctl.abort(); };
-  }, [farWanted, meta.id, record.key]);
+  }, [farRun, meta.id, key]);
   useEffect(() => {
-    if (!data || !mine) return;
+    if (!data || !mine || farWant?.key === key) return;
     const forms = data.forms || [];
     const other = mine === 'minus' ? 'plus' : mine === 'plus' ? 'minus' : null;
     const found = mine === 'rs' ? forms.some(f => stereoInfo(f.name)?.desc === flipRS(me.desc)) : forms.some(f => stereoKind(f.name) === other);
-    if (!found) setFarWanted(true);
-  }, [data, mine, me?.desc]);
+    if (!found) setFarWant({ key, n: 1 });
+  }, [data, mine, me?.desc, key, farWant]);
   if (failed || !data) return null;
   const forms = data.forms || [];
   const single = (f) => ['minus', 'plus', 'rs'].includes(stereoKind(f.name));
@@ -2308,7 +2316,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
               <b className="text-jj-gray-08">{twinName}</b>
               <span>Not in {meta.label}.</span>
               {farWanted && !far && <span className="text-[11.5px] text-jj-gray-06 animate-pulse">Checking the other Cortellis tables…</span>}
-              {far?.error && <span className="text-[11.5px] text-jj-gray-06">Couldn't check the other tables. <button onClick={() => { setFar(null); setFarWanted(false); setTimeout(() => setFarWanted(true)); }} className="text-jj-blue-03 underline">Retry</button></span>}
+              {far?.error && <span className="text-[11.5px] text-jj-gray-06">Couldn't check the other tables. <button onClick={askFar} className="text-jj-blue-03 underline">Retry</button></span>}
               {far && !far.error && (farTwin.length ? (
                 <span className="flex flex-col gap-1 mt-1">
                   <span className="text-jj-gray-08">Found in:</span>
@@ -2341,7 +2349,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
       )}
       {mine && bestOriginal && (
         <div className="rounded-xl bg-[#faf9f8] border border-jj-gray-01 px-3.5 py-3 text-[12.5px] font-johnson-text text-jj-gray-08 leading-relaxed">
-          <b>Chiral switch.</b> The original <b>{bestOriginal.name}</b> is <b style={{ color: statusColor(bestOriginal.status) }}>{bestOriginal.status || 'status unknown'}</b>;
+          <b>Chiral switch.</b> The original <b>{niceName(bestOriginal.name)}</b> is <b style={{ color: statusColor(bestOriginal.status) }}>{bestOriginal.status || 'status unknown'}</b>;
           this single-hand version is <b style={{ color: statusColor(status) }}>{status || 'status unknown'}</b>.
         </div>
       )}
@@ -2371,7 +2379,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
         <div className="text-[11px] font-johnson-text text-jj-gray-06">Some tables didn't answer in time, so this list may be short.</div>
       )}
       {!farWanted && plain.length >= 4 && (
-        <button onClick={() => setFarWanted(true)}
+        <button onClick={askFar}
           className="self-start border border-jj-gray-03 bg-white rounded-full px-3.5 py-1.5 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
           Search all Cortellis tables for “{plain}”
         </button>
@@ -2589,7 +2597,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
                         {Array.isArray(n) && n.length > 1 && <span className="text-[10.5px] tabular-nums px-1.5 rounded-full bg-[#ece9e6]">{n.length}</span>}
                       </div>
                       {items ? (
-                        <div className="flex flex-wrap gap-1.5">{items.map(x => <span key={x} className="text-[12px] text-jj-gray-08 bg-[#f4f2f0] rounded-full px-3 py-1">{x}</span>)}</div>
+                        <div className="flex flex-wrap gap-1.5">{items.map(x => <span key={x} className="text-[12px] text-jj-gray-08 bg-[#f4f2f0] rounded-full px-3 py-1">{txt(x)}</span>)}</div>
                       ) : <div className="text-[13px] text-jj-gray-08 break-words"><FieldValue v={v} /></div>}
                     </div>
                   );

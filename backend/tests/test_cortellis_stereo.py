@@ -93,6 +93,8 @@ def api(monkeypatch):
             raise C.HTTPException(status_code=500, detail="boom")  # one table failing
         if what.startswith("elsewhere"):
             return SimpleNamespace(rows=[])
+        if what.startswith("/table/"):
+            return SimpleNamespace(rows=[(0,)] if "count" in what else [], columns=["id", "drugPrimaryName"])
         if what == "insights chiral":
             return SimpleNamespace(rows=[("8", "(+)-calanolide A", "No Development Reported", C.ST_PLUS, "7", "calanolide A",
                                           "Launched", 4, 2, 0, 3)])
@@ -181,3 +183,19 @@ def test_name_sort_reads_greek_as_words():
     expr = C._sort_name_sql("drugPrimaryName")
     assert expr.count("REPLACE(") == len(C.GREEK) + 2 and "'β', 'beta'" in expr and 'LOWER("drugPrimaryName"::STRING)' in expr
     assert "'ã' || CHR(159), 'beta'" in expr and "'ß', 'beta'" in expr
+
+
+def test_name_sort_is_stable_across_pages(api):
+    client, calls = api
+    r = client.get("/api/cortellis/table/rp_products?page=2&size=50&sort=drugPrimaryName&desc=true&bypass_cache=true")
+    assert r.status_code == 200
+    sql = next(s for w, s, _ in calls if w == "/table/rp_products")
+    # Greek/ß-aware key first, then the raw name, then the id so equal names never swap between pages
+    assert re.search(r'ORDER BY .*REPLACE\(.* DESC NULLS LAST, "drugPrimaryName" DESC, "id" LIMIT', sql)
+
+
+def test_search_text_with_greek_reaches_the_table_query(api):
+    client, calls = api
+    client.get("/api/cortellis/table/rp_products?page=1&size=50&q=beta-catenin&bypass_cache=true")
+    _, sql, params = next(c for c in calls if c[0] == "/table/rp_products")
+    assert {"q", "q1", "q2", "q3"} <= set(params) and "%(q3)s" in sql

@@ -25,8 +25,10 @@ all happen in Snowflake.
 from __future__ import annotations
 
 import json
-import time
 import logging
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -300,6 +302,10 @@ STEREO_PATTERNS = [
 STEREO_PREFIX = r"^\((±|\+/-|\+-|rac|RAC|Rac|RS|SR|R/S|S/R|R-S|S-R|R,S|S,R|R\*,S\*|-|−|\+|l|d|" + _CENTRE + r"( *, *" + _CENTRE + r")*)\)[- ] *"
 
 
+_STEREO_RES = [(label, re.compile(pat)) for label, pat in STEREO_PATTERNS]
+_STEREO_PREFIX_RE = re.compile(STEREO_PREFIX)
+
+
 def _has_stereo(spec) -> bool:
     return "stereo" in spec
 
@@ -322,17 +328,15 @@ def _stereo_base_sql(spec) -> str:
 
 
 def stereo_kind(name: str) -> str:
-    import re as _re
     n = (name or "").strip()
-    for label, pat in STEREO_PATTERNS:
-        if _re.match(pat, n):
+    for label, rx in _STEREO_RES:
+        if rx.match(n):
             return label
     return ST_NONE
 
 
 def stereo_base(name: str) -> str:
-    import re as _re
-    s = _re.sub(STEREO_PREFIX, "", (name or "").strip())
+    s = _STEREO_PREFIX_RE.sub("", (name or "").strip())
     return s.split(",")[0].strip().lower()
 
 
@@ -344,11 +348,10 @@ GREEK = {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsil
 
 def _greek_variants(q: str) -> List[str]:
     """The search text with Greek letters spelled out, and with spelled-out ones as letters."""
-    import re as _re
     words = q
     for ch, word in GREEK.items():
         words = words.replace(ch, word).replace(ch.upper(), word)
-    letters = _re.sub(r"(?i)(?<![a-z])(" + "|".join(sorted(GREEK.values(), key=len, reverse=True)) + r")(?![a-z])",
+    letters = re.sub(r"(?i)(?<![a-z])(" + "|".join(sorted(GREEK.values(), key=len, reverse=True)) + r")(?![a-z])",
                       lambda m: next(ch for ch, w in GREEK.items() if w == m.group(1).lower()), q)
     out = [words, letters]
     if "β" in letters:  # beta is also stored as "ß", and garbled as "Ã" + U+009F
@@ -799,10 +802,9 @@ def get_mirror(tid: str, key: str = Query(..., min_length=1, max_length=100), by
 
 def stereo_twin_names(name: str) -> List[str]:
     """Spellings of the other hand: "(+)-calanolide A" -> ["(-)-calanolide A", "(−)-calanolide A", "(l)-calanolide A"]."""
-    import re as _re
     n = (name or "").strip()
     kind = stereo_kind(n)
-    rest = _re.sub(STEREO_PREFIX, "", n).split(",")[0].strip()
+    rest = _STEREO_PREFIX_RE.sub("", n).split(",")[0].strip()
     if not rest:
         return []
     if kind == ST_PLUS:
@@ -810,7 +812,7 @@ def stereo_twin_names(name: str) -> List[str]:
     if kind == ST_MINUS:
         return [f"(+)-{rest}", f"(d)-{rest}"]
     if kind == ST_RS:
-        desc = _re.match(r"^\(([^)]*)\)", n).group(1).replace(" ", "")
+        desc = re.match(r"^\(([^)]*)\)", n).group(1).replace(" ", "")
         flipped = desc.translate(str.maketrans("RS", "SR"))
         return [f"({flipped})-{rest}"]
     return []
@@ -818,8 +820,7 @@ def stereo_twin_names(name: str) -> List[str]:
 
 # shared by every request: at most 4 table searches at once, so one busy drawer can't
 # flood the warehouse or the connection
-from concurrent.futures import ThreadPoolExecutor as _Pool, TimeoutError as _Timeout
-_ELSEWHERE_POOL = _Pool(max_workers=4, thread_name_prefix="cortellis-elsewhere")
+_ELSEWHERE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cortellis-elsewhere")
 ELSEWHERE_WAIT = 75  # seconds; the Snowflake statement timeout is 60
 
 
@@ -829,7 +830,6 @@ def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_lengt
     """Look for the molecule (and especially its other hand) in every Cortellis table,
     not just this one: trials, milestones, approvals and news mention drugs too.
     One query per table, side by side, each capped at 25 rows."""
-    import re as _re
     spec = _spec(tid)
     k = spec.get("key")
     cache_key = _cache_key("cortellis-mirror-elsewhere", {"tid": tid, "key": key})
@@ -840,7 +840,7 @@ def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_lengt
     me = _run_or_fail(f"SELECT TRIM({_q(spec['title'])}::STRING) FROM {_fq(spec)} WHERE {_q(k)}::STRING = %(k)s LIMIT 1",
                       {"k": key}, "elsewhere self").rows
     name = me[0][0] if me and me[0][0] else ""
-    rest = _re.sub(STEREO_PREFIX, "", name.strip()).split(",")[0].strip()
+    rest = _STEREO_PREFIX_RE.sub("", name.strip()).split(",")[0].strip()
     twins = stereo_twin_names(name)
     out = {"name": rest, "twin": twins[0] if twins else None, "tables": []}
     if len(rest) < 4:  # too short to search for without drowning in noise
@@ -881,7 +881,7 @@ def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_lengt
     for tid2, fut in futures.items():
         try:
             r = fut.result(timeout=max(0.1, deadline - time.time()))
-        except (HTTPException, _Timeout):
+        except (HTTPException, FutureTimeout):
             r, incomplete = None, True  # one table failing or timing out must not hide the others
         except Exception as e:
             logger.warning(f"Cortellis elsewhere {tid2} failed: {e}")
@@ -927,7 +927,8 @@ def get_table(
         where = _where(spec, f, args["q"], yrs, params)
         d = "DESC" if desc else "ASC"
         if sort in cols and sort == spec["title"]:
-            order = f" ORDER BY {_sort_name_sql(sort)} {d} NULLS LAST, {_q(sort)} {d}"
+            tie = f", {_q(key)}" if key and key in cols else ""  # same name twice: keep pages stable
+            order = f" ORDER BY {_sort_name_sql(sort)} {d} NULLS LAST, {_q(sort)} {d}{tie}"
         else:
             order = f" ORDER BY {_q(sort)} {d} NULLS LAST" if sort in cols else ""
         select = ", ".join(_q(c) for c in show)
