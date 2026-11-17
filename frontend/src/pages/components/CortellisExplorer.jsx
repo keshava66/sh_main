@@ -1677,11 +1677,9 @@ function TableTabs({ source, sources, onPick }) {
         {sources.map((s, i) => {
           const on = s.id === source.id;
           const c = PALETTE[i % PALETTE.length];
-          // thin divider between tables, left out next to the selected one
-          const divider = i > 0 && !on && sources[i - 1].id !== source.id;
           return (
             <Fragment key={s.id}>
-            {i > 0 && <span aria-hidden="true" className={`w-px h-4 flex-shrink-0 mx-0.5 ${divider ? 'bg-jj-gray-03' : 'bg-transparent'}`} />}
+            {i > 0 && <span aria-hidden="true" className="w-px h-4 flex-shrink-0 mx-0.5 bg-jj-gray-03" />}
             <button role="tab" aria-selected={on} data-on={on ? '1' : '0'} onClick={() => !on && onPick(s.id)} title={`${s.label} · ${fmtNum(s.rows)} records`}
               className={`flex items-center gap-2 px-3 py-[6px] rounded-full border text-[12px] font-johnson-text whitespace-nowrap transition-all flex-shrink-0 ${on
                 ? 'bg-white border-jj-gray-03 text-jj-gray-08 font-bold shadow-[0_1px_4px_rgba(49,44,42,.12)]'
