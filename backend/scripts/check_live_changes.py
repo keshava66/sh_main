@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
@@ -160,6 +161,12 @@ def main():
     except Exception as e:
         report("WARN", "RIM Docs profile", short(e))
 
+    print("\n== VR and IMMBOT, every part, Snowflake's result cache off ==", flush=True)
+    try:
+        vr_immbot_profile(client)
+    except Exception as e:
+        report("WARN", "VR / IMMBOT profile", short(e))
+
     # The rest needs a real server so requests can overlap.
     port = free_port()
     srv = uvicorn.Server(uvicorn.Config(A.app, host="127.0.0.1", port=port, log_level="critical", log_config=None))
@@ -288,6 +295,176 @@ def rim_cold_profile():
             report("OK", f"RIM {name}", f"{secs:.2f}s total | " + " || ".join(bits))
     finally:
         one("ALTER SESSION SET USE_CACHED_RESULT = TRUE")
+
+
+SLOW_PART = 5.0  # seconds; anything slower than this shows as WARN
+
+
+def _get_part(client, url):
+    """GET one endpoint. Returns (seconds, data, error). NDJSON streams are
+    read to the end and merged, and an error line counts as a failure."""
+    t = time.time()
+    try:
+        r = client.get(url)
+    except Exception as e:  # server error raised through the test client
+        return time.time() - t, None, short(e)
+    secs = time.time() - t
+    if r.status_code != 200:
+        return secs, None, f"HTTP {r.status_code}"
+    if "ndjson" not in r.headers.get("content-type", ""):
+        return secs, r.json(), None
+    data = {}
+    for line in r.text.splitlines():
+        if not line.strip():
+            continue
+        part = json.loads(line)
+        if part.get("error") or part.get("type") == "error":
+            return secs, None, "stream returned an error"
+        if "rows+" in part:
+            data.setdefault("rows", []).extend(part["rows+"])
+        elif part.get("type") == "product":
+            data.setdefault("cards", []).append(part["product"])
+        else:
+            data.update(part)
+    return secs, data, None
+
+
+def vr_immbot_profile(client):
+    """Every request the VR (internal, external, Cortellis) and IMMBOT pages
+    make, including the click-throughs (a document, a chunk, versions, a
+    record), each timed with the engine's own stats. IDs for the
+    click-throughs come from the earlier responses and are never printed."""
+    import chunk_explorer
+    import cortellis
+    import unstructured as U
+    import vr_external
+    if not U._config:
+        report("WARN", "VR / IMMBOT", "not configured here, skipped")
+        return
+
+    seen = []
+    mods = [U, chunk_explorer, cortellis, vr_external]
+    real = {m: m._run for m in mods}
+
+    def recorder(fn):
+        def run(sql, params=None):
+            res = fn(sql, params)
+            seen.append(res.query_id)
+            return res
+        return run
+
+    parts = []
+
+    def part(label, url):
+        start = len(seen)
+        secs, data, err = _get_part(client, url)
+        parts.append((label, secs, seen[start:], err))
+        return data or {}
+
+    def q(**kw):
+        return "&".join(f"{k}={quote(str(v))}" for k, v in kw.items())
+
+    U._run("ALTER SESSION SET USE_CACHED_RESULT = FALSE", {})
+    for m in mods:
+        m._run = recorder(real[m])
+    try:
+        b = "bypass_cache=true"
+
+        # ---- VR internal ----
+        vr = "/api/virtual-regulator"
+        part("VR products (stream)", f"{vr}/products/stream?{b}")
+        for c in ("recent-docs", "common-sections", "owners", "modified-trend"):
+            part(f"VR chart {c}", f"{vr}/chart/{c}?{b}")
+        lib = part("VR library", f"{vr}/library?page=1&page_size=25&sort=modified&sort_dir=desc&{b}")
+        part("VR library sorted by versions", f"{vr}/library?page=1&page_size=25&sort=versions&sort_dir=desc&{b}")
+        part("VR table (documents)", f"{vr}/rows?mode=documents&page=1&page_size=50&sort_col=FILE_NAME&sort_dir=asc&{b}")
+        part("VR table (chunks)", f"{vr}/rows?mode=chunks&page=1&page_size=50&sort_col=FILE_NAME&sort_dir=asc&{b}")
+        for col in ("STUDY_ID", "MODIFIED_BY", "VERSION_LABEL", "STATUS", "CHUNK_LEVEL", "CONTENT_TYPE"):
+            part(f"VR filter options {col}", f"{vr}/filter-options?column={col}&{b}")
+        doc_id = next((r.get("DOC_ID") for r in lib.get("rows") or [] if r.get("DOC_ID")), None)
+        if doc_id:
+            doc = part("VR open document", f"{vr}/document?{q(doc_id=doc_id)}&distinct_chunks=true&{b}")
+            part("VR document versions", f"{vr}/versions?{q(doc_id=doc_id)}&{b}")
+            chunk_id = next((c.get("CHUNK_ID") for c in doc.get("chunks") or [] if c.get("CHUNK_ID")), None)
+            if chunk_id:
+                part("VR open chunk", f"{vr}/chunk?{q(chunk_id=chunk_id)}")
+            word = next((w for c in doc.get("chunks") or [] for w in str(c.get("SECTION_TITLE") or "").split()
+                         if len(w) >= 6 and w.isalpha()), None)
+            if word:
+                part("VR search in chunk text", f"{vr}/library?page=1&page_size=25&sort=modified&sort_dir=desc&"
+                                                f"{q(search=json.dumps({'CHUNK_TEXT': word}))}&{b}")
+
+        # ---- VR external ----
+        srcs = part("VR external sources", f"/api/vr-external/sources?{b}")
+        part("VR external press releases", f"/api/vr-external/items?{b}")
+        for i, src in enumerate([x for x in srcs.get("sources") or [] if x.get("kind") == "table"], 1):
+            part(f"VR external table #{i}", f"/api/vr-external/table/{quote(src['id'])}?{b}")
+
+        # ---- VR Cortellis ----
+        cs = part("Cortellis sources", f"/api/cortellis/sources?{b}")
+        for i, src in enumerate(cs.get("sources") or [], 1):
+            tid = quote(src["id"])
+            meta = part(f"Cortellis #{i} meta", f"/api/cortellis/meta/{tid}?{b}")
+            part(f"Cortellis #{i} overview", f"/api/cortellis/overview/{tid}?{b}")
+            part(f"Cortellis #{i} insights", f"/api/cortellis/insights/{tid}?{b}")
+            tbl = part(f"Cortellis #{i} table", f"/api/cortellis/table/{tid}?page=1&size=50&{b}")
+            key = meta.get("key")
+            cols = tbl.get("columns") or []
+            if key in cols and tbl.get("rows"):
+                part(f"Cortellis #{i} open record", f"/api/cortellis/record/{tid}?{q(key=tbl['rows'][0][cols.index(key)])}")
+
+        # ---- IMMBOT ----
+        im = "/api/immbot"
+        part("IMMBOT summary", f"{im}/summary?{b}")
+        for c in ("ingestion-status", "chunk-level", "content-types", "chunks-per-doc",
+                  "trial-status", "compound-phase"):
+            part(f"IMMBOT chart {c}", f"{im}/chart/{c}?{b}")
+        part("IMMBOT chart over-time", f"{im}/chart/over-time?granularity=day&{b}")
+        part("IMMBOT chart by-dimension", f"{im}/chart/by-dimension?dimension=PRIMARY_INDICATION&{b}")
+        rows = part("IMMBOT table (documents)", f"{im}/rows?mode=documents&page=1&page_size=50&sort_col=FILE_NAME&sort_dir=asc&{b}")
+        part("IMMBOT table (chunks)", f"{im}/rows?mode=chunks&page=1&page_size=50&sort_col=FILE_NAME&sort_dir=asc&{b}")
+        part("IMMBOT breakdown", f"{im}/breakdown?{q(levels='INSIGHT_THERAPEUTIC_AREA,GENERIC,PROTOCOL_ID')}&{b}")
+        import immbot
+        for col in immbot.FILTER_COLUMNS:
+            part(f"IMMBOT filter options {col}", f"{im}/filter-options?column={col}&{b}")
+        rcols = [c.upper() for c in rows.get("columns") or []]
+        first = (rows.get("rows") or [None])[0]
+        doc_id = (first.get("DOC_ID") if isinstance(first, dict)
+                  else first[rcols.index("DOC_ID")] if first and "DOC_ID" in rcols else None)
+        if doc_id:
+            doc = part("IMMBOT open document", f"{im}/document?{q(doc_id=doc_id)}&{b}")
+            chunk_id = next((c.get("CHUNK_ID") for c in doc.get("chunks") or [] if c.get("CHUNK_ID")), None)
+            if chunk_id:
+                part("IMMBOT open chunk", f"{im}/chunk?{q(chunk_id=chunk_id)}")
+    finally:
+        for m, fn in real.items():
+            m._run = fn
+        U._run("ALTER SESSION SET USE_CACHED_RESULT = TRUE", {})
+
+    hist = _session_history(U._get_client())
+    for label, secs, qids, err in parts:
+        if err:
+            report("FAIL", label, f"{err} after {secs:.2f}s")
+            continue
+        hs = [hist.get(x) or {} for x in qids]
+        sec = lambda h, k: (h.get(k) or 0) / 1000
+        scanned = sum(h.get("BYTES_SCANNED") or 0 for h in hs) / 1e6
+        spill = sum((h.get("BYTES_SPILLED_TO_LOCAL_STORAGE") or 0) + (h.get("BYTES_SPILLED_TO_REMOTE_STORAGE") or 0) for h in hs) / 1e6
+        queued = max([sec(h, "QUEUED_OVERLOAD_TIME") + sec(h, "QUEUED_PROVISIONING_TIME") for h in hs] or [0])
+        slowest = max([sec(h, "EXECUTION_TIME") for h in hs] or [0])
+        detail = (f"{secs:.2f}s | {len(qids)} quer{'y' if len(qids) == 1 else 'ies'}, slowest exec {slowest:.1f}s, "
+                  f"queued {queued:.1f}s, scanned {scanned:,.0f} MB" + (f", SPILLED {spill:,.0f} MB" if spill else ""))
+        report("WARN" if secs > SLOW_PART else "OK", label, detail)
+
+
+def _session_history(sf_client):
+    cur = sf_client.conn.cursor()
+    try:
+        cur.execute("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT => 5000))")
+        cols = [d[0].upper() for d in cur.description]
+        return {r[cols.index("QUERY_ID")]: dict(zip(cols, r)) for r in cur.fetchall()}
+    finally:
+        cur.close()
 
 
 def _close_explorer_snowflake():

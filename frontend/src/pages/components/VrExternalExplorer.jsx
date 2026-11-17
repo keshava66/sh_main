@@ -575,7 +575,8 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
-  const firstLoad = useRef(true);
+  // Reload button or Retry skips the server cache; opening the tab doesn't.
+  const mountReloadKey = useRef(reloadKey);
 
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [period, setPeriod] = useState('all');
@@ -593,8 +594,7 @@ function PressReleases({ logInPage, activeTab, onBusyChange, onSynced, canViewSq
 
   useEffect(() => {
     let dead = false;
-    const bypass = !firstLoad.current;
-    firstLoad.current = false;
+    const bypass = reloadKey !== mountReloadKey.current || attempt > 0;
     setLoading(true);
     setError(null);
     onBusyChange?.(true);
