@@ -1639,7 +1639,10 @@ function NestedValue({ value, depth = 0 }) {
           <div key={i} className={dk ? 'relative' : 'rounded-lg border border-jj-gray-02 bg-[#faf9f8] px-2.5 py-2'}>
             {dk && <span className="absolute -left-[17px] top-[5px] w-[8px] h-[8px] rounded-full bg-white border-2 border-jj-red" aria-hidden="true" />}
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-bold text-jj-gray-08">{hk ? o[hk] : `Item ${i + 1}`}</span>
+              <span className="text-jj-gray-08">
+                {hk && !dk && <span className="text-jj-gray-07">{label(hk)}: </span>}
+                <span className="font-bold">{hk ? o[hk] : `Item ${i + 1}`}</span>
+              </span>
               {dk && <span className="flex-shrink-0 text-[11px] text-jj-gray-07 tabular-nums">{fmtDate(o[dk])}</span>}
             </div>
             {rest.length > 0 && (
