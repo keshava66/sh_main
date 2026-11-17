@@ -750,6 +750,93 @@ def get_mirror(tid: str, key: str = Query(..., min_length=1, max_length=100), by
     return out
 
 
+
+def stereo_twin_names(name: str) -> List[str]:
+    """Spellings of the other hand: "(+)-calanolide A" -> ["(-)-calanolide A", "(−)-calanolide A", "(l)-calanolide A"]."""
+    import re as _re
+    n = (name or "").strip()
+    kind = stereo_kind(n)
+    rest = _re.sub(STEREO_PREFIX, "", n).split(",")[0].strip()
+    if not rest:
+        return []
+    if kind == ST_PLUS:
+        return [f"(-)-{rest}", f"(−)-{rest}", f"(l)-{rest}"]
+    if kind == ST_MINUS:
+        return [f"(+)-{rest}", f"(d)-{rest}"]
+    if kind == ST_RS:
+        desc = _re.match(r"^\(([^)]*)\)", n).group(1).replace(" ", "")
+        flipped = desc.translate(str.maketrans("RS", "SR"))
+        return [f"({flipped})-{rest}"]
+    return []
+
+
+@cortellis_router.get("/mirror-elsewhere/{tid}")
+def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_length=100), bypass_cache: bool = Query(False),
+                         auth: dict = Depends(PERM)):
+    """Look for the molecule (and especially its other hand) in every Cortellis table,
+    not just this one: trials, milestones, approvals and news mention drugs too.
+    One query per table, side by side, each capped at 25 rows."""
+    import re as _re
+    from concurrent.futures import ThreadPoolExecutor
+    spec = _spec(tid)
+    k = spec.get("key")
+    cache_key = _cache_key("cortellis-mirror-elsewhere", {"tid": tid, "key": key})
+    if not bypass_cache:
+        hit = _cache_get(cache_key)
+        if hit is not None:
+            return hit
+    me = _run_or_fail(f"SELECT TRIM({_q(spec['title'])}::STRING) FROM {_fq(spec)} WHERE {_q(k)}::STRING = %(k)s LIMIT 1",
+                      {"k": key}, "elsewhere self").rows
+    name = me[0][0] if me and me[0][0] else ""
+    rest = _re.sub(STEREO_PREFIX, "", name.strip()).split(",")[0].strip()
+    twins = stereo_twin_names(name)
+    out = {"name": rest, "twin": twins[0] if twins else None, "tables": []}
+    if len(rest) < 4:  # too short to search for without drowning in noise
+        _cache_set(cache_key, out)
+        return out
+
+    def one(tid2):
+        sp = TABLES[tid2]
+        cols = set(_columns(sp, bypass_cache))
+        look = [c for c in sp["search"] if c in cols]
+        if not look or sp.get("key") not in cols or sp["title"] not in cols:
+            return None
+        params = {"base": f"%{_like_escape(rest)}%"}
+        where = " OR ".join(f"{_q(c)}::STRING ILIKE %(base)s ESCAPE '\\\\'" for c in look)
+        twin_sql = "FALSE"
+        if twins:
+            ors = []
+            for i, tw in enumerate(twins):
+                params[f"tw{i}"] = f"%{_like_escape(tw)}%"
+                ors += [f"{_q(c)}::STRING ILIKE %(tw{i})s ESCAPE '\\\\'" for c in look]
+            twin_sql = " OR ".join(ors)
+        mine = ""
+        if tid2 == tid:
+            params["self"] = key
+            mine = f" AND {_q(sp['key'])}::STRING <> %(self)s"
+        sql = (f"SELECT {_q(sp['key'])}::STRING, TRIM({_q(sp['title'])}::STRING), ({twin_sql}) tw, COUNT(*) OVER () n "
+               f"FROM {_fq(sp)} WHERE ({where}){mine} ORDER BY tw DESC LIMIT 25")
+        rows = _run_or_fail(sql, params, f"elsewhere {tid2}").rows
+        if not rows:
+            return None
+        return {"id": tid2, "label": sp["label"], "mentions": rows[0][3],
+                "twin_hits": [{"key": r[0], "title": r[1]} for r in rows if r[2]],
+                "examples": [{"key": r[0], "title": r[1]} for r in rows if not r[2]][:5]}
+
+    with ThreadPoolExecutor(max_workers=len(TABLES)) as pool:
+        futures = {tid2: pool.submit(one, tid2) for tid2 in TABLES}
+    for tid2, fut in futures.items():
+        try:
+            r = fut.result()
+        except HTTPException:
+            r = None  # one table failing must not hide the others
+        if r:
+            out["tables"].append(r)
+    out["tables"].sort(key=lambda t: (-len(t["twin_hits"]), -t["mentions"]))
+    _cache_set(cache_key, out)
+    return out
+
+
 @cortellis_router.get("/table/{tid}")
 def get_table(
     tid: str,

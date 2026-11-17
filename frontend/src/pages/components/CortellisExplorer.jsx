@@ -2204,17 +2204,23 @@ function StereoTag({ kind, desc, className = '' }) {
 const statusColor = (s) => (/launch|marketed|registered/i.test(s || '') ? '#2a7a12' : /no development|discontinued|suspended|withdrawn|terminated/i.test(s || '') ? '#c21300' : '#0f68b2');
 
 // other records of the same molecule (the other hand, the mixture, the original)
-function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
+function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onSearchIn }) {
   const [data, setData] = useState(null);
+  const [far, setFar] = useState(null); // the same molecule in the other Cortellis tables
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     setData(null); setFailed(false);
     if (!record.key) return;
     let dead = false;
     const ctl = new AbortController();
+    setFar(null);
     apiJson(`/api/cortellis/mirror/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
       .then(res => { if (!dead) { setData(res); onFound?.((res.forms || []).length > 0); } })
       .catch(e => { if (!dead && !isAbort(e)) setFailed(true); });
+    // slower (one search per table), so it fills in after the section is up
+    apiJson(`/api/cortellis/mirror-elsewhere/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
+      .then(res => { if (!dead) setFar(res); })
+      .catch(e => { if (!dead && !isAbort(e)) setFar({ error: true, tables: [] }); });
     return () => { dead = true; ctl.abort(); };
   }, [meta.id, record.key, onFound]);
   const me = stereoInfo(title);
@@ -2230,7 +2236,10 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
   const twin = mine === 'minus' ? hands.find(f => stereoKind(f.name) === 'plus')
     : mine === 'plus' ? hands.find(f => stereoKind(f.name) === 'minus')
     : mine === 'rs' ? hands.find(f => stereoInfo(f.name)?.desc === otherDesc) : null;
-  const twinName = mine === 'rs' ? `(${otherDesc})-${data.base || 'form'}` : `${mine === 'minus' ? '(+)' : '(−)'}-${data.base || 'form'}`;
+  // keep the record's own spelling ("calanolide A", not the lower-cased match key)
+  const plain = String(title || '').replace(/^\s*\([^)]*\)[- ]\s*/, '').split(',')[0].trim() || data.base || 'form';
+  const twinName = mine === 'rs' ? `(${otherDesc})-${plain}` : `${mine === 'minus' ? '(+)' : '(−)'}-${plain}`;
+  const farTwin = (far?.tables || []).filter(t => t.twin_hits.length);
   // same molecule written with the other notation, e.g. (R)- next to (-)-: shown, but not called the twin
   const sameHandOtherNotation = hands.filter(f => f !== twin);
   const bestOriginal = [...originals].sort((a, b) => /launch|marketed|registered/i.test(b.status || '') - /launch|marketed|registered/i.test(a.status || ''))[0];
@@ -2254,7 +2263,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
 
   return (
     <Section icon={<><path d="M8 2v12" strokeDasharray="2 2" /><path d="M6 4 3 8l3 4M10 4l3 4-3 4" /></>} title="Mirror forms"
-      sub={`Other records of the same molecule${data.base ? ` (“${data.base}”)` : ''}`}>
+      sub={`Other records of the same molecule${plain ? ` (“${plain}”)` : ''}`}>
       {mine && (
         <div className="grid grid-cols-[1fr_30px_1fr] items-stretch">
           {formCard({ key: record.key, name: title, status, smiles }, true)}
@@ -2265,7 +2274,18 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
           {twin ? formCard(twin, false) : (
             <div className="rounded-[14px] border-[1.5px] border-dashed border-jj-gray-03 bg-[#fbfaf9] p-3 flex flex-col justify-center gap-1 text-[12.5px] font-johnson-text text-jj-gray-07">
               <b className="text-jj-gray-08">{twinName}</b>
-              <span>The other hand isn't in {meta.label}.</span>
+              <span>Not in {meta.label}.</span>
+              {!far && <span className="text-[11.5px] text-jj-gray-06 animate-pulse">Checking the other Cortellis tables…</span>}
+              {far && !far.error && (farTwin.length ? (
+                <span className="flex flex-col gap-1 mt-1">
+                  <span className="text-jj-gray-08">Found in:</span>
+                  {farTwin.map(t => (
+                    <button key={t.id} onClick={() => onSearchIn?.(t.id, far.twin || plain)} className="self-start text-left text-[12px] text-jj-blue-03 hover:underline">
+                      {t.label} · {t.twin_hits.length}{t.twin_hits.length === 25 ? '+' : ''} record{t.twin_hits.length === 1 ? '' : 's'} →
+                    </button>
+                  ))}
+                </span>
+              ) : <span className="text-[11.5px]">Not found in any other Cortellis table either.</span>)}
             </div>
           )}
         </div>
@@ -2293,13 +2313,32 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
         </div>
       )}
       {mine && !forms.length && (
-        <div className="text-[12px] font-johnson-text text-jj-gray-07">No other record with the name “{data.base}” in {meta.label}. Names written differently in Cortellis won't match.</div>
+        <div className="text-[12px] font-johnson-text text-jj-gray-07">No other record named “{plain}” in {meta.label}. Names written differently in Cortellis won't match.</div>
+      )}
+      {far && !far.error && far.tables.length > 0 && (
+        <div className="rounded-xl border border-jj-gray-02 overflow-hidden">
+          <div className="px-3.5 py-2.5 bg-[#faf9f8] border-b border-jj-gray-01 flex items-baseline justify-between gap-3">
+            <span className="text-[12.5px] font-johnson-text font-bold text-jj-gray-08">Across Cortellis</span>
+            <span className="text-[11px] font-johnson-text text-jj-gray-07">Records that mention “{plain}”</span>
+          </div>
+          {far.tables.map(t => (
+            <div key={t.id} className="px-3.5 py-2 border-b border-jj-gray-01 last:border-0 flex items-center gap-3 text-[12.5px] font-johnson-text">
+              <span className="flex-1 min-w-0 truncate text-jj-gray-08">{t.label}{t.id === meta.id ? ' (this table)' : ''}</span>
+              {t.twin_hits.length > 0 && <span className="flex-shrink-0 text-[11px] font-bold rounded-md px-1.5 py-[1px] bg-[#e4f3f1] text-[#00615c]">other hand · {t.twin_hits.length}</span>}
+              <span className="flex-shrink-0 tabular-nums text-jj-gray-07">{fmtNum(t.mentions)} mention{t.mentions === 1 ? '' : 's'}</span>
+              <button onClick={() => onSearchIn?.(t.id, t.twin_hits.length && far.twin ? far.twin : plain)} className="flex-shrink-0 text-jj-blue-03 hover:underline">Show →</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {far && !far.error && !far.tables.length && plain.length >= 4 && (
+        <div className="text-[11.5px] font-johnson-text text-jj-gray-06">“{plain}” isn't mentioned in any other Cortellis table.</div>
       )}
     </Section>
   );
 }
 
-function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, labelOf, facetColors }) {
+function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, labelOf, facetColors }) {
   const canDownload = useRBAC().hasPermission('downloadUnstructuredData');
   const [full, setFull] = useState(null);
   const [error, setError] = useState(null);
@@ -2491,7 +2530,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, labelOf, face
           {meta.facets.includes(STEREO) && (
             <div id="ct-rec-mirror">
               <MirrorForms meta={meta} record={record} title={title} smiles={smiles ? String(get(info.smilesCol)) : null}
-                status={meta.facets.map(c => get(c)).find(v => typeof v === 'string' && v) || null} onOpen={(r) => onOpen?.(r)} onFound={setMirrorFound} />
+                status={meta.facets.map(c => get(c)).find(v => typeof v === 'string' && v) || null} onOpen={(r) => onOpen?.(r)} onFound={setMirrorFound} onSearchIn={onSearchIn} />
             </div>
           )}
 
@@ -2859,6 +2898,16 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
     logInPage?.('cortellis_record', `Opened Cortellis ${source.label} record "${String(r.title || r.key || '').slice(0, 80)}"`);
     setRecord(list ? { ...r, list, index } : r);
   };
+  // jump to another Cortellis table, Records tab, already searched for the name
+  const searchIn = (tid, text) => {
+    setRecord(null);
+    setParams(prev => {
+      const n = new URLSearchParams(prev);
+      CT_VIEW_KEYS.forEach(k => n.delete(k));
+      n.set('ct', tid); n.set('ctq', text); n.set('cttab', 'records');
+      return n;
+    });
+  };
   const stepRecord = (i) => setRecord(cur => (cur?.list?.[i] ? { ...cur.list[i], list: cur.list, index: i } : cur));
 
   // filters on columns this table doesn't have (old link) are ignored by the API, don't show them either
@@ -2958,7 +3007,7 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
           )}
         </div>
       </div>
-      {record && meta && <RecordDrawer meta={meta} record={record} onClose={() => setRecord(null)} onNavigate={stepRecord} onOpen={(r) => openRecord(r)} labelOf={labelOf} facetColors={facetColors} />}
+      {record && meta && <RecordDrawer meta={meta} record={record} onClose={() => setRecord(null)} onNavigate={stepRecord} onOpen={(r) => openRecord(r)} onSearchIn={searchIn} labelOf={labelOf} facetColors={facetColors} />}
     </div>
   );
 }
