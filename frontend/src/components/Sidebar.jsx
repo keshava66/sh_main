@@ -114,12 +114,13 @@ const CSS = `
 .sb-panel { position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden; background:#fdfcfb;
   border-right:1px solid #d9d1ca; box-shadow:inset -1px 0 0 #fff, 1px 0 0 rgba(255,255,255,.9), 18px 0 36px -26px rgba(60,30,20,.3); }
 
-.sb-brand { display:flex; align-items:center; height:72px; flex-shrink:0; padding:0 16px 0 18px; }
+/* sits above the scrolling list, like About us at the bottom: tools slide under it */
+.sb-brand { position:relative; z-index:1; display:flex; align-items:center; height:60px; flex-shrink:0; padding:0 16px 0 18px; background:#fdfcfb; border-bottom:1px solid #efeae6; box-shadow:0 10px 18px -12px rgba(40,20,10,.28); }
 .sb-brand img { display:block; user-select:none; }
 .sb-logo-full { height:38px; width:auto; }
 .sb-logo-mark { width:40px; height:40px; }
 
-.sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:0 13px 16px; overscroll-behavior:contain; }
+.sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:10px 13px 16px; overscroll-behavior:contain; }
 .sb-nav::-webkit-scrollbar { width:3px; }
 .sb-nav::-webkit-scrollbar-track { background:transparent; }
 .sb-nav::-webkit-scrollbar-thumb { background:#d5cfc9; border-radius:3px; }
