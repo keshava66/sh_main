@@ -113,7 +113,7 @@ const CSS = `
 .sb-panel { position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden; background:#fdfcfb;
   border-right:1px solid #d9d1ca; box-shadow:inset -1px 0 0 #fff, 1px 0 0 rgba(255,255,255,.9), 18px 0 36px -26px rgba(60,30,20,.3); }
 
-.sb-brand { position:relative; z-index:1; display:flex; align-items:center; height:60px; flex-shrink:0; padding:0 16px 0 18px; background:#fdfcfb;
+.sb-brand { position:relative; z-index:1; display:flex; align-items:center; height:60px; flex-shrink:0; padding:0 16px 0 24px; background:#fdfcfb; /* left edge lines up with the menu below */
   border-bottom:1px solid transparent; transition:box-shadow .2s, border-color .2s; }
 /* the list slides under the logo and About us: a shadow shows only where something is hidden */
 .sb.sb-scrolled .sb-brand { border-bottom-color:#efeae6; box-shadow:0 8px 12px -10px rgba(40,20,10,.35); }
