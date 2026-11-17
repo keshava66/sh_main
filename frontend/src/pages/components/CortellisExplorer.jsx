@@ -1859,6 +1859,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
   const [showEmpty, setShowEmpty] = useState(false);
   const [newestFirst, setNewestFirst] = useState(false);
   const [drawFailed, setDrawFailed] = useState(false);
+  const [zoom, setZoom] = useState(false);
   const scroller = useRef(null);
   const list = record.list || [];
   const at = record.index ?? -1;
@@ -1867,17 +1868,18 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape') return onClose();
+      if (e.key === 'Escape') return zoom ? setZoom(false) : onClose();
+      if (zoom) return;
       if (/input|textarea|select/i.test(e.target?.tagName || '')) return;
       if (e.key === 'ArrowLeft' && prev != null) onNavigate?.(prev);
       if (e.key === 'ArrowRight' && next != null) onNavigate?.(next);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, onNavigate, prev, next]);
+  }, [onClose, onNavigate, prev, next, zoom]);
 
   useEffect(() => {
-    setFull(null); setError(null); setDrawFailed(false);
+    setFull(null); setError(null); setDrawFailed(false); setZoom(false);
     scroller.current?.scrollTo({ top: 0 });
     if (!record.key) return;
     let dead = false;
@@ -1983,9 +1985,10 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
             </div>
             <div className="flex items-center gap-4 min-w-0">
               {structure && (
-                <div className="w-[104px] h-[84px] flex-shrink-0 rounded-[14px] bg-white border border-jj-gray-02 flex items-center justify-center overflow-hidden">
+                <button onClick={() => setZoom(true)} aria-label="Enlarge structure" title="Enlarge structure"
+                  className="w-[104px] h-[84px] flex-shrink-0 rounded-[14px] bg-white border border-jj-gray-02 flex items-center justify-center overflow-hidden cursor-zoom-in hover:border-jj-gray-04 hover:shadow-[0_4px_14px_rgba(49,44,42,.10)] transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-jj-blue-03/40">
                   <MoleculeView smiles={smiles.main} width={100} height={80} onFail={() => setDrawFailed(true)} />
-                </div>
+                </button>
               )}
               <div className="min-w-0 flex flex-col gap-2">
                 <h3 className="font-johnson-display font-bold text-[26px] leading-[1.1] text-jj-gray-08 break-words">{title}</h3>
@@ -2062,8 +2065,11 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
                 sub={structure ? 'Structure drawn from the SMILES in the record' : null}>
                 <div className={`grid gap-3.5 ${structure ? 'grid-cols-[300px_1fr]' : ''}`}>
                   {structure && (
-                    <div className="relative rounded-2xl border border-jj-gray-02 flex items-center justify-center" style={{ background: 'radial-gradient(circle at 50% 40%,#ffffff,#f7f5f3)' }}>
-                      <MoleculeView smiles={smiles.main} width={296} height={230} onFail={() => setDrawFailed(true)} />
+                    <div className="group relative rounded-2xl border border-jj-gray-02 flex items-center justify-center" style={{ background: 'radial-gradient(circle at 50% 40%,#ffffff,#f7f5f3)' }}>
+                      <button onClick={() => setZoom(true)} aria-label="Enlarge structure" className="cursor-zoom-in rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-jj-blue-03/40">
+                        <MoleculeView smiles={smiles.main} width={296} height={230} onFail={() => setDrawFailed(true)} />
+                      </button>
+                      <span className="pointer-events-none absolute bottom-2 right-2 text-[10.5px] font-johnson-text text-jj-gray-07 bg-white/90 border border-jj-gray-02 rounded-full px-2 py-[1px] opacity-0 group-hover:opacity-100 transition-opacity">Click to enlarge</span>
                       <div className="absolute top-2 left-2 flex gap-1">
                         {smiles.salt && <span className="text-[10.5px] font-johnson-text text-jj-gray-07 bg-white border border-jj-gray-02 rounded-full px-2 py-[1px]">Salt form, main part drawn</span>}
                         {smiles.relative && <span className="text-[10.5px] font-johnson-text text-jj-gray-07 bg-white border border-jj-gray-02 rounded-full px-2 py-[1px]">Relative stereo</span>}
@@ -2189,6 +2195,32 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
           {copied === 'fail' && <span className="text-[11.5px] font-johnson-text text-jj-maroon-05">Copy blocked by the browser</span>}
         </div>
       </div>
+      {zoom && structure && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6" onClick={(e) => { e.stopPropagation(); setZoom(false); }}>
+          <div className="relative bg-white rounded-[20px] shadow-2xl p-5 flex flex-col gap-3 max-w-[92vw]" onClick={e => e.stopPropagation()} role="dialog" aria-label={`Structure of ${title}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-[11px] font-johnson-text uppercase tracking-wider text-jj-gray-07">Chemical structure</div>
+                <div className="font-johnson-display font-bold text-[20px] leading-snug text-jj-gray-08 break-words">{title}</div>
+              </div>
+              <button autoFocus onClick={() => setZoom(false)} aria-label="Close structure" title="Close (Esc)"
+                className="flex-shrink-0 w-8 h-8 rounded-[9px] border border-jj-gray-03 bg-white flex items-center justify-center hover:bg-jj-gray-01 focus:outline-none focus-visible:ring-2 focus-visible:ring-jj-blue-03/40">
+                <Icon src={closeIcon} alt="" tint="ink" className="w-3 h-3" />
+              </button>
+            </div>
+            <div className="rounded-2xl border border-jj-gray-02 flex items-center justify-center" style={{ background: 'radial-gradient(circle at 50% 40%,#ffffff,#f7f5f3)' }}>
+              <MoleculeView smiles={smiles.main} width={Math.min(760, window.innerWidth - 100)} height={Math.min(540, window.innerHeight - 260)} />
+            </div>
+            <div className="flex items-center gap-2 border border-jj-gray-02 rounded-[10px] pl-3 pr-1.5 py-1.5">
+              <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07">SMILES</span>
+              <code className="flex-1 min-w-0 font-mono text-[12px] text-jj-gray-08 truncate">{String(get(info.smilesCol))}</code>
+              <button onClick={() => copy(String(get(info.smilesCol)), 'smiles')} className="flex-shrink-0 border border-jj-gray-03 bg-white rounded-lg px-2.5 py-1 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
+                {copied === 'smiles' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );
