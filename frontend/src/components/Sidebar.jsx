@@ -160,7 +160,8 @@ const CSS = `
 .sb:not(.open) .sb-skel { justify-content:center; padding:0; }
 .sb-skel i { display:block; border-radius:6px; background:#ece7e2; animation:sbBreath 1.4s ease-in-out infinite; }
 
-.sb-about { padding:2px 13px 6px; }
+/* sits above the scrolling list: soft shadow on top so tools slide under it */
+.sb-about { position:relative; z-index:1; padding:6px 13px; background:#fdfcfb; border-top:1px solid #efeae6; box-shadow:0 -10px 18px -12px rgba(40,20,10,.28); }
 .sb-about .sb-link { height:34px; border-radius:10px; }
 .sb-about .sb-link.on { box-shadow:0 4px 10px -6px rgba(235,23,0,.55); }
 .sb-user { padding:12px 14px 14px; border-top:1px solid #efeae6; }
