@@ -201,6 +201,21 @@ const STYLES = `
 .ct-shimmer { background: linear-gradient(90deg, #ece8e4 30%, #f9f8f7 50%, #ece8e4 70%); background-size: 200% 100%; animation: ct-shine 1.6s linear infinite; }
 /* scrollbar look comes from the explorer-wide ue-scrollbars style */
 .ct-noscroll { scrollbar-width: none; } .ct-noscroll::-webkit-scrollbar { display: none; }
+/* table row: thin bar, only shows while the pointer is over the row.
+   Doubled class so it beats the explorer-wide body.ue-scrollbars style; is-hover is
+   set from JS because Chrome does not repaint a scrollbar on :hover alone. */
+.ct-tabscroll.ct-tabscroll::-webkit-scrollbar { height: 6px; }
+.ct-tabscroll.ct-tabscroll::-webkit-scrollbar-button,
+.ct-tabscroll.ct-tabscroll::-webkit-scrollbar-button:single-button { display: none; }
+.ct-tabscroll.ct-tabscroll::-webkit-scrollbar-track { background: transparent; }
+.ct-tabscroll.ct-tabscroll::-webkit-scrollbar-thumb { background: transparent; border: 0; border-radius: 999px; min-width: 40px; min-height: 0; }
+.ct-tabscroll.ct-tabscroll.is-hover::-webkit-scrollbar-thumb { background: #d6cec7; }
+.ct-tabscroll.ct-tabscroll.is-hover::-webkit-scrollbar-thumb:hover { background: #a99d94; }
+.ct-tabscroll.ct-tabscroll::-webkit-scrollbar-thumb:active { background: #eb1700; }
+@supports not selector(::-webkit-scrollbar) {
+  .ct-tabscroll.ct-tabscroll { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  .ct-tabscroll.ct-tabscroll:hover { scrollbar-color: #d6cec7 transparent; }
+}
 /* reduce motion (also Windows 'animation effects' off): no sweep, slow fade so it still reads as loading */
 @media (prefers-reduced-motion: reduce) { .ct-rise { animation: none; } .ct-shimmer { animation: ct-pulse 1.8s ease-in-out infinite; } }
 `;
@@ -1662,6 +1677,7 @@ function TableTabs({ source, sources, onPick }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, [source.id]);
+  const [barOn, setBarOn] = useState(false);
   const nudge = (dir) => ref.current?.scrollBy({ left: dir * Math.max(240, ref.current.clientWidth * 0.6), behavior: 'smooth' });
   const arrow = (dir) => (
     <button onClick={() => nudge(dir)} aria-label={dir < 0 ? 'Scroll tables left' : 'Scroll tables right'} title={dir < 0 ? 'More tables' : 'More tables'}
@@ -1673,7 +1689,8 @@ function TableTabs({ source, sources, onPick }) {
     <div className="relative flex-1 min-w-0">
       {edges.left && <><div className="absolute left-0 top-0 bottom-0 w-12 z-[1] pointer-events-none" style={{ background: 'linear-gradient(90deg, #faf9f8, rgba(250,249,248,0))' }} />{arrow(-1)}</>}
       {edges.right && <><div className="absolute right-0 top-0 bottom-0 w-12 z-[1] pointer-events-none" style={{ background: 'linear-gradient(270deg, #faf9f8, rgba(250,249,248,0))' }} />{arrow(1)}</>}
-      <div ref={ref} onScroll={measure} className="flex items-center gap-1 overflow-x-auto ct-noscroll py-0.5" role="tablist" aria-label="Cortellis tables">
+      <div ref={ref} onScroll={measure} onMouseEnter={() => setBarOn(true)} onMouseLeave={() => setBarOn(false)}
+        className={`flex items-center gap-1 overflow-x-auto ct-tabscroll pt-0.5 pb-1.5 ${barOn ? 'is-hover' : ''}`} role="tablist" aria-label="Cortellis tables">
         {sources.map((s, i) => {
           const on = s.id === source.id;
           const c = PALETTE[i % PALETTE.length];
