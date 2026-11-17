@@ -132,6 +132,7 @@
   .au.is-fit .au-top .au-photo { margin: 0; grid-row: span 2; }
   .au.is-fit .au-top .au-name { align-self: end; }
   .au.is-fit .au-top .au-role { align-self: start; }
+  .au.is-fit .au-top .au-name:last-child { grid-row: span 2; align-self: center; } /* no role line */
 }
 @media (max-height: 900px) {
   .au.is-fit h1 { font-size: 44px; }

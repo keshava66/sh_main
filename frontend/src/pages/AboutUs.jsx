@@ -34,7 +34,7 @@ function Person({ name, role, office, photoFor, nameFor }) {
         {office ? <span className="au-office" /> : photo ? <img src={photo} alt="" /> : initials(shown)}
       </div>
       <div className="au-name">{shown}</div>
-      <div className="au-role">{role}</div>
+      {role && <div className="au-role">{role}</div>}
     </li>
   );
 }
@@ -113,7 +113,7 @@ export default function AboutUs() {
           <div className="au-top">
             <section className="au-panel" aria-labelledby="au-owner">
               <h2 className="au-panel-title" id="au-owner">Business owner</h2>
-              <ul className="au-row"><Person name="GRA Data Office" role="Regulatory Data Office" office /></ul>
+              <ul className="au-row"><Person name="GRA Data Office" office /></ul>
             </section>
             <section className="au-panel" aria-labelledby="au-sponsor">
               <h2 className="au-panel-title" id="au-sponsor">Sponsor</h2>
