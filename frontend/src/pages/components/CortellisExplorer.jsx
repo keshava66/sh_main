@@ -199,6 +199,8 @@ const STYLES = `
 @keyframes ct-shine { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes ct-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .ct-rise { animation: ct-rise .4s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes ct-pop { from { opacity: 0; transform: scale(.96) translateY(10px); } to { opacity: 1; transform: none; } }
+.ct-pop { animation: ct-pop .32s cubic-bezier(.2,.8,.3,1) both; }
 .ct-dots { background-image: radial-gradient(rgba(49,44,42,.07) 1px, transparent 1px); background-size: 14px 14px; }
 .ct-shimmer { background: linear-gradient(90deg, #ece8e4 30%, #f9f8f7 50%, #ece8e4 70%); background-size: 200% 100%; animation: ct-shine 1.6s linear infinite; }
 /* scrollbar look comes from the explorer-wide ue-scrollbars style */
@@ -219,7 +221,7 @@ const STYLES = `
   .ct-tabscroll.ct-tabscroll:hover { scrollbar-color: #d6cec7 transparent; }
 }
 /* reduce motion (also Windows 'animation effects' off): no sweep, slow fade so it still reads as loading */
-@media (prefers-reduced-motion: reduce) { .ct-rise { animation: none; } .ct-shimmer { animation: ct-pulse 1.8s ease-in-out infinite; } }
+@media (prefers-reduced-motion: reduce) { .ct-rise, .ct-pop { animation: none; } .ct-shimmer { animation: ct-pulse 1.8s ease-in-out infinite; } }
 `;
 
 // /api/cortellis sends NDJSON, one line per finished piece (counts, charts,
@@ -1676,7 +1678,13 @@ function splitSmiles(raw) {
 }
 
 let smilesLib = null; // loaded on first structure, kept for the rest of the session
-function MoleculeView({ smiles, width = 300, height = 220, onFail }) {
+// "lab": the dark viewer's palette (warm charcoal, brand-friendly element colours)
+const MOL_THEMES = {
+  light: { FOREGROUND: '#312c2a', BACKGROUND: '#ffffff', C: '#312c2a', O: '#e5372b', N: '#1f78c8', F: '#2a9d5c', CL: '#11907d', BR: '#c9560a', I: '#7d33b0', P: '#c9560a', S: '#d4a10a', B: '#e67e22', SI: '#e67e22', H: '#6b645f' },
+  lab: { FOREGROUND: '#f4efe9', BACKGROUND: '#171312', C: '#f4efe9', O: '#ff6b5e', N: '#5fb3ff', F: '#5be39a', CL: '#3fd6bd', BR: '#ff9d4d', I: '#c58cff', P: '#ff9d4d', S: '#ffd54a', B: '#ffb36b', SI: '#ffb36b', H: '#bdb3ab' },
+};
+
+function MoleculeView({ smiles, width = 300, height = 220, onFail, theme = 'light', bond = 1.4, svgRef, onDrawn }) {
   const ref = useRef(null);
   const [state, setState] = useState('loading');
   useEffect(() => {
@@ -1685,21 +1693,25 @@ function MoleculeView({ smiles, width = 300, height = 220, onFail }) {
     (smilesLib ||= import('smiles-drawer').then(m => m.default || m))
       .then(SD => {
         if (dead || !ref.current) return;
-        const drawer = new SD.SvgDrawer({ width, height, bondThickness: 1.4, padding: 14, compactDrawing: false, fontSizeLarge: 7, fontSizeSmall: 5 });
+        const drawer = new SD.SvgDrawer({ width, height, bondThickness: bond, padding: 14, compactDrawing: false, fontSizeLarge: 7, fontSizeSmall: 5, themes: MOL_THEMES });
         SD.parse(smiles, tree => {
           if (dead || !ref.current) return;
-          try { drawer.draw(tree, ref.current, 'light'); setState('ok'); } catch { setState('fail'); onFail?.(); }
+          try {
+            while (ref.current.firstChild) ref.current.removeChild(ref.current.firstChild);
+            drawer.draw(tree, ref.current, theme); setState('ok'); onDrawn?.(ref.current);
+          } catch { setState('fail'); onFail?.(); }
         }, () => { if (!dead) { setState('fail'); onFail?.(); } });
       })
       .catch(() => { if (!dead) { setState('fail'); onFail?.(); } });
     return () => { dead = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [smiles, width, height]);
+  }, [smiles, width, height, theme, bond]);
   if (state === 'fail') return null;
   return (
     <div className="relative" style={{ width, height }}>
-      {state === 'loading' && <div className="absolute inset-0 ct-shimmer rounded-xl" role="status" aria-label="Drawing structure" />}
-      <svg ref={ref} role="img" aria-label="Chemical structure" style={{ width, height, opacity: state === 'ok' ? 1 : 0 }} />
+      {state === 'loading' && <div className={`absolute inset-0 rounded-xl ${theme === 'lab' ? 'bg-white/[.04] animate-pulse' : 'ct-shimmer'}`} role="status" aria-label="Drawing structure" />}
+      <svg ref={(el) => { ref.current = el; if (svgRef) svgRef.current = el; }} role="img" aria-label="Chemical structure"
+        style={{ width, height, opacity: state === 'ok' ? 1 : 0, transition: 'opacity .5s ease' }} />
     </div>
   );
 }
@@ -1849,6 +1861,218 @@ function FieldValue({ v }) {
   if (isUrl(v)) return <a href={v} target="_blank" rel="noreferrer" className="text-jj-blue-03 underline break-all">{v}</a>;
   if (looksLikeDate(v)) return <>{fmtDate(v)}</>;
   return <>{show(v)}</>;
+}
+
+// heavy atoms in a SMILES string, e.g. { C: 17, N: 3, O: 4, F: 2, S: 1 }
+function atomCounts(smiles) {
+  const out = {};
+  const re = /\[([A-Z][a-z]?|[a-z]{1,2})[^\]]*\]|Cl|Br|[BCNOPSFI]|[bcnops]/g;
+  let m;
+  while ((m = re.exec(smiles))) {
+    let el = m[1] || m[0];
+    el = el[0].toUpperCase() + el.slice(1);
+    if (el === 'H') continue;
+    out[el] = (out[el] || 0) + 1;
+  }
+  return Object.entries(out).sort((a, b) => (a[0] === 'C' ? -1 : b[0] === 'C' ? 1 : b[1] - a[1]));
+}
+const ELEMENT_NAME = { C: 'Carbon', N: 'Nitrogen', O: 'Oxygen', S: 'Sulfur', F: 'Fluorine', Cl: 'Chlorine', Br: 'Bromine', I: 'Iodine', P: 'Phosphorus', B: 'Boron', Si: 'Silicon' };
+const elColor = (el, theme) => MOL_THEMES[theme][el.toUpperCase()] || (theme === 'lab' ? '#f4efe9' : '#312c2a');
+
+function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, copied, canDownload }) {
+  const [theme, setTheme] = useState('lab');
+  const [view, setView] = useState({ k: 1, x: 0, y: 0 });
+  const drag = useRef(null);
+  const svgRef = useRef(null);
+  const dark = theme === 'lab';
+  const W = Math.max(360, Math.min(1180, window.innerWidth * 0.94) - 340 - 48);
+  const H = Math.max(300, Math.min(780, window.innerHeight * 0.9) - 190);
+  const atoms = useMemo(() => atomCounts(smiles.main), [smiles.main]);
+  const heavy = atoms.reduce((n, [, c]) => n + c, 0);
+  const formulaFact = facts.find(([k]) => /formula/i.test(k));
+  const otherFacts = facts.filter(f => f !== formulaFact);
+  const sub = (v) => String(v).replace(/(\d+)/g, (d) => d.split('').map(x => '₀₁₂₃₄₅₆₇₈₉'[x]).join(''));
+
+  // the drawing keeps a fixed bond length, so small molecules sit small: zoom to fill on open
+  const [fitK, setFitK] = useState(1);
+  const fitRef = useRef(1);
+  const fit = (svg) => {
+    const box = svg.getBoundingClientRect();
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    svg.querySelectorAll('*').forEach(el => {
+      if (!el.getBoundingClientRect || el.children.length) return;
+      const q = el.getBoundingClientRect();
+      if (!q.width && !q.height) return;
+      l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+    });
+    if (!isFinite(l) || !box.width) return;
+    const cur = view.k || 1;
+    const k = Math.min(2.4, Math.max(1, Math.min((box.width / cur) * 0.84 / ((r - l) / cur), (box.height / cur) * 0.84 / ((b - t) / cur))));
+    setFitK(k); fitRef.current = k;
+    setView({ k, x: 0, y: 0 });
+  };
+  const zoomBy = (f) => setView(v => ({ ...v, k: Math.min(6, Math.max(0.5, v.k * f)) }));
+  const reset = () => setView({ k: fitK, x: 0, y: 0 });
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === '+' || e.key === '=') zoomBy(1.2);
+      else if (e.key === '-') zoomBy(1 / 1.2);
+      else if (e.key === '0') setView({ k: fitRef.current, x: 0, y: 0 });
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  const save = (kind) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const clone = svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', W); clone.setAttribute('height', H);
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('width', '100%'); bg.setAttribute('height', '100%'); bg.setAttribute('fill', MOL_THEMES[theme].BACKGROUND);
+    clone.insertBefore(bg, clone.firstChild);
+    const text = new XMLSerializer().serializeToString(clone);
+    const name = `${String(title).replace(/[^\w.-]+/g, '_').slice(0, 60) || 'structure'}`;
+    const fire = (href, file) => { const a = document.createElement('a'); a.href = href; a.download = file; a.click(); };
+    if (kind === 'svg') {
+      const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }));
+      fire(url, `${name}.svg`); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = W * 2; c.height = H * 2;
+      const g = c.getContext('2d'); g.scale(2, 2); g.drawImage(img, 0, 0, W, H);
+      c.toBlob(b => { if (!b) return; const url = URL.createObjectURL(b); fire(url, `${name}.png`); setTimeout(() => URL.revokeObjectURL(url), 1000); }, 'image/png');
+    };
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
+  };
+
+  const tool = `h-9 min-w-[36px] px-2.5 rounded-[10px] flex items-center justify-center gap-1.5 text-[12px] font-johnson-text font-medium transition-colors focus:outline-none focus-visible:ring-2 ${dark
+    ? 'bg-white/[.06] border border-white/10 text-[#f4efe9] hover:bg-white/[.12] focus-visible:ring-white/40'
+    : 'bg-white border border-jj-gray-03 text-jj-gray-08 hover:bg-jj-gray-01 focus-visible:ring-jj-blue-03/40'}`;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0b0908]/75 backdrop-blur-[3px] p-4"
+      onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-label={`Structure of ${title}`}
+        className="ct-pop relative grid rounded-[24px] overflow-hidden shadow-[0_40px_120px_rgba(0,0,0,.45)]"
+        style={{ width: W + 340 + 48, maxWidth: '96vw', gridTemplateColumns: `minmax(0,1fr) 340px` }}>
+
+        {/* canvas */}
+        <div className="relative flex flex-col" style={{ background: dark
+          ? 'radial-gradient(ellipse at 50% 42%, #2b2422 0%, #171312 62%, #100d0c 100%)'
+          : 'radial-gradient(ellipse at 50% 42%, #ffffff 0%, #f6f3f0 70%, #efebe7 100%)' }}>
+          <div className="absolute inset-0 pointer-events-none" aria-hidden="true"
+            style={{ backgroundImage: `radial-gradient(${dark ? 'rgba(255,255,255,.07)' : 'rgba(49,44,42,.08)'} 1px, transparent 1px)`, backgroundSize: '22px 22px',
+              maskImage: 'radial-gradient(ellipse at center, #000 30%, transparent 78%)', WebkitMaskImage: 'radial-gradient(ellipse at center, #000 30%, transparent 78%)' }} />
+          {dark && <div className="absolute left-1/2 top-[45%] -translate-x-1/2 -translate-y-1/2 w-[520px] h-[380px] rounded-full pointer-events-none" aria-hidden="true"
+            style={{ background: 'radial-gradient(closest-side, rgba(235,23,0,.16), rgba(95,179,255,.07) 55%, transparent)' }} />}
+
+          <div className="relative flex items-start justify-between gap-3 px-6 pt-5">
+            <div className="min-w-0">
+              <div className={`inline-flex items-center gap-2 text-[10.5px] font-johnson-text font-bold tracking-[.14em] uppercase ${dark ? 'text-[#ff8a7f]' : 'text-[#c21300]'}`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-current" aria-hidden="true" />Chemical structure
+              </div>
+              <div className={`font-johnson-display font-bold text-[24px] leading-tight mt-1 break-words ${dark ? 'text-white' : 'text-jj-gray-08'}`}>{title}</div>
+              <div className="flex gap-1.5 mt-2 flex-wrap">
+                {smiles.salt && <span className={`text-[11px] font-johnson-text rounded-full px-2.5 py-[2px] ${dark ? 'bg-white/[.08] text-[#d9d0c8]' : 'bg-white border border-jj-gray-02 text-jj-gray-07'}`}>Salt form · main part drawn</span>}
+                {smiles.relative && <span className={`text-[11px] font-johnson-text rounded-full px-2.5 py-[2px] ${dark ? 'bg-white/[.08] text-[#d9d0c8]' : 'bg-white border border-jj-gray-02 text-jj-gray-07'}`}>Relative stereochemistry</span>}
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <button className={tool} onClick={() => zoomBy(1 / 1.2)} aria-label="Zoom out" title="Zoom out (−)">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h8" /></svg>
+              </button>
+              <button className={`${tool} w-[58px] tabular-nums`} onClick={reset} title="Reset view (0)">{Math.round((view.k / fitK) * 100)}%</button>
+              <button className={tool} onClick={() => zoomBy(1.2)} aria-label="Zoom in" title="Zoom in (+)">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 7h8M7 3v8" /></svg>
+              </button>
+              <span className={`w-px h-6 mx-1 ${dark ? 'bg-white/15' : 'bg-jj-gray-03'}`} aria-hidden="true" />
+              <button className={tool} onClick={() => setTheme(dark ? 'light' : 'lab')} aria-label={dark ? 'Light background' : 'Dark background'} title={dark ? 'Light background' : 'Dark background'}>
+                {dark
+                  ? <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3" /><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" /></svg>
+                  : <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" /></svg>}
+              </button>
+              {canDownload && <>
+                <button className={tool} onClick={() => save('png')} title="Download as PNG image">PNG</button>
+                <button className={tool} onClick={() => save('svg')} title="Download as SVG (scalable, for slides)">SVG</button>
+              </>}
+              <span className={`w-px h-6 mx-1 ${dark ? 'bg-white/15' : 'bg-jj-gray-03'}`} aria-hidden="true" />
+              <button autoFocus className={tool} onClick={onClose} aria-label="Close structure" title="Close (Esc)">
+                <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+              </button>
+            </div>
+          </div>
+
+          <div className="relative flex-1 flex items-center justify-center overflow-hidden select-none cursor-grab active:cursor-grabbing"
+            style={{ height: H, touchAction: 'none' }}
+            onWheel={(e) => zoomBy(Math.exp(-e.deltaY * 0.0015))}
+            onDoubleClick={reset}
+            onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; e.currentTarget.setPointerCapture(e.pointerId); }}
+            onPointerMove={(e) => { const d = drag.current; if (d) setView(v => ({ ...v, x: d.vx + e.clientX - d.x, y: d.vy + e.clientY - d.y })); }}
+            onPointerUp={() => { drag.current = null; }}>
+            <div style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`, transition: drag.current ? 'none' : 'transform .18s ease-out' }}>
+              <MoleculeView smiles={smiles.main} width={W} height={H - 20} theme={theme} bond={dark ? 1.8 : 1.5} svgRef={svgRef} onDrawn={fitK === 1 ? fit : undefined} />
+            </div>
+            <div className={`absolute bottom-3 left-6 text-[11px] font-johnson-text ${dark ? 'text-white/45' : 'text-jj-gray-06'}`}>Scroll to zoom · drag to move · double-click to reset</div>
+          </div>
+
+          <div className="relative px-6 pb-5">
+            <div className={`flex items-center gap-3 rounded-[12px] pl-4 pr-1.5 py-1.5 ${dark ? 'bg-white/[.05] border border-white/10' : 'bg-white border border-jj-gray-02'}`}>
+              <span className={`text-[10px] font-johnson-text font-bold tracking-[.12em] uppercase flex-shrink-0 ${dark ? 'text-white/55' : 'text-jj-gray-07'}`} title="SMILES notation">Structure code</span>
+              <code className={`flex-1 min-w-0 font-mono text-[12.5px] truncate ${dark ? 'text-[#f4efe9]' : 'text-jj-gray-08'}`} title={code}>{code}</code>
+              <button onClick={onCopy} className={tool}>{copied ? 'Copied' : 'Copy'}</button>
+            </div>
+          </div>
+        </div>
+
+        {/* facts */}
+        <aside className="bg-white flex flex-col gap-5 p-6 overflow-y-auto ct-scroll" style={{ maxHeight: H + 190 }}>
+          {formulaFact && (
+            <div>
+              <div className="text-[11px] font-johnson-text font-bold tracking-[.12em] uppercase text-jj-gray-07">Formula</div>
+              <div className="font-johnson-display text-[32px] font-bold text-jj-gray-08 leading-tight mt-1">{sub(formulaFact[1])}</div>
+            </div>
+          )}
+          {otherFacts.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {otherFacts.map(([k, v]) => (
+                <div key={k} className="rounded-[12px] bg-[#f7f5f3] px-3 py-2.5 min-w-0">
+                  <div className="text-[11px] font-johnson-text text-jj-gray-07 truncate">{k}</div>
+                  <div className="text-[18px] font-johnson-text font-bold text-jj-gray-08 truncate tabular-nums">{v}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {atoms.length > 0 && (
+            <div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-[11px] font-johnson-text font-bold tracking-[.12em] uppercase text-jj-gray-07">Atoms</span>
+                <span className="text-[11.5px] font-johnson-text text-jj-gray-07 tabular-nums">{heavy} heavy atoms</span>
+              </div>
+              <div className="flex h-2.5 rounded-full overflow-hidden mt-2.5 bg-jj-gray-01" aria-hidden="true">
+                {atoms.map(([el, n]) => <span key={el} style={{ width: `${(n / heavy) * 100}%`, background: elColor(el, 'light') }} />)}
+              </div>
+              <ul className="mt-3 flex flex-col gap-1.5">
+                {atoms.map(([el, n]) => (
+                  <li key={el} className="flex items-center gap-2.5 text-[12.5px] font-johnson-text">
+                    <span className="w-7 h-7 rounded-[8px] flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0" style={{ background: elColor(el, 'light') }}>{el}</span>
+                    <span className="flex-1 text-jj-gray-08">{ELEMENT_NAME[el] || el}</span>
+                    <span className="tabular-nums font-bold text-jj-gray-08">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="mt-auto text-[11px] font-johnson-text text-jj-gray-06 leading-relaxed">
+            Drawn in your browser from the structure code stored in Cortellis. Hydrogens are implied.
+          </p>
+        </aside>
+      </div>
+    </div>
+  );
 }
 
 function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors }) {
@@ -2196,30 +2420,9 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
         </div>
       </div>
       {zoom && structure && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6" onClick={(e) => { e.stopPropagation(); setZoom(false); }}>
-          <div className="relative bg-white rounded-[20px] shadow-2xl p-5 flex flex-col gap-3 max-w-[92vw]" onClick={e => e.stopPropagation()} role="dialog" aria-label={`Structure of ${title}`}>
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-[11px] font-johnson-text uppercase tracking-wider text-jj-gray-07">Chemical structure</div>
-                <div className="font-johnson-display font-bold text-[20px] leading-snug text-jj-gray-08 break-words">{title}</div>
-              </div>
-              <button autoFocus onClick={() => setZoom(false)} aria-label="Close structure" title="Close (Esc)"
-                className="flex-shrink-0 w-8 h-8 rounded-[9px] border border-jj-gray-03 bg-white flex items-center justify-center hover:bg-jj-gray-01 focus:outline-none focus-visible:ring-2 focus-visible:ring-jj-blue-03/40">
-                <Icon src={closeIcon} alt="" tint="ink" className="w-3 h-3" />
-              </button>
-            </div>
-            <div className="rounded-2xl border border-jj-gray-02 flex items-center justify-center" style={{ background: 'radial-gradient(circle at 50% 40%,#ffffff,#f7f5f3)' }}>
-              <MoleculeView smiles={smiles.main} width={Math.min(760, window.innerWidth - 100)} height={Math.min(540, window.innerHeight - 260)} />
-            </div>
-            <div className="flex items-center gap-2 border border-jj-gray-02 rounded-[10px] pl-3 pr-1.5 py-1.5">
-              <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07 uppercase" title="SMILES notation">Structure code</span>
-              <code className="flex-1 min-w-0 font-mono text-[12px] text-jj-gray-08 truncate">{String(get(info.smilesCol))}</code>
-              <button onClick={() => copy(String(get(info.smilesCol)), 'smiles')} className="flex-shrink-0 border border-jj-gray-03 bg-white rounded-lg px-2.5 py-1 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
-                {copied === 'smiles' ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <StructureViewer title={title} smiles={smiles} code={String(get(info.smilesCol))} canDownload={canDownload}
+          facts={chemTiles.map(([k, v]) => [k, v])} onClose={() => setZoom(false)}
+          onCopy={() => copy(String(get(info.smilesCol)), 'smiles')} copied={copied === 'smiles'} />
       )}
     </div>,
     document.body
