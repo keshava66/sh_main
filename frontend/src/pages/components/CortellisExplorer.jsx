@@ -1069,6 +1069,49 @@ function Rail({ meta, overview, error, filters, onToggle, query, setQuery, years
   );
 }
 
+function ChiralCard({ chiral, meta, openRecord }) {
+  const tile = (label, value) => (
+    <div className="rounded-xl bg-[#f7f5f3] px-3 py-2.5 min-w-0">
+      <div className="text-[11.5px] font-johnson-text text-jj-gray-07">{label}</div>
+      <div className="text-[20px] font-johnson-text font-bold text-jj-gray-08 tabular-nums">{value}%</div>
+    </div>
+  );
+  return (
+    <Card className="px-5 py-4 min-w-0">
+      <CardTitle title="Chiral switches" sub={`Single-hand drugs that have an original (plain or mixture) record in ${meta.label} · across the whole table`} />
+      <div className="grid gap-3 md:grid-cols-[auto_1fr] items-center">
+        <div className="pr-4">
+          <div className="font-johnson-display font-bold text-[34px] leading-none text-jj-gray-08 tabular-nums">{fmtNum(chiral.pairs)}</div>
+          <div className="text-[12px] font-johnson-text text-jj-gray-07 mt-1">pairs found by name</div>
+        </div>
+        {chiral.has_status && (
+          <div className="grid grid-cols-3 gap-2">
+            {tile('Original launched', chiral.original_launched_pct)}
+            {tile('Single hand launched', chiral.single_launched_pct)}
+            {tile('Single hand stopped', chiral.single_stopped_pct)}
+          </div>
+        )}
+      </div>
+      <div className="mt-4 border-t border-jj-gray-01">
+        {chiral.examples.map((p, i) => (
+          <div key={i} className="grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2 py-2 border-b border-jj-gray-01 last:border-0 text-[12.5px] font-johnson-text">
+            <button onClick={() => openRecord({ key: p.single.key, title: p.single.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
+              <span className="font-bold truncate">{p.single.name}</span>
+              <span className="flex gap-1.5 flex-wrap"><StereoTag kind={KIND_BY_LABEL[p.single.kind]} />{p.single.status && <Pill color={statusColor(p.single.status)}>{p.single.status}</Pill>}</span>
+            </button>
+            <span className="text-jj-gray-06 text-center" aria-hidden="true">↔</span>
+            <button onClick={() => openRecord({ key: p.original.key, title: p.original.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
+              <span className="font-bold truncate">{p.original.name}</span>
+              <span className="flex gap-1.5 flex-wrap">{p.original.status && <Pill color={statusColor(p.original.status)}>{p.original.status}</Pill>}</span>
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="text-[11px] font-johnson-text text-jj-gray-06 mt-2">Matched on the name without the (+)/(−) prefix and the part after the comma. Names Cortellis writes differently won't pair up.</div>
+    </Card>
+  );
+}
+
 /* ============================== explore ============================== */
 
 function KpiTile({ label, value, sub, color, title, children, loading }) {
@@ -1337,7 +1380,8 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
           </div>
         )}
         {insWait('leaders') && <div className="grid gap-4 xl:grid-cols-2 flex-shrink-0"><SkelCard height={300} lines={7} /><SkelCard height={300} lines={7} /></div>}
-        {insights._done && !insights.cross?.cells?.length && !insights.leaders?.values?.length && <Empty title="Nothing to compare for this table" />}
+        {insights.chiral?.pairs > 0 && <ChiralCard chiral={insights.chiral} meta={meta} openRecord={openRecord} />}
+        {insights._done && !insights.cross?.cells?.length && !insights.leaders?.values?.length && !insights.chiral?.pairs && <Empty title="Nothing to compare for this table" />}
       </>
     );
   } else if (section === 'numbers') {
@@ -1455,7 +1499,12 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
     if (isUrl(v)) return <a href={v} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-jj-blue-03 hover:underline whitespace-nowrap">Open ↗</a>;
     if (looksLikeDate(v)) return <span className="tabular-nums whitespace-nowrap">{fmtDate(v)}</span>;
     if (facetColors[c]) return <Pill color={facetColors[c]}>{show(v)}</Pill>;
-    if (c === meta.title) return <div className="font-medium text-jj-gray-08 leading-snug line-clamp-2 whitespace-normal">{highlight(show(v), state.q)}</div>;
+    if (c === meta.title) return (
+      <>
+        <div className="font-medium text-jj-gray-08 leading-snug line-clamp-2 whitespace-normal">{highlight(show(v), state.q)}</div>
+        {meta.facets.includes(STEREO) && stereoKind(v) && <StereoTag kind={stereoKind(v)} className="mt-1" />}
+      </>
+    );
     return <span title={show(v)}>{highlight(show(v), state.q)}</span>;
   };
 
@@ -2110,7 +2159,115 @@ function StructureViewer({ title, smiles, code, facts = [], onClose, onCopy, cop
   );
 }
 
-function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors }) {
+/* ---- single-hand (chiral) drugs: the (+)/(-) prefix on a drug name ---- */
+const STEREO = '__stereo';
+const STEREO_KINDS = {
+  minus: { label: 'Single hand (−)', cls: 'text-[#5b2a86] bg-[#f3ebf8]', tip: 'One of the two mirror-image forms of this molecule, developed on its own. It turns polarised light to the left.' },
+  plus: { label: 'Single hand (+)', cls: 'text-[#0c5a99] bg-[#e8f0f8]', tip: 'One of the two mirror-image forms of this molecule, developed on its own. It turns polarised light to the right.' },
+  mix: { label: 'Mixture (±)', cls: 'text-[#5c5450] bg-[#f4f2f0]', tip: 'Both mirror-image forms, 50/50 (a racemate).' },
+};
+const KIND_BY_LABEL = { 'Single hand (−)': 'minus', 'Single hand (+)': 'plus', 'Mixture (±)': 'mix' };
+function stereoKind(name) {
+  const m = /^\s*\((-|−|\+|±|\+\/-|\+-|l|d|rac)\)-/i.exec(String(name || ''));
+  if (!m) return null;
+  return /^(-|−|l)$/i.test(m[1]) ? 'minus' : /^(\+|d)$/i.test(m[1]) ? 'plus' : 'mix';
+}
+function StereoTag({ kind, className = '' }) {
+  const k = STEREO_KINDS[kind];
+  if (!k) return null;
+  return (
+    <span tabIndex={0} title={k.tip} aria-label={`${k.label}: ${k.tip}`}
+      className={`inline-flex items-center gap-[5px] text-[11px] font-johnson-text font-bold rounded-md px-[7px] py-[2px] whitespace-nowrap cursor-help ${k.cls} ${className}`}>
+      <span aria-hidden="true" className="w-2.5 h-2.5 rounded-[2px] flex-shrink-0"
+        style={kind === 'mix' ? { background: 'currentColor' } : { background: 'linear-gradient(90deg,currentColor 50%,transparent 50%)', boxShadow: 'inset 0 0 0 1.4px currentColor' }} />
+      {k.label}
+    </span>
+  );
+}
+const statusColor = (s) => (/launch|marketed|registered/i.test(s || '') ? '#2a7a12' : /no development|discontinued|suspended|withdrawn|terminated/i.test(s || '') ? '#c21300' : '#0f68b2');
+
+// other records of the same molecule (the other hand, the mixture, the original)
+function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
+  const [data, setData] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setData(null); setFailed(false);
+    if (!record.key) return;
+    let dead = false;
+    const ctl = new AbortController();
+    apiJson(`/api/cortellis/mirror/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
+      .then(res => { if (!dead) { setData(res); onFound?.((res.forms || []).length > 0); } })
+      .catch(e => { if (!dead && !isAbort(e)) setFailed(true); });
+    return () => { dead = true; ctl.abort(); };
+  }, [meta.id, record.key, onFound]);
+  const mine = stereoKind(title);
+  if (failed || !data) return null;
+  const forms = data.forms || [];
+  const hands = forms.filter(f => KIND_BY_LABEL[f.kind] === 'minus' || KIND_BY_LABEL[f.kind] === 'plus');
+  const originals = forms.filter(f => !KIND_BY_LABEL[f.kind] || KIND_BY_LABEL[f.kind] === 'mix');
+  if (!forms.length && !mine) return null;
+  const other = mine === 'minus' ? 'plus' : mine === 'plus' ? 'minus' : null;
+  const twin = other && hands.find(f => KIND_BY_LABEL[f.kind] === other);
+  const bestOriginal = [...originals].sort((a, b) => /launch|marketed|registered/i.test(b.status || '') - /launch|marketed|registered/i.test(a.status || ''))[0];
+
+  const formCard = (f, here) => (
+    <div key={f.key || f.name} className={`rounded-[14px] border bg-white p-2.5 flex flex-col gap-1.5 min-w-0 ${here ? 'border-[#f0b3aa] shadow-[0_0_0_3px_#fdecea]' : 'border-jj-gray-02'}`}>
+      {f.smiles && splitSmiles(f.smiles) && (
+        <div className="rounded-[10px] flex justify-center" style={{ background: 'radial-gradient(circle at 50% 45%,#ffffff,#f7f5f3)' }}>
+          <MoleculeView smiles={splitSmiles(f.smiles).main} width={220} height={130} />
+        </div>
+      )}
+      <div className="text-[13px] font-johnson-text font-bold text-jj-gray-08 break-words">{f.name}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {KIND_BY_LABEL[f.kind] && <StereoTag kind={KIND_BY_LABEL[f.kind]} />}
+        {f.status && <Pill color={statusColor(f.status)}>{f.status}</Pill>}
+      </div>
+      {here ? <span className="text-[11.5px] font-johnson-text text-jj-gray-07">You are here</span>
+        : <button onClick={() => onOpen({ key: f.key, title: f.name })} className="self-start text-[12px] font-johnson-text text-jj-blue-03 hover:underline">Open record →</button>}
+    </div>
+  );
+
+  return (
+    <Section icon={<><path d="M8 2v12" strokeDasharray="2 2" /><path d="M6 4 3 8l3 4M10 4l3 4-3 4" /></>} title="Mirror forms"
+      sub={`Other records of the same molecule${data.base ? ` (“${data.base}”)` : ''}`}>
+      {mine && (
+        <div className="grid grid-cols-[1fr_30px_1fr] items-stretch">
+          {formCard({ key: record.key, name: title, kind: STEREO_KINDS[mine].label, status, smiles }, true)}
+          <div className="relative flex items-center justify-center" aria-hidden="true">
+            <span className="absolute top-2 bottom-2 border-l-2 border-dashed border-jj-gray-03" />
+            <span className="relative bg-white py-1.5 text-[9.5px] font-johnson-text font-bold tracking-[.1em] text-jj-gray-07" style={{ writingMode: 'vertical-rl' }}>MIRROR</span>
+          </div>
+          {twin ? formCard(twin, false) : (
+            <div className="rounded-[14px] border-[1.5px] border-dashed border-jj-gray-03 bg-[#fbfaf9] p-3 flex flex-col justify-center gap-1 text-[12.5px] font-johnson-text text-jj-gray-07">
+              <b className="text-jj-gray-08">{other === 'plus' ? '(+)' : '(−)'}-{data.base || 'form'}</b>
+              <span>The other hand isn't in {meta.label}.</span>
+            </div>
+          )}
+        </div>
+      )}
+      {!mine && hands.length > 0 && (
+        <div className="text-[12.5px] font-johnson-text text-jj-gray-07">This record is the original; {hands.length === 1 ? 'a single-hand version was' : `${hands.length} single-hand versions were`} developed separately:</div>
+      )}
+      {(mine ? originals : hands).length > 0 && (
+        <div className="grid grid-cols-2 gap-2.5">
+          {mine && <div className="col-span-2 text-[10.5px] font-johnson-text font-bold tracking-[.1em] text-jj-gray-07 uppercase">Original</div>}
+          {(mine ? originals : hands).slice(0, 6).map(f => formCard(f, false))}
+        </div>
+      )}
+      {mine && bestOriginal && (
+        <div className="rounded-xl bg-[#faf9f8] border border-jj-gray-01 px-3.5 py-3 text-[12.5px] font-johnson-text text-jj-gray-08 leading-relaxed">
+          <b>Chiral switch.</b> The original <b>{bestOriginal.name}</b> is <b style={{ color: statusColor(bestOriginal.status) }}>{bestOriginal.status || 'status unknown'}</b>;
+          this single-hand version is <b style={{ color: statusColor(status) }}>{status || 'status unknown'}</b>.
+        </div>
+      )}
+      {mine && !forms.length && (
+        <div className="text-[12px] font-johnson-text text-jj-gray-07">No other record with the name “{data.base}” in {meta.label}. Names written differently in Cortellis won't match.</div>
+      )}
+    </Section>
+  );
+}
+
+function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, labelOf, facetColors }) {
   const canDownload = useRBAC().hasPermission('downloadUnstructuredData');
   const [full, setFull] = useState(null);
   const [error, setError] = useState(null);
@@ -2119,6 +2276,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
   const [newestFirst, setNewestFirst] = useState(false);
   const [drawFailed, setDrawFailed] = useState(false);
   const [zoom, setZoom] = useState(false);
+  const [mirrorFound, setMirrorFound] = useState(false);
   const scroller = useRef(null);
   const list = record.list || [];
   const at = record.index ?? -1;
@@ -2138,7 +2296,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
   }, [onClose, onNavigate, prev, next, zoom]);
 
   useEffect(() => {
-    setFull(null); setError(null); setDrawFailed(false); setZoom(false);
+    setFull(null); setError(null); setDrawFailed(false); setZoom(false); setMirrorFound(false);
     scroller.current?.scrollTo({ top: 0 });
     if (!record.key) return;
     let dead = false;
@@ -2190,6 +2348,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
 
   const sections = [
     journey && ['journey', 'Journey'],
+    meta.facets.includes(STEREO) && (stereoKind(title) || mirrorFound) && ['mirror', 'Mirror forms'],
     indicationCols.length > 0 && ['indications', 'Indications'],
     (structure || chemCols.length > 0) && ['chemistry', 'Chemistry'],
     events.length > 0 && ['timeline', 'Timeline'],
@@ -2251,9 +2410,10 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
               )}
               <div className="min-w-0 flex flex-col gap-2">
                 <h3 className="font-johnson-display font-bold text-[26px] leading-[1.1] text-jj-gray-08 break-words">{title}</h3>
-                {tags.length > 0 && (
+                {(tags.length > 0 || (meta.facets.includes(STEREO) && stereoKind(title))) && (
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {tags.map(([c, v]) => <Pill key={c} color={facetColors[c]} title={labelOf(c)}>{show(v)}</Pill>)}
+                    <StereoTag kind={meta.facets.includes(STEREO) ? stereoKind(title) : null} />
                   </div>
                 )}
               </div>
@@ -2293,6 +2453,13 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
               <Section icon={<><circle cx="8" cy="8" r="6" /><path d="M8 5v3.5l2 1.5" /></>} title="Development journey" sub="Worked out from the record's status and key events">
                 <Journey journey={journey} />
               </Section>
+            </div>
+          )}
+
+          {meta.facets.includes(STEREO) && (
+            <div id="ct-rec-mirror">
+              <MirrorForms meta={meta} record={record} title={title} smiles={smiles ? String(get(info.smilesCol)) : null}
+                status={meta.facets.map(c => get(c)).find(v => typeof v === 'string' && v) || null} onOpen={(r) => onOpen?.(r)} onFound={setMirrorFound} />
             </div>
           )}
 
@@ -2675,7 +2842,7 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
     { id: 'overview', label: 'Overview' },
     ...(meta?.has_years !== false ? [{ id: 'trends', label: 'Trends' }] : []),
     { id: 'breakdowns', label: 'Breakdowns', badge: overview?.facets?.length },
-    ...(!insights || insError || insights.cross?.cells?.length || insights.leaders?.values?.length ? [{ id: 'relationships', label: 'Relationships' }] : []),
+    ...(!insights || insError || insights.cross?.cells?.length || insights.leaders?.values?.length || insights.chiral?.pairs ? [{ id: 'relationships', label: 'Relationships' }] : []),
     { id: 'numbers', label: insights?.measures?.some(m => m.count) ? 'Numbers & quality' : 'Data quality' },
     { id: 'records', label: 'Records', badge: overview?.total != null ? compact(overview.total) : null },
   ];
@@ -2759,7 +2926,7 @@ function TableView({ source, sources, onPick, activeTab, logInPage, onBusyChange
           )}
         </div>
       </div>
-      {record && meta && <RecordDrawer meta={meta} record={record} onClose={() => setRecord(null)} onNavigate={stepRecord} labelOf={labelOf} facetColors={facetColors} />}
+      {record && meta && <RecordDrawer meta={meta} record={record} onClose={() => setRecord(null)} onNavigate={stepRecord} onOpen={(r) => openRecord(r)} labelOf={labelOf} facetColors={facetColors} />}
     </div>
   );
 }

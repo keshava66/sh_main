@@ -89,6 +89,7 @@ TABLES: Dict[str, Dict[str, Any]] = {
                  "indication", "mechanismsOfAction", "drugTherapeuticClasses", "firstLaunchYear",
                  "latestChangeDate", "recordUrl"],
         "search": ["drugPrimaryName", "drugNameSynonyms", "originatorName", "indication", "mechanismsOfAction"],
+        "stereo": "globalStatus",  # (+)/(-) single-hand drugs; the column holds each drug's status
     },
     "cortellis_rwe": _cortellis("RDH_CORTELLIS_RWE_PILL4R_DATA", "Cortellis Real World Evidence",
                                 "Approval packages flagged as real world evidence"),
@@ -145,6 +146,7 @@ TABLES: Dict[str, Dict[str, Any]] = {
         "grid": ["eventDate", "drugPrimaryName", "eventDetails", "originatorName", "indication",
                  "globalStatus", "mechanismsOfAction", "recordUrl"],
         "search": ["drugPrimaryName", "eventDetails", "originatorName", "indication"],
+        "stereo": None,
     },
     "hanews": {
         "label": "HA News", "table": "RDH_HANEWS_PILL4R_DATA",
@@ -274,6 +276,40 @@ def _stack_facet(spec, cols):
     return next((c for c in spec["facets"] if c in cols and c not in spec.get("split", [])), None)
 
 
+# ------------------------------------------------------------------ single-hand (chiral) drugs
+# Drug names like "(-)-pantoprazole, Sunovion" carry the optical rotation prefix:
+# (-) / (+) is one mirror-image form developed on its own, (+/-) a 50/50 mix.
+# It is read from the name, so it works on the live table with no extra data.
+STEREO = "__stereo"
+STEREO_LABEL = "Stereo form"
+ST_MINUS, ST_PLUS, ST_MIX, ST_NONE = "Single hand (−)", "Single hand (+)", "Mixture (±)", "Not marked"
+STEREO_ORDER = [ST_MINUS, ST_PLUS, ST_MIX, ST_NONE]
+
+
+def _has_stereo(spec) -> bool:
+    return "stereo" in spec
+
+
+def _stereo_sql(spec) -> str:
+    n = f"TRIM({_q(spec['title'])}::STRING)"
+    return (f"CASE WHEN {n} LIKE '(-)-%' OR {n} LIKE '(−)-%' OR {n} LIKE '(l)-%' THEN '{ST_MINUS}' "
+            f"WHEN {n} LIKE '(+)-%' OR {n} LIKE '(d)-%' THEN '{ST_PLUS}' "
+            f"WHEN {n} LIKE '(±)-%' OR {n} LIKE '(+/-)-%' OR {n} LIKE '(+-)-%' OR {n} LIKE '(rac)-%' THEN '{ST_MIX}' "
+            f"ELSE '{ST_NONE}' END")
+
+
+def _stereo_base_sql(spec) -> str:
+    # "(-)-pantoprazole, Sunovion" -> "pantoprazole": prefix off, developer/place after the comma off
+    n = f"TRIM({_q(spec['title'])}::STRING)"
+    return (f"LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE({n}, '^\\\\((-|−|\\\\+|±|\\\\+/-|\\\\+-|l|d|rac)\\\\)-', ''), ',.*$', '')))")
+
+
+def stereo_base(name: str) -> str:
+    import re as _re
+    s = _re.sub(r"^\((-|−|\+|±|\+/-|\+-|l|d|rac)\)-", "", (name or "").strip())
+    return s.split(",")[0].strip().lower()
+
+
 def _like_escape(v: str) -> str:
     return v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -294,7 +330,10 @@ def _where(spec, filters: Dict[str, List[str]], q: str, years, params: Dict[str,
         ors = []
         for vi, v in enumerate(vals):
             p = f"f{fi}_{vi}"
-            if col in split:
+            if col == STEREO:
+                params[p] = v
+                ors.append(f"{_stereo_sql(spec)} = %({p})s")
+            elif col in split:
                 params[p] = f"%,{_like_escape(v)},%"
                 ors.append(f"{_split_sql(col)} LIKE %({p})s ESCAPE '\\\\'")
             else:
@@ -322,7 +361,7 @@ def _parse_filters(spec, raw: str) -> Dict[str, List[str]]:
         raise HTTPException(status_code=400, detail="filters must be an object")
     out = {}
     for col, vals in data.items():
-        if col not in spec["facets"]:
+        if col not in spec["facets"] and not (col == STEREO and _has_stereo(spec)):
             # old / hand-edited link, just skip it rather than break the page
             logger.info(f"Cortellis {spec['label']}: ignoring unknown filter '{col}'")
             continue
@@ -379,9 +418,11 @@ def get_meta(tid: str, bypass_cache: bool = Query(False), auth: dict = Depends(P
     spec = _spec(tid)
     cols = _columns(spec, bypass_cache)
     labels = {c: _label(spec, c) for c in cols if _label(spec, c)}
+    if _has_stereo(spec):
+        labels[STEREO] = STEREO_LABEL
     return {
         "id": tid, "label": spec["label"], "blurb": spec.get("blurb"), "table": _fq(spec),
-        "facets": [f for f in spec["facets"] if f in cols],
+        "facets": [f for f in spec["facets"] if f in cols] + ([STEREO] if _has_stereo(spec) and spec["title"] in cols else []),
         "grid": [c for c in spec["grid"] if c in cols],
         "columns": cols, "labels": labels,
         "title": spec["title"], "text": spec.get("text"), "url": spec.get("url"), "key": spec.get("key"),
@@ -436,6 +477,15 @@ def get_overview(
             vals = sorted(facets.get(col, []), key=lambda x: -x["count"])
             out_facets.append({"column": col, "label": _label(spec, col), "values": vals[:TOP_VALUES],
                                "more": len(vals) > TOP_VALUES})
+        if _has_stereo(spec) and spec["title"] in cols:
+            params = {}
+            w = _where(spec, f, args["q"], yrs, params, skip=STEREO)
+            got = {v: n for v, n in _run_or_fail(f"SELECT {_stereo_sql(spec)} v, COUNT(*) FROM {t}{w} GROUP BY 1",
+                                                  params, "overview stereo").rows}
+            # only worth a filter when some names actually carry a prefix
+            if any(got.get(k) for k in (ST_MINUS, ST_PLUS, ST_MIX)) or f.get(STEREO):
+                out_facets.append({"column": STEREO, "label": STEREO_LABEL, "more": False,
+                                   "values": [{"value": k, "count": got.get(k, 0)} for k in STEREO_ORDER if got.get(k)]})
         yield {"facets": out_facets}
 
         # by year, split by the top 5 values of the first plain facet
@@ -581,6 +631,11 @@ def get_insights(
             yield {"measures": list(measures)}
         yield {"id": tid, "measures": measures}
 
+        # chiral switches: single-hand drugs that have an original (plain or mixture) record
+        if _has_stereo(spec) and spec["title"] in cols:
+            out["chiral"] = _chiral_pairs(spec, cols)
+            yield {"chiral": out["chiral"]}
+
         # how full the key columns are
         grid = [c for c in spec["grid"] if c in cols]
         if grid:
@@ -594,6 +649,80 @@ def get_insights(
             yield {"completeness": out["completeness"]}
 
     return _stream("cortellis-insights", args, bypass_cache, parts)
+
+
+
+LAUNCHED_RE = "launch|marketed|registered"
+STOPPED_RE = "no development|discontinued|suspended|withdrawn|terminated"
+
+
+def _chiral_pairs(spec, cols) -> Dict[str, Any]:
+    t = _fq(spec)
+    status = spec.get("stereo") if spec.get("stereo") in cols else None
+    key = spec.get("key") if spec.get("key") in cols else None
+    st = f"TRIM({_q(status)}::STRING)" if status else "NULL"
+    k = f"{_q(key)}::STRING" if key else "NULL"
+    sql = (f"WITH r AS (SELECT {k} k, TRIM({_q(spec['title'])}::STRING) n, {st} s, {_stereo_sql(spec)} kind, "
+           f"{_stereo_base_sql(spec)} b FROM {t} WHERE NULLIF(TRIM({_q(spec['title'])}::STRING), '') IS NOT NULL) "
+           f"SELECT x.k, x.n, x.s, x.kind, o.k, o.n, o.s FROM r x JOIN r o ON o.b = x.b AND o.b <> '' "
+           f"AND x.kind IN ('{ST_MINUS}', '{ST_PLUS}') AND o.kind IN ('{ST_NONE}', '{ST_MIX}') LIMIT 5000")
+    rows = _run_or_fail(sql, {}, "insights chiral").rows
+    import re as _re
+    launched = lambda v: bool(v and _re.search(LAUNCHED_RE, v, _re.I))
+    stopped = lambda v: bool(v and _re.search(STOPPED_RE, v, _re.I))
+    best: Dict[Any, Dict[str, Any]] = {}
+    for xk, xn, xs, xkind, ok, on, os_ in rows:
+        cur = best.get(xk or xn)
+        cand = {"single": {"key": _to_json_safe(xk), "name": xn, "status": xs, "kind": xkind},
+                "original": {"key": _to_json_safe(ok), "name": on, "status": os_}}
+        # keep the original that got furthest (a launched one beats a stopped one)
+        if cur is None or (launched(os_) and not launched(cur["original"]["status"])):
+            best[xk or xn] = cand
+    pairs = list(best.values())
+    n = len(pairs)
+    pct = lambda c: round(100 * c / n) if n else 0
+    pairs.sort(key=lambda p: (not launched(p["original"]["status"]), not stopped(p["single"]["status"]), p["single"]["name"] or ""))
+    return {
+        "pairs": n,
+        "original_launched_pct": pct(sum(launched(p["original"]["status"]) for p in pairs)),
+        "single_launched_pct": pct(sum(launched(p["single"]["status"]) for p in pairs)),
+        "single_stopped_pct": pct(sum(stopped(p["single"]["status"]) for p in pairs)),
+        "has_status": bool(status),
+        "examples": pairs[:24],
+    }
+
+
+@cortellis_router.get("/mirror/{tid}")
+def get_mirror(tid: str, key: str = Query(..., min_length=1, max_length=100), bypass_cache: bool = Query(False),
+               auth: dict = Depends(PERM)):
+    """Other records of the same molecule: the other hand, the mixture, the original.
+    Matched on the name without its (+)/(-) prefix and without the part after the comma."""
+    spec = _spec(tid)
+    if not _has_stereo(spec):
+        return {"base": None, "forms": []}
+    cols = _columns(spec, bypass_cache)
+    k = spec.get("key")
+    if spec["title"] not in cols or k not in cols:
+        return {"base": None, "forms": []}
+    cache_key = _cache_key("cortellis-mirror", {"tid": tid, "key": key})
+    if not bypass_cache:
+        hit = _cache_get(cache_key)
+        if hit is not None:
+            return hit
+    me = _run_or_fail(f"SELECT TRIM({_q(spec['title'])}::STRING) FROM {_fq(spec)} WHERE {_q(k)}::STRING = %(k)s LIMIT 1",
+                      {"k": key}, "mirror self").rows
+    base = stereo_base(me[0][0]) if me and me[0][0] else ""
+    out = {"base": base, "forms": []}
+    if len(base) >= 3:
+        status = spec.get("stereo") if spec.get("stereo") in cols else None
+        smiles = next((c for c in cols if c.lower() in ("chemicalstructure", "smiles", "structure")), None)
+        sel = [f"{_q(k)}::STRING", f"TRIM({_q(spec['title'])}::STRING)", _stereo_sql(spec),
+               f"TRIM({_q(status)}::STRING)" if status else "NULL", f"{_q(smiles)}::STRING" if smiles else "NULL"]
+        res = _run_or_fail(f"SELECT {', '.join(sel)} FROM {_fq(spec)} WHERE {_stereo_base_sql(spec)} = %(b)s "
+                           f"AND {_q(k)}::STRING <> %(k)s LIMIT 20", {"b": base, "k": key}, "mirror forms")
+        out["forms"] = [{"key": r[0], "name": r[1], "kind": r[2], "status": r[3], "smiles": r[4]} for r in res.rows]
+    _cache_set(cache_key, out)
+    return out
 
 
 @cortellis_router.get("/table/{tid}")
