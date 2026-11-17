@@ -16,7 +16,7 @@
 }
 .au *, .au *::before, .au *::after { box-sizing: border-box; }
 .au ::selection { background: var(--red); color: var(--white); }
-.au h1, .au h3, .au-tagline { text-wrap: balance; }
+.au h1, .au h3 { text-wrap: balance; }
 .au p, .au dd { text-wrap: pretty; }
 
 /* ---------- page grid: stacked by default ---------- */
@@ -31,9 +31,10 @@
 .au-crumbs [aria-current] { display: inline-block; padding: 3px 10px; border-radius: 999px; background: rgba(235, 23, 0, .07); color: var(--g8); font-weight: 500; }
 
 /* ---------- left column ---------- */
-.au-intro { display: grid; grid-template-columns: 1fr; column-gap: var(--s4); }
+.au-intro { display: grid; grid-template-columns: 1fr; column-gap: var(--s4); container-type: inline-size; }
 .au h1 { font-family: var(--display); font-weight: 400; color: var(--red); font-size: 48px; line-height: 1; letter-spacing: -.015em; margin: 0; white-space: nowrap; }
-.au-tagline { font-family: var(--display); font-weight: 300; font-size: 22px; line-height: 1.3; color: var(--g8); margin: var(--v) 0 var(--s3); max-width: 15em; }
+/* one line under the title, sized to the column */
+.au-tagline { font-family: var(--display); font-weight: 300; font-size: clamp(14px, 4.9cqi, 22px); line-height: 1.3; color: var(--g8); margin: var(--v) 0 var(--s3); white-space: nowrap; }
 .au-block { border-top: 1px solid var(--g8); padding: var(--v) 0 calc(var(--v) * 2); }
 .au-block h2 { margin: 0 0 calc(var(--v) * .6); font-family: var(--text); font-size: 15px; font-weight: 700; color: var(--black); }
 .au-block p { margin: 0; max-width: 34em; }
@@ -145,7 +146,7 @@
 @media (max-height: 760px) {
   .au.is-fit { --av: clamp(40px, 6.6vh, 96px); }
   .au.is-fit h1 { font-size: 42px; }
-  .au.is-fit .au-tagline { font-size: 19px; margin-bottom: calc(var(--v) * 1.5); }
+  .au.is-fit .au-tagline { margin-bottom: calc(var(--v) * 1.5); }
   .au.is-fit .au-does { row-gap: calc(var(--v) * .45); }
   .au.is-fit .au-does div { font-size: .9em; line-height: 1.4; }
   .au.is-fit .au-block { padding-bottom: calc(var(--v) * 1.2); }
@@ -157,5 +158,4 @@
   .au.is-fit .au-credit { display: none; }
   .au.is-fit .au-panel-title { padding-top: var(--v); }
   .au.is-fit h1 { font-size: 38px; }
-  .au.is-fit .au-tagline { font-size: 17px; }
 }
