@@ -22,6 +22,7 @@ import dataApiIcon from "/icons/JJ_Icon_Network_RGB.svg";
 import graDomainsIcon from "/icons/JJ_Icon_Presentation_RGB.svg";
 import dataStudioIcon from "/icons/JJ_Icon_Database_RGB.svg";
 import pipelineIcon from "/icons/JJ_Icon_Link_RGB.svg";
+import infoIcon from "/icons/JJ_Icon_Info_RGB.svg";
 import logoFull from "/sh_logo.png";
 import logoMark from "/sh_logo_small_black.svg";
 
@@ -58,6 +59,9 @@ const MENU_GROUPS = [
     { id: "audit",                 label: "Audit Log",             icon: auditIcon,          path: "/audit",                 permission: "viewAudit" },
   ]],
 ];
+
+// Pinned under the tool groups for everyone, whatever their role.
+const ABOUT = { id: "about", label: "About us", icon: infoIcon, path: "/about", subs: [] };
 
 const catalogFor = (path) => TOOL_CATALOG.find((t) => t.path === path);
 
@@ -156,6 +160,7 @@ const CSS = `
 .sb:not(.open) .sb-skel { justify-content:center; padding:0; }
 .sb-skel i { display:block; border-radius:6px; background:#ece7e2; animation:sbBreath 1.4s ease-in-out infinite; }
 
+.sb-about { padding:8px 13px; border-top:1px solid #efeae6; }
 .sb-user { padding:12px 14px 14px; border-top:1px solid #efeae6; }
 .sb-ubtn { width:100%; display:flex; align-items:center; gap:10px; padding:6px; border-radius:14px; border:1px solid #ece7e2; background:#faf8f6;
   cursor:pointer; text-align:left; font:inherit; color:inherit; overflow:hidden; transition:border-color .25s, background-color .2s; }
@@ -357,7 +362,7 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
   }, [allowed, q]);
 
   const flat = useMemo(() => groups.flatMap(([, items]) => items), [groups]);
-  const flyItem = fly ? flat.find((i) => i.id === fly.id) : undefined;
+  const flyItem = fly ? (fly.id === ABOUT.id ? ABOUT : flat.find((i) => i.id === fly.id)) : undefined;
 
   // Keep the popout inside the visible part of the sidebar, arrow on the hovered row.
   useLayoutEffect(() => {
@@ -510,6 +515,23 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
             <div className="sb-empty">No tools match “{query}”</div>
           )}
         </nav>
+
+        <div className="sb-about">
+          <a
+            href={ABOUT.path}
+            className={`sb-link${currentPath === ABOUT.id ? " on" : ""}${fly?.id === ABOUT.id ? " flying" : ""}`}
+            aria-current={currentPath === ABOUT.id ? "page" : undefined}
+            aria-label={open ? undefined : ABOUT.label}
+            onClick={(e) => onLinkClick(e, ABOUT.path)}
+            onMouseEnter={(e) => showFly(e.currentTarget, ABOUT)}
+            onMouseLeave={scheduleHide}
+            onFocus={(e) => showFly(e.currentTarget, ABOUT)}
+            onBlur={scheduleHide}
+          >
+            <Icon src={ABOUT.icon} />
+            {open && <span className="sb-lbl">{ABOUT.label}</span>}
+          </a>
+        </div>
 
         {showUserMenu && (
           <div className="sb-user" ref={userRef}>

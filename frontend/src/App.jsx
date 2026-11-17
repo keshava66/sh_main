@@ -36,6 +36,7 @@ const DataAPIExport = lazyPage(() => import("./pages/dataApi/DataAPIExport"), "/
 const DataApiTableView = lazyPage(() => import("./pages/dataApi/DataApiTableView"), "/data-api-view");
 const CommunicationCenter = lazyPage(() => import("./pages/CommunicationCenter"), "/communication-center");
 const PipelineValidation = lazyPage(() => import("./pages/PipelineValidation"), "/pipeline-studio");
+const AboutUs = lazyPage(() => import("./pages/AboutUs"), "/about");
 
 // What to fetch in the background once the first screen is up, only for
 // pages this person can open
@@ -274,6 +275,8 @@ const AppLayoutInner = () => {
           <Suspense fallback={<PageLoading />}>
           <Routes>
             <Route path="/dashboard" element={<Dashboard />} />
+            {/* Open to everyone signed in, like the dashboard */}
+            <Route path="/about" element={<AboutUs />} />
             <Route
               path="/dqe"
               element={
