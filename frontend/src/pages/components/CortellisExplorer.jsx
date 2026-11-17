@@ -1055,7 +1055,6 @@ function Rail({ meta, overview, error, filters, onToggle, query, setQuery, years
 function KpiTile({ label, value, sub, color, title, children, loading }) {
   return (
     <div className="relative overflow-hidden rounded-[16px] bg-white border border-jj-gray-02 shadow-[0_1px_2px_rgba(49,44,42,.04),0_4px_14px_rgba(49,44,42,.03)] px-4 py-3 min-w-0">
-      <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full pointer-events-none" style={{ background: `radial-gradient(circle, ${color}1f, transparent 70%)` }} />
       <div className="relative flex items-center gap-1.5 text-[11px] font-johnson-text font-bold uppercase tracking-wider truncate text-jj-gray-07">
         <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
         {label}
