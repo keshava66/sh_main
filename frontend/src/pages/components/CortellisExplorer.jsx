@@ -65,6 +65,12 @@ const niceName = (v) => {
   const t = show(v).replace(/(^|[\s(/-])ß/g, '$1β');
   return /^[\u0391-\u03A9](?![\u0391-\u03A9])/.test(t) ? t[0].toLowerCase() + t.slice(1) : t;
 };
+// Status colours: launched green, stopped a calm warm grey (a stopped programme is common,
+// not an alarm), anything still moving blue.
+const STOPPED_STATUS = /no development|discontinued|suspended|withdrawn|terminated|ceased|inactive/i;
+const statusColor = (s) => (/launch|marketed|registered|approved/i.test(s || '') ? '#2a7a12' : STOPPED_STATUS.test(s || '') ? '#76706b' : '#0f68b2');
+// a status column gets colours by value; other columns keep their column colour
+const pillColor = (label, value, fallback) => (/status/i.test(label || '') ? statusColor(value) : fallback);
 const isUrl = (v) => typeof v === 'string' && /^https?:\/\/\S+$/i.test(v.trim());
 const looksLikeDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+Z?)?$/.test(v);
 const niceCol = (c) => c.replace(/^trailInfo_/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, x => x.toUpperCase());
@@ -1112,7 +1118,7 @@ function ChiralCard({ chiral, meta, openRecord }) {
         )}
       </div>
       <div className="mt-4 border-t border-jj-gray-01">
-        {chiral.examples.map((p, i) => (
+        {(Array.isArray(chiral.examples) ? chiral.examples : []).filter(p => p?.single?.name && p?.original?.name).map((p, i) => (
           <div key={i} className="grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2 py-2 border-b border-jj-gray-01 last:border-0 text-[12.5px] font-johnson-text">
             <button onClick={() => openRecord({ key: p.single.key, title: p.single.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
               <span className="font-bold truncate">{niceName(p.single.name)}</span>
@@ -1330,7 +1336,7 @@ function Explore({ section, meta, overview, insights, insightsError, onRetryInsi
           <div className="min-w-0 flex-1 flex items-center gap-3">
             <div className="min-w-0 flex-1 text-[13px] font-johnson-text font-bold text-jj-gray-08 leading-snug group-hover:text-[#c21300] transition-colors truncate" title={r.title || ''}>{highlight(niceName(r.title) || 'Untitled', state.q)}</div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
-              {r.tags.map(t => <Pill key={t.column} color={t.column === f0?.column && f0Colors.has(t.value) ? f0Colors.get(t.value) : colorFor(t.column)} title={labelOf(t.column)}>{txt(t.value)}</Pill>)}
+              {r.tags.map(t => <Pill key={t.column} color={pillColor(labelOf(t.column), t.value, t.column === f0?.column && f0Colors.has(t.value) ? f0Colors.get(t.value) : colorFor(t.column))} title={labelOf(t.column)}>{txt(t.value)}</Pill>)}
               {isUrl(r.url) && (
                 <a href={r.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[11.5px] font-johnson-text font-medium text-jj-blue-03 hover:underline">Source ↗</a>
               )}
@@ -1517,7 +1523,7 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
     if (isEmpty(v)) return <span className="text-jj-gray-04">—</span>;
     if (isUrl(v)) return <a href={v} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-jj-blue-03 hover:underline whitespace-nowrap">Open ↗</a>;
     if (looksLikeDate(v)) return <span className="tabular-nums whitespace-nowrap">{fmtDate(v)}</span>;
-    if (facetColors[c]) return <Pill color={facetColors[c]}>{show(v)}</Pill>;
+    if (facetColors[c]) return <Pill color={pillColor(labelOf(c), v, facetColors[c])}>{show(v)}</Pill>;
     if (c === meta.title) return (
       <>
         <div className="font-medium text-jj-gray-08 leading-snug line-clamp-2 whitespace-normal">{highlight(niceName(v), state.q)}</div>
@@ -2220,7 +2226,6 @@ function StereoTag({ kind, desc, className = '', focusable = true }) {
     </span>
   );
 }
-const statusColor = (s) => (/launch|marketed|registered/i.test(s || '') ? '#2a7a12' : /no development|discontinued|suspended|withdrawn|terminated/i.test(s || '') ? '#c21300' : '#0f68b2');
 
 // other records of the same molecule (the other hand, the mixture, the original)
 function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onSearchIn }) {
@@ -2230,9 +2235,20 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
   const [got, setGot] = useState(null);           // { key, data } | { key, failed }
   const [farGot, setFarGot] = useState(null);     // { key, far }
   const [farWant, setFarWant] = useState(null);   // { key, n }: search every table for this record
-  const data = got?.key === key ? got.data : null;
+  const data = useMemo(() => (got?.key === key && got.data
+    ? { ...got.data, forms: (Array.isArray(got.data.forms) ? got.data.forms : []).filter(f => f && typeof f.name === 'string') }
+    : null), [got, key]);
   const failed = got?.key === key && !!got.failed;
-  const far = farGot?.key === key ? farGot.far : null;
+  // an unexpected or partial answer must never break the drawer: keep only well-formed rows
+  const far = useMemo(() => {
+    const raw = farGot?.key === key ? farGot.far : null;
+    return raw ? {
+      ...raw,
+      tables: (Array.isArray(raw.tables) ? raw.tables : [])
+        .filter(t => t && t.id)
+        .map(t => ({ ...t, twin_hits: Array.isArray(t.twin_hits) ? t.twin_hits : [], mentions: Number(t.mentions) || 0 })),
+    } : null;
+  }, [farGot, key]);
   const farWanted = farWant?.key === key;
   const askFar = () => { setFarGot(null); setFarWant(w => ({ key, n: (w?.key === key ? w.n : 0) + 1 })); };
   useEffect(() => {
@@ -2267,7 +2283,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
   }, [data, mine, me?.desc, key, farWant]);
   // shown only when something was found, here or in another Cortellis table; otherwise
   // the section (and its link in the drawer's section bar) stays hidden
-  const farFound = !!far && !far.error && (far.tables || []).length > 0;
+  const farFound = !!far && !far.error && far.tables.length > 0;
   const visible = !failed && !!data && ((data.forms || []).length > 0 || farFound);
   useEffect(() => { onFound?.(visible); }, [visible, onFound]);
   if (!visible) return null;
@@ -2283,7 +2299,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
   // keep the record's own spelling ("calanolide A", not the lower-cased match key)
   const plain = String(title || '').replace(/^\s*\([^)]*\)[- ]\s*/, '').split(',')[0].trim() || data.base || 'form';
   const twinName = mine === 'rs' ? `(${otherDesc})-${plain}` : `${mine === 'minus' ? '(+)' : '(−)'}-${plain}`;
-  const farTwin = (far?.tables || []).filter(t => t.twin_hits.length);
+  const farTwin = far && !far.error ? far.tables.filter(t => t.twin_hits.length) : [];
   // same molecule written with the other notation, e.g. (R)- next to (-)-: shown, but not called the twin
   const sameHandOtherNotation = hands.filter(f => f !== twin);
   const bestOriginal = [...originals].sort((a, b) => /launch|marketed|registered/i.test(b.status || '') - /launch|marketed|registered/i.test(a.status || ''))[0];
@@ -2526,7 +2542,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
                 <h3 className="font-johnson-display font-bold text-[26px] leading-[1.1] text-jj-gray-08 break-words">{title}</h3>
                 {(tags.length > 0 || (meta.facets.includes(STEREO) && stereoKind(title))) && (
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    {tags.map(([c, v]) => <Pill key={c} color={facetColors[c]} title={labelOf(c)}>{show(v)}</Pill>)}
+                    {tags.map(([c, v]) => <Pill key={c} color={pillColor(labelOf(c), v, facetColors[c])} title={labelOf(c)}>{show(v)}</Pill>)}
                     {meta.facets.includes(STEREO) && stereoInfo(title) && <StereoTag kind={stereoInfo(title).kind} desc={stereoInfo(title).desc} />}
                   </div>
                 )}
