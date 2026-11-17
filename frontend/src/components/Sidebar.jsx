@@ -119,16 +119,7 @@ const CSS = `
 .sb-logo-full { height:38px; width:auto; }
 .sb-logo-mark { width:40px; height:40px; }
 
-.sb-search { padding:4px 14px 10px; }
-.sb-search label { display:flex; align-items:center; gap:10px; height:40px; padding:0 13px; border-radius:12px; overflow:hidden;
-  background:#f5f2ef; border:1px solid #ece7e2; cursor:text; transition:border-color .2s, background-color .2s; }
-.sb:not(.open) .sb-search label { justify-content:center; padding:0; cursor:pointer; }
-.sb-search label:hover, .sb-search label:focus-within { border-color:#dcd3cc; background:#fff; }
-.sb-search .sb-ic { width:16px; height:16px; color:#7a726c; }
-.sb-search input { flex:1; min-width:0; border:0; outline:0; background:transparent; font:inherit; font-size:13.5px; color:#1f1b18; }
-.sb-search input::placeholder { color:#9a928c; }
-.sb-search kbd { font-family:inherit; font-size:10.5px; padding:2px 6px; border-radius:6px; background:#fff; border:1px solid #e6e0da; color:#6f6863; white-space:nowrap; }
-
+.sb:not(.open) 
 .sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:0 13px 16px; overscroll-behavior:contain; }
 .sb-nav::-webkit-scrollbar { width:3px; }
 .sb-nav::-webkit-scrollbar-track { background:transparent; }
@@ -155,7 +146,6 @@ const CSS = `
 .sb-link.on .sb-new { background:rgba(255,255,255,.22); color:#fff; }
 .sb-link > .sb-chev { width:10px; height:10px; margin-right:2px; transform:rotate(-90deg); }
 
-.sb-empty { padding:22px 12px; font-size:13px; color:#8a827c; white-space:normal; }
 .sb-skel { display:flex; align-items:center; gap:12px; height:40px; padding:0 12px; }
 .sb:not(.open) .sb-skel { justify-content:center; padding:0; }
 .sb-skel i { display:block; border-radius:6px; background:#ece7e2; animation:sbBreath 1.4s ease-in-out infinite; }
@@ -252,18 +242,15 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
   const [ownOpen, setOwnOpen] = useState(currentPath === "dashboard");
   const open = controlled ? expanded : ownOpen;
 
-  const [query, setQuery] = useState("");
   const [userOpen, setUserOpen] = useState(false);
   const [fly, setFly] = useState(null);
 
   const asideRef = useRef(null);
   const navRef = useRef(null);
-  const inputRef = useRef(null);
   const userRef = useRef(null);
   const menuRef = useRef(null);
   const flyRef = useRef(null);
   const hideTimer = useRef(0);
-  const focusSearch = useRef(false);
 
   const cancelHide = useCallback(() => clearTimeout(hideTimer.current), []);
   const closeFly = useCallback(() => { clearTimeout(hideTimer.current); setFly(null); }, []);
@@ -297,15 +284,11 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
   useEffect(() => {
     closeFly();
     if (!open) setUserOpen(false);
-    else if (focusSearch.current) {
-      focusSearch.current = false;
-      inputRef.current?.focus();
-    }
   }, [open, closeFly]);
 
   const toggle = useCallback(() => setOwnOpen((o) => !o), []);
 
-  // Alt+K jumps to search (Ctrl+K belongs to page palettes), [ toggles, Escape dismisses.
+  // [ toggles, Escape dismisses.
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") {
@@ -314,18 +297,13 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
         return;
       }
       if (e.ctrlKey || e.metaKey) return;
-      if (e.altKey && e.code === "KeyK") {
-        if (!open && controlled) return;
-        e.preventDefault();
-        if (open) inputRef.current?.focus();
-        else { focusSearch.current = true; setOwnOpen(true); }
-      } else if (e.key === "[" && !e.altKey && !controlled && !isTyping()) {
+      if (e.key === "[" && !e.altKey && !controlled && !isTyping()) {
         toggle();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, controlled, toggle, closeFly]);
+  }, [controlled, toggle, closeFly]);
 
   useEffect(() => {
     if (!userOpen) return undefined;
@@ -350,20 +328,7 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
       .filter(([, items]) => items.length > 0);
   }, [rbacLoading, hasPermission]);
 
-  const q = query.trim().toLowerCase();
-  const groups = useMemo(() => {
-    if (!q) return allowed;
-    return allowed
-      .map(([title, items]) => [title, items
-        .map((item) => {
-          if (item.label.toLowerCase().includes(q)) return item;
-          const subs = item.subs.filter((s) => s.label.toLowerCase().includes(q));
-          return subs.length ? { ...item, subs } : null;
-        })
-        .filter(Boolean)])
-      .filter(([, items]) => items.length > 0);
-  }, [allowed, q]);
-
+  const groups = allowed;
   const flat = useMemo(() => groups.flatMap(([, items]) => items), [groups]);
   const flyItem = fly ? (fly.id === ABOUT.id ? ABOUT : flat.find((i) => i.id === fly.id)) : undefined;
 
@@ -401,25 +366,6 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
     setFly((f) => (f && f.id === item.id && f.center === center ? f : { id: item.id, center }));
   };
 
-  const onSearchKey = (e) => {
-    if (e.key === "Escape") {
-      setQuery("");
-      e.currentTarget.blur();
-    } else if (e.key === "Enter" && flat.length) {
-      const first = flat[0];
-      const sub = q && !first.label.toLowerCase().includes(q) ? first.subs[0] : null;
-      setQuery("");
-      e.currentTarget.blur();
-      go(sub ? sub.path : first.path);
-    }
-  };
-
-  const onSearchClick = () => {
-    if (open || controlled) return;
-    focusSearch.current = true;
-    setOwnOpen(true);
-  };
-
   const handleLogout = async () => {
     try {
       await logout();
@@ -445,25 +391,6 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
               : <img src={logoMark} alt="GRA SmartHub" className="sb-logo-mark" draggable={false} />}
           </div>
         )}
-
-        <div className="sb-search">
-          <label onClick={onSearchClick} title={open ? undefined : "Search tools (Alt K)"}>
-            <Icon src={searchIcon} />
-            {open && (
-              <>
-                <input
-                  ref={inputRef}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={onSearchKey}
-                  placeholder="Jump to a tool…"
-                  aria-label="Search tools"
-                />
-                <kbd>Alt K</kbd>
-              </>
-            )}
-          </label>
-        </div>
 
         <nav className="sb-nav" ref={navRef} onScroll={fly ? closeFly : undefined}>
           {rbacLoading && (
@@ -514,9 +441,6 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
             </div>
           ))}
 
-          {!rbacLoading && q && groups.length === 0 && open && (
-            <div className="sb-empty">No tools match “{query}”</div>
-          )}
         </nav>
 
         <div className="sb-about">
