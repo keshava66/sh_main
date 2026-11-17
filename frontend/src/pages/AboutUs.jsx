@@ -130,7 +130,7 @@ export default function AboutUs() {
                     <Person name="Rajan Gadkari" role="Technical Product Owner" />
                   </ul>
                   <div className="au-link join" aria-hidden="true" />
-                  <ul className="au-row"><Person name="Dhanu" role="AI Architect" /></ul>
+                  <ul className="au-row"><Person name="Dhanumjaya Saggurthi" role="AI Architect" /></ul>
                 </div>
               </section>
             </div>
