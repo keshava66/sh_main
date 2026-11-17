@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import db
+import shared_worksheets
 from auth import require_permission
 
 logger = logging.getLogger(__name__)
@@ -1416,15 +1417,18 @@ def _touch(job: Dict[str, Any]) -> Dict[str, Any]:
     return job
 
 
-def _get_job(job_id: str, owner: Optional[str] = None) -> Dict[str, Any]:
+def _get_job(job_id: str, owner: Optional[str] = None, shared: bool = False) -> Dict[str, Any]:
     with _jobs_lock:
         job = _jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Unknown or expired query job")
     # Jobs hold a live Snowflake connection and a result set; only the person
-    # who started one can read it back.
+    # who started one can read it back. The exception (shared=True: status,
+    # rows, download) is a job run into a shared worksheet, which the other
+    # people in that worksheet can read too.
     if owner is not None and job["owner"] and job["owner"] != (owner or "").strip().lower():
-        raise HTTPException(status_code=404, detail="Unknown or expired query job")
+        if not (shared and job.get("shared_ws") and shared_worksheets.is_member(job["shared_ws"], owner)):
+            raise HTTPException(status_code=404, detail="Unknown or expired query job")
     return _touch(job)
 
 
@@ -1762,6 +1766,7 @@ class SnowflakeQueryRequest(BaseModel):
     # request instead of submit + poll + fetch.
     wait_ms: int = 2500
     page_size: int = 100
+    shared_ws: Optional[str] = None      # shared worksheet this run belongs to; its people can read the result
 
     model_config = {"populate_by_name": True}
 
@@ -2549,6 +2554,8 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
         raise HTTPException(status_code=403, detail="This connection is configured read-only (allow_writes = false)")
     if risky and not body.confirm:
         raise HTTPException(status_code=409, detail=confirm_detail(planned))
+    if body.shared_ws:
+        shared_worksheets.require_editor(body.shared_ws, "snowflake", auth["user"]["email"])
     # The last statement's result is the one shown, like a Snowsight "Run all".
     classification = planned[-1]["cls"]
 
@@ -2572,6 +2579,7 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
     job["statements"] = planned
     job["statement_results"] = []
     job["profile"] = profile
+    job["shared_ws"] = body.shared_ws
     job["is_destructive"] = bool(risky)
     if len(planned) > 1:
         job["sql"] = body.sql.strip()
@@ -2582,6 +2590,8 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
             _jobs.pop(job["job_id"], None)
         _job_slots.release()
         raise HTTPException(status_code=503, detail=f"Could not schedule the query: {e}")
+    if body.shared_ws:
+        shared_worksheets.note_run(body.shared_ws, auth, job["job_id"], job["sql"])
 
     response = {
         "job_id": job["job_id"],
@@ -2637,11 +2647,11 @@ def get_query_status(job_id: str, wait_ms: int = Query(0, ge=0, le=15000),
                      auth: dict = Depends(sf_auth)):
     """Long-polls when wait_ms is set: the request parks on the job's completion
     event instead of the client burning round trips on a fixed timer."""
-    job = _get_job(job_id, auth["user"]["email"])
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
     if wait_ms and job["status"] == "running":
         job["done"].wait(wait_ms / 1000.0)
         _touch(job)
-    _record_history_once(auth["user"]["email"], job)
+    _record_history_once(job["owner"] or auth["user"]["email"], job)   # the runner's history, whoever asks first
     return _job_status_payload(job)
 
 
@@ -2732,7 +2742,7 @@ def _paged_inline(job: Dict[str, Any], body: RowsRequest):
 
 @snowflake_router.post("/query/{job_id}/rows")
 def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(sf_auth)):
-    job = _get_job(job_id, auth["user"]["email"])
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
     if job["status"] != "success":
         raise HTTPException(status_code=409, detail=f"Query is not ready (status: {job['status']})")
 
@@ -2879,7 +2889,7 @@ def download_query(
     """Streams the FULL result set. Rows are pulled in DOWNLOAD_CHUNK_ROWS
     batches from a dedicated cursor, so memory stays flat no matter how big the
     result is - nothing is ever materialized in one go."""
-    job = _get_job(job_id, auth["user"]["email"])
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
     fmt = (fmt or "csv").lower()
     if fmt not in EXPORT_FORMATS:
         raise HTTPException(status_code=400, detail=f"Unsupported export format '{fmt}'")

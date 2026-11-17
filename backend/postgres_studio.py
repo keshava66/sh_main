@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 import db
 import postgres_query_runner as pgqr
+import shared_worksheets
 from auth import require_permission
 from snowflake_query_runner import (
     ALL_OPS, EXPORT_FORMATS, ROWS_PAGE_MAX_SIZE, SET_OPS, TEXT_OPS,
@@ -476,10 +477,15 @@ def _drop_temp(s: Dict[str, Any]):
     s["temp"] = None
 
 
-def _get_job(job_id: str, owner: Optional[str] = None) -> Dict[str, Any]:
+def _get_job(job_id: str, owner: Optional[str] = None, shared: bool = False) -> Dict[str, Any]:
+    """shared=True also lets the other people in a shared worksheet read a job
+    that was run into it (status, rows, download; never cancel or close)."""
     with _jobs_lock:
         job = _jobs.get(job_id)
-    if not job or (owner is not None and job["owner"] != (owner or "").strip().lower()):
+    if job and owner is not None and job["owner"] != (owner or "").strip().lower():
+        if not (shared and job.get("shared_ws") and shared_worksheets.is_member(job["shared_ws"], owner)):
+            job = None
+    if not job:
         raise HTTPException(status_code=404, detail="Unknown or expired query job")
     job["last_used"] = job["session"]["last_used"] = time.time()
     return job
@@ -731,6 +737,7 @@ class PgQueryRequest(BaseModel):
     database: Optional[str] = None
     schema_: Optional[str] = Field(None, alias="schema")
     session_id: Optional[str] = None     # the worksheet id; runs with the same one share a connection
+    shared_ws: Optional[str] = None      # shared worksheet this run belongs to; its people can read the result
     confirm: bool = False
     timeout_seconds: Optional[int] = None
     wait_ms: int = 2500
@@ -877,6 +884,8 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
     if risky and not body.confirm:
         raise HTTPException(status_code=409, detail=confirm_detail(planned))
     owner = (auth["user"]["email"] or "").strip().lower()
+    if body.shared_ws:
+        shared_worksheets.require_editor(body.shared_ws, "postgres", owner)
     database = body.database or cfg["default_database"]
     session = _session_for(owner, body.session_id, database, cfg["conn_id"])
     if session["lock"].locked():
@@ -890,6 +899,7 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
     job = {
         "job_id": uuid.uuid4().hex,
         "owner": owner,
+        "shared_ws": body.shared_ws,
         "sql": body.sql.strip() if len(planned) > 1 else last.cleaned_sql,
         "statements": planned,
         "statement_results": [],
@@ -908,6 +918,8 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
     with _jobs_lock:
         _jobs[job["job_id"]] = job
     _executor.submit(_run_job, job["job_id"])
+    if body.shared_ws:
+        shared_worksheets.note_run(body.shared_ws, auth, job["job_id"], job["sql"])
 
     response = {
         "job_id": job["job_id"], "status": "running", "statement_type": last.lead_keyword,
@@ -929,16 +941,16 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
 
 @pg_studio_router.get("/query/{job_id}/status")
 def get_query_status(job_id: str, wait_ms: int = Query(0, ge=0, le=15000), auth: dict = Depends(require_permission(PERM))):
-    job = _get_job(job_id, auth["user"]["email"])
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
     if wait_ms and job["status"] == "running":
         job["done"].wait(wait_ms / 1000.0)
-    _record_history(auth["user"]["email"], job)
+    _record_history(job["owner"], job)      # the runner's history, whoever asks first
     return _job_status(job)
 
 
 @pg_studio_router.post("/query/{job_id}/rows")
 def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(require_permission(PERM))):
-    job = _get_job(job_id, auth["user"]["email"])
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
     if job["status"] != "success":
         raise HTTPException(status_code=409, detail=f"Query is not ready (status: {job['status']})")
     page = max(1, int(body.page))
@@ -1013,7 +1025,7 @@ def close_session(session_id: str, auth: dict = Depends(require_permission(PERM)
 @pg_studio_router.get("/query/{job_id}/download")
 def download_query(job_id: str, fmt: str = Query("csv"), sort_json: Optional[str] = Query(None),
                    filters_json: Optional[str] = Query(None), auth: dict = Depends(require_permission(PERM))):
-    job = _get_job(job_id, auth["user"]["email"])
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
     fmt = (fmt or "csv").lower()
     if fmt not in EXPORT_FORMATS:
         raise HTTPException(status_code=400, detail=f"Unsupported export format '{fmt}'")

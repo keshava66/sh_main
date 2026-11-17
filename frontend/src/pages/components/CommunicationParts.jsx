@@ -467,7 +467,7 @@ function useDirectoryNames(emails) {
   return (email) => names[String(email || '').toLowerCase()] || null;
 }
 
-async function graphToken(instance, accounts) {
+export async function graphToken(instance, accounts) {
   if (!accounts.length) throw new Error('Sign in to search the directory');
   const auth = await instance.acquireTokenSilent({
     scopes: ['User.Read.All'],
@@ -478,29 +478,38 @@ async function graphToken(instance, accounts) {
 }
 
 /**
- * One directory lookup, used by the picker and by the suggestion dropdown.
+ * One directory lookup, used by the picker, the suggestion dropdown and the
+ * Data Studio share box.
  *
- * No $orderby next to $filter: Graph turns that pair down with a 400 on
- * /users unless the request opts into advanced queries. User Management hits
- * the same wall and answers it the same way - filter on the server, sort here.
+ * $search (with ConsistencyLevel: eventual) matches the start of any word, so
+ * a given name finds "Surname, Given" and a surname finds it too. A tenant or
+ * token that refuses $search gets the older startswith filter, which only
+ * matches the front of the display name, mailbox or UPN.
  *
- * startswith, so this matches the front of the display name ("Surname, Given"
- * in this directory), the mailbox, or the UPN. A given name on its own will
- * not match a display name - the same limit User Management has.
+ * No $orderby: Graph refuses it next to $filter on /users unless the request
+ * opts into advanced queries. Sorted here instead, best match first.
  */
-async function searchDirectory(token, query, limit) {
-  // Doubling the quote is how a literal one is escaped inside an OData
-  // string - an apostrophe in a surname would otherwise end the filter.
-  const safe = encodeURIComponent(query.replace(/'/g, "''"));
-  const filter =
-    `startswith(displayName,'${safe}') or startswith(mail,'${safe}') ` +
-    `or startswith(userPrincipalName,'${safe}')`;
+const DIRECTORY_FIELDS = 'id,displayName,mail,userPrincipalName,jobTitle';
 
-  const res = await fetch(
-    `${GRAPH}/users?$filter=${filter}&$top=${limit}` +
-    `&$select=id,displayName,mail,userPrincipalName,jobTitle`,
-    { headers: { Authorization: `Bearer ${token}` } },
+export async function searchDirectory(token, query, limit) {
+  const words = query.replace(/["\\]/g, ' ').trim();
+  const search = ['displayName', 'mail', 'userPrincipalName'].map((f) => `"${f}:${words}"`).join(' OR ');
+  let res = await fetch(
+    `${GRAPH}/users?$search=${encodeURIComponent(search)}&$top=${limit}&$select=${DIRECTORY_FIELDS}`,
+    { headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' } },
   );
+  if (res.status === 400 || res.status === 403) {
+    // Doubling the quote is how a literal one is escaped inside an OData
+    // string - an apostrophe in a surname would otherwise end the filter.
+    const safe = encodeURIComponent(query.replace(/'/g, "''"));
+    const filter =
+      `startswith(displayName,'${safe}') or startswith(mail,'${safe}') ` +
+      `or startswith(userPrincipalName,'${safe}')`;
+    res = await fetch(
+      `${GRAPH}/users?$filter=${filter}&$top=${limit}&$select=${DIRECTORY_FIELDS}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  }
   if (!res.ok) {
     // Graph puts the actual complaint in the body. Showing only the status
     // sent us looking in the wrong place once already.
@@ -510,6 +519,9 @@ async function searchDirectory(token, query, limit) {
   }
 
   const data = await res.json();
+  const q = words.toLowerCase();
+  // Name or address starting with what was typed first, then any word starting with it.
+  const rank = (u) => ((u.name.toLowerCase().startsWith(q) || u.email.toLowerCase().startsWith(q)) ? 0 : 1);
   return (data.value || [])
     .map((u) => ({
       id: u.id,
@@ -518,7 +530,7 @@ async function searchDirectory(token, query, limit) {
       title: u.jobTitle || '',
     }))
     .filter((u) => u.email)
-    .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+    .sort((a, b) => rank(a) - rank(b) || (a.name || a.email).localeCompare(b.name || b.email));
 }
 
 const PersonRow = ({ person, photo, checked, onToggle }) => (

@@ -838,6 +838,11 @@ app.include_router(
     pg_studio_router,
     dependencies=[Depends(require_permission("viewDataStudio", "runPostgresStudio"))],
 )
+
+# Shared worksheets for the two panes above (edit shared_worksheets.py).
+# Per-engine access is checked inside, against the worksheet's own engine.
+from shared_worksheets import shared_router
+app.include_router(shared_router)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── S3 Explorer routes (separate file — edit s3_explorer.py, not here) ────

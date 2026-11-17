@@ -1,18 +1,22 @@
 import React, { createContext, forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import {
   AlignLeft, ArrowDown, ArrowUp, CaseSensitive, Keyboard, Ban, Bookmark, Check, ChevronDown, ChevronLeft, ChevronRight,
   ChevronsLeft, ChevronsRight, CircleCheck, Code2, Columns3, Copy, CopyPlus, Database,
   Download, ExternalLink, Eye, FileCode2, Filter, History, Info, KeyRound,
-  Layers, Loader2, Maximize2, Minimize2, Moon, PanelLeftClose, PanelLeftOpen, Pencil,
+  Layers, Link2, Loader2, LogOut, Maximize2, Minimize2, Moon, PanelLeftClose, PanelLeftOpen, Pencil,
   Play, Plus, RefreshCw, RotateCcw, Save, Search, ShieldCheck, Square, Sun,
-  Table2, Trash2, TriangleAlert, Undo2, WifiOff, X,
+  Table2, Trash2, TriangleAlert, Undo2, UserPlus, Users, WifiOff, X,
 } from 'lucide-react';
 import TableCopier from './TableCopier';
-import { apiFetch, downloadFile } from '../../../utils/apiClient';
+import { apiEventSource, apiFetch, downloadFile } from '../../../utils/apiClient';
+import { PeerLayer, SharedSession, usePeers } from './collab';
 import { useInPageLog } from '../useInPageLog';
 import { useRBAC } from '../../../context/RBACContext';
+import { useMsal } from '@azure/msal-react';
+import { graphToken, searchDirectory } from '../../components/CommunicationParts';
+import { useDirectoryPhotos } from '../../../hooks/useDirectoryPhotos';
 import {
   caretPixelPos, cellText, clauseAtCaret, DEFAULT_COL_WIDTH, EXPORT_FORMATS, fetchJson,
   FILTER_OPS, formatBytes, formatWhen, leadKeywordHint, MAX_COL_WIDTH, MIN_COL_WIDTH,
@@ -698,6 +702,296 @@ function SavePromptModal({ open, initialName, onCancel, onSave }) {
       <div className="mt-5 px-5 py-3.5 flex items-center justify-end gap-2 bg-[#f8f7f5] border-t border-[#e8e6e3]">
         <Button onClick={onCancel}>Cancel</Button>
         <Button variant="primary" onClick={() => onSave(name.trim(), shared)} disabled={!name.trim()}>Save</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* --------------------------- shared worksheets --------------------------- */
+
+// One colour per person, by their place in the worksheet (owner first). Red is
+// left out: that is your own caret.
+const PEER_COLORS = ['#0f68b2', '#8c3bbb', '#328714'];
+const firstName = (name) => (name || '').split(/[\s@]/)[0] || 'Someone';
+const initials = (name) => {
+  const parts = (name || '?').split('@')[0].split(/[\s._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] || '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+};
+
+const peerLabel = (peer) => firstName(peer.name);
+
+// Open connections (one per browser tab) folded into people.
+function groupPeople(others, meta, colorOf) {
+  const people = [];
+  others.forEach(p => {
+    if (p.email === meta?.you) return;
+    let person = people.find(x => x.email === p.email);
+    if (!person) {
+      const member = meta?.members.find(m => m.email === p.email);
+      person = { email: p.email, name: p.name, color: colorOf(p.email), viewOnly: member ? !member.can_edit : false, at: null };
+      people.push(person);
+    }
+    person.typing = person.typing || p.typing;
+    person.running = person.running || p.state === 'running';
+    if (p.sel && person.at === null) person.at = p.sel.h;
+  });
+  return people;
+}
+
+// Avatars of who is here and what they are doing. Listens to the session by
+// itself, so cursors and typing dots don't re-render the pane around it.
+function PeerBar({ session, meta, colorOf, onFollow }) {
+  const people = groupPeople(usePeers(session), meta, colorOf);
+  const photoFor = useDirectoryPhotos(people);
+  const live = session?.status === 'live';
+  // A reconnect is usually over in a blink; only say so when it isn't.
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (live) { setSlow(false); return undefined; }
+    const t = setTimeout(() => setSlow(true), 700);
+    return () => clearTimeout(t);
+  }, [live]);
+  return (
+    <div className="flex items-center mr-2" aria-label="People in this worksheet">
+      {people.map(p => (
+        <button key={p.email} type="button" onClick={() => p.at !== null && onFollow(p.at)} className="-ml-1.5 first:ml-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#eb1700]/40" title={`${p.name} · click to jump to their cursor`}>
+          <PeerAvatar person={{ ...p, photo: photoFor(p) }} />
+        </button>
+      ))}
+      <span
+        className="ml-1.5 hidden sm:flex items-center gap-1.5 text-[11.5px] text-[#6e6259] whitespace-nowrap"
+        title={live || !slow ? 'Edits are shared as you type' : 'Edits you make now are sent once the connection is back'}
+      >
+        <StatusDot color={live || !slow ? T.green : T.amber} pulse={!live && slow} />
+        {!live && slow ? 'Reconnecting' : meta?.role === 'view' ? 'View only' : people.length ? 'Live' : 'Only you'}
+      </span>
+    </div>
+  );
+}
+
+// The strip under the editor: shortcut hints, or what the others are doing
+// right now when someone is typing or running a query.
+function PeerActivity({ session, meta, children }) {
+  const doing = groupPeople(usePeers(session), meta, () => '').filter(p => p.running || p.typing)
+    .map(p => `${firstName(p.name)} is ${p.running ? 'running a query' : 'typing'}`).join(' · ');
+  if (!doing) return children;
+  return (
+    <div className="flex items-center gap-1.5 min-w-0 text-[11.5px] text-[#0f68b2]" aria-live="polite">
+      <Spinner size={11} /><span className="truncate">{doing}</span>
+    </div>
+  );
+}
+
+function PeerAvatar({ person, size = 24 }) {
+  const doing = person.running ? 'running a query' : person.typing ? 'typing' : person.online === false ? 'not here right now' : person.viewOnly ? 'viewing' : 'here';
+  return (
+    <span
+      title={`${person.name} · ${doing}`}
+      className="relative inline-flex flex-shrink-0 items-center justify-center rounded-full text-white text-[10px] font-bold ring-2 ring-[#f8f7f5] select-none"
+      style={{ width: size, height: size, background: person.color, opacity: person.online === false ? 0.4 : 1, boxShadow: person.photo ? `0 0 0 2px ${person.color}` : undefined }}
+    >
+      {person.photo ? <img src={person.photo} alt="" className="w-full h-full rounded-full object-cover" /> : initials(person.name)}
+      {(person.running || person.typing) && <span className="absolute -right-0.5 -bottom-0.5 w-2 h-2 rounded-full bg-[#eb1700] ring-1 ring-white animate-pulse" />}
+    </span>
+  );
+}
+
+const ROLE_SELECT = 'h-8 rounded-md border border-[#d5cfc9] bg-white px-2 text-[12.5px] text-[#312c2a] focus:outline-none focus:border-[#eb1700] disabled:opacity-50';
+
+// Who is in a shared worksheet and what they may do. Before the worksheet is
+// shared it is the one place that says what sharing means.
+function ShareModal({ open, onClose, tab, meta, session, engineLabel, colorOf, onShare, onInvite, onRemove, onStop, link }) {
+  const peers = usePeers(open ? session : null);
+  const here = new Set(peers.map(p => p.email));
+  const [email, setEmail] = useState('');
+  const [canEdit, setCanEdit] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [hits, setHits] = useState([]);       // directory matches: { name, email, title }
+  const [pick, setPick] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { if (open) { setEmail(''); setCanEdit(true); setError(null); setHits([]); setConfirmStop(false); setCopied(false); } }, [open, tab?.id]);
+
+  // Search the company directory (Azure AD) as you type: name or email.
+  // Anyone it can't find can still be invited by typing the full address.
+  const msal = useMsal();
+  const msalRef = useRef(msal);
+  msalRef.current = msal;
+  const taken = new Set([meta?.owner?.email, ...(meta?.members || []).map(m => m.email)].filter(Boolean));
+  const takenKey = [...taken].join('|');
+  useEffect(() => {
+    const q = email.trim();
+    if (!open || q.length < 2) { setHits([]); setSearching(false); return undefined; }
+    let stale = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const found = await searchDirectory(await graphToken(msalRef.current.instance, msalRef.current.accounts), q, 8);
+        if (!stale) { setHits(found.filter(p => !takenKey.split('|').includes(p.email.toLowerCase()))); setPick(0); }
+      } catch {
+        if (!stale) setHits([]);
+      } finally {
+        if (!stale) setSearching(false);
+      }
+    }, 180);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [email, open, takenKey]);
+  const photoFor = useDirectoryPhotos(open ? [meta?.owner, ...(meta?.members || []), ...hits].filter(Boolean) : []);
+
+  const run = async (fn) => {
+    setBusy(true);
+    setError(null);
+    try { await fn(); return true; } catch (err) { setError(err.message || 'That did not work'); return false; } finally { setBusy(false); }
+  };
+  const invite = async (who) => {
+    const to = (who?.email || email).trim().toLowerCase();
+    if (!to) return;
+    if (await run(() => onInvite(to, canEdit, who?.name || ''))) { setEmail(''); setHits([]); }
+  };
+  const onEmailKey = (e) => {
+    if (e.key === 'ArrowDown' && hits.length) { e.preventDefault(); setPick(i => (i + 1) % hits.length); }
+    else if (e.key === 'ArrowUp' && hits.length) { e.preventDefault(); setPick(i => (i - 1 + hits.length) % hits.length); }
+    else if (e.key === 'Escape' && hits.length) { e.stopPropagation(); setHits([]); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && hits.length) { e.preventDefault(); invite(hits[pick]); }
+    else if (e.key === 'Enter' && email.trim()) invite();
+  };
+
+  const owner = meta?.role === 'owner';
+  const members = meta?.members || [];
+  const full = members.length >= 2;
+  const person = (m, role) => (
+    <div key={m.email} className="flex items-center gap-2.5 py-1.5">
+      <PeerAvatar person={{ name: m.name || m.email, color: colorOf(m.email), photo: photoFor(m), online: m.email === meta.you || here.has(m.email) }} size={28} />
+      <div className="flex-1 min-w-0">
+        <div className="truncate text-[13px] text-[#312c2a]">{m.name || m.email}{m.email === meta.you && <span className="text-[#81766f]"> (you)</span>}</div>
+        {m.name && <div className="truncate text-[11.5px] text-[#81766f]">{m.email}</div>}
+      </div>
+      {role === 'owner' && <span className="text-[12px] text-[#6e6259]">Owner</span>}
+      {role !== 'owner' && owner && (
+        <>
+          <select
+            value={m.can_edit ? 'edit' : 'view'}
+            disabled={busy}
+            onChange={e => run(() => onInvite(m.email, e.target.value === 'edit'))}
+            aria-label={`Access for ${m.email}`}
+            className={ROLE_SELECT}
+          >
+            <option value="edit">Can edit</option>
+            <option value="view">View only</option>
+          </select>
+          <IconButton icon={X} label={`Remove ${m.email}`} disabled={busy} onClick={() => run(() => onRemove(m.email))} />
+        </>
+      )}
+      {role !== 'owner' && !owner && <span className="text-[12px] text-[#6e6259]">{m.can_edit ? 'Can edit' : 'View only'}</span>}
+    </div>
+  );
+
+  return (
+    <Modal open={open} onClose={onClose} width={480} labelledBy="sf-share-title">
+      <div className="px-5 pt-5 pb-1 overflow-y-auto">
+        <h3 id="sf-share-title" className="font-johnson-display font-bold text-[16px] text-[#312c2a] truncate">Share &ldquo;{tab?.name}&rdquo;</h3>
+
+        {!tab?.shared && (
+          <p className="mt-2.5 text-[13px] leading-relaxed text-[#4a423e]">
+            Work in this worksheet with up to two other people at the same time. Everyone sees the SQL as it is typed,
+            where the others&apos; cursors are, and the results of queries run here. You choose who can edit and who can only watch.
+          </p>
+        )}
+
+        {tab?.shared && !meta && (
+          <div className="mt-4 flex items-center gap-2 text-[13px] text-[#6e6259]"><Spinner /> Connecting to the worksheet...</div>
+        )}
+
+        {tab?.shared && meta && (
+          <>
+            <div className="mt-3">
+              {person(meta.owner, 'owner')}
+              {members.map(m => person(m, 'member'))}
+            </div>
+
+            {owner && !full && (
+              <div className="mt-3 pt-3 border-t border-[#e8e6e3]">
+                <label className="block text-[11.5px] font-medium text-[#6e6259]" htmlFor="sf-share-email">Invite people</label>
+                <div className="relative mt-1 flex items-center gap-2">
+                  <input
+                    id="sf-share-email"
+                    autoFocus
+                    type="text"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    onKeyDown={onEmailKey}
+                    placeholder="Search by name or email"
+                    autoComplete="off"
+                    role="combobox"
+                    aria-expanded={hits.length > 0}
+                    aria-controls="sf-share-hits"
+                    aria-activedescendant={hits.length ? `sf-share-hit-${pick}` : undefined}
+                    className="flex-1 min-w-0 h-8 rounded-md border border-[#d5cfc9] px-2.5 text-[13px] text-[#312c2a] focus:outline-none focus:border-[#eb1700] focus:ring-2 focus:ring-[#eb1700]/15"
+                  />
+                  <select value={canEdit ? 'edit' : 'view'} onChange={e => setCanEdit(e.target.value === 'edit')} aria-label="Access" className={ROLE_SELECT}>
+                    <option value="edit">Can edit</option>
+                    <option value="view">View only</option>
+                  </select>
+                  <Button variant="primary" icon={UserPlus} onClick={() => invite()} disabled={busy || !email.trim()}>Invite</Button>
+                  {searching && !hits.length && <span className="absolute right-[196px] top-1/2 -translate-y-1/2"><Spinner size={12} /></span>}
+                </div>
+                {hits.length > 0 && (
+                  <div id="sf-share-hits" role="listbox" className="mt-1 max-h-[264px] overflow-y-auto py-1 bg-white border border-[#e8e6e3] rounded-lg shadow-[0_6px_18px_rgba(49,44,42,.10)]">
+                    {hits.map((h, i) => (
+                      <div
+                        key={h.email}
+                        id={`sf-share-hit-${i}`}
+                        role="option"
+                        aria-selected={i === pick}
+                        onMouseDown={e => { e.preventDefault(); invite(h); }}
+                        onMouseEnter={() => setPick(i)}
+                        className={`flex items-center gap-2.5 mx-1 px-2 py-1.5 rounded-md cursor-pointer ${i === pick ? 'bg-[#fdeeec]' : ''}`}
+                      >
+                        <PeerAvatar person={{ name: h.name || h.email, color: '#81766f', photo: photoFor(h) }} size={28} />
+                        <span className="flex-1 min-w-0">
+                          <span className="block truncate text-[13px] text-[#312c2a]">{h.name || h.email}</span>
+                          <span className="block truncate text-[11.5px] text-[#81766f]">{h.email}{h.title ? ` · ${h.title}` : ''}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="mt-1.5 text-[11.5px] text-[#81766f]">They need access to the {engineLabel} pane. Send them the link once they are added.</p>
+              </div>
+            )}
+            {owner && full && <p className="mt-3 pt-3 border-t border-[#e8e6e3] text-[12px] text-[#6e6259]">This worksheet is full: three people. Remove someone to invite another.</p>}
+            <p className="mt-3 text-[11.5px] leading-relaxed text-[#81766f]">
+              Results of queries run here are shown to everyone in the worksheet, whatever their own {engineLabel} role.
+            </p>
+          </>
+        )}
+
+        {error && <div className="mt-3 flex items-start gap-2 rounded-md bg-[#fdf3f1] px-3 py-2 text-[12.5px] text-[#9e0000]"><TriangleAlert size={14} className="flex-shrink-0 mt-0.5" />{error}</div>}
+      </div>
+
+      <div className="mt-4 px-5 py-3.5 flex items-center gap-2 bg-[#f8f7f5] border-t border-[#e8e6e3]">
+        {tab?.shared && meta && (
+          <>
+            <Button icon={copied ? Check : Link2} onClick={() => { navigator.clipboard?.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {}); }}>
+              {copied ? 'Copied' : 'Copy link'}
+            </Button>
+            {owner && (confirmStop
+              ? <Button variant="danger" disabled={busy} onClick={async () => { if (await run(onStop)) onClose(); }}>Yes, stop sharing</Button>
+              : <Button variant="ghost" onClick={() => setConfirmStop(true)} title="Everyone keeps a private copy of the text">Stop sharing</Button>)}
+            {!owner && <Button variant="ghost" icon={LogOut} disabled={busy} onClick={async () => { if (await run(() => onRemove(meta.you))) onClose(); }}>Leave</Button>}
+          </>
+        )}
+        <span className="flex-1" />
+        {tab?.shared
+          ? <Button variant="primary" onClick={onClose}>Done</Button>
+          : (
+            <>
+              <Button onClick={onClose}>Cancel</Button>
+              <Button variant="primary" icon={Users} disabled={busy} onClick={() => run(onShare)}>{busy ? 'Sharing...' : 'Share worksheet'}</Button>
+            </>
+          )}
       </div>
     </Modal>
   );
@@ -2242,11 +2536,44 @@ const SUGGEST_BADGE = {
   database: ['D', T.ink], view: ['V', T.blue], table: ['T', T.red], keyword: ['K', T.muted],
 };
 
-const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll, onSave, theme = 'light', defaultDb, defaultSchema, placeholder, cq = '' }, ref) {
+// Where the suggestion list goes on screen. It is drawn on the page itself
+// (a portal), so the editor's edges and the tab bar above can't cut it off,
+// and it opens below the caret or above it, whichever has more room in the
+// window, shrinking to fit when neither has the full 220px.
+function suggestBox(ta, suggest, padLeft) {
+  const box = ta.getBoundingClientRect();
+  const caretTop = box.top + suggest.top - suggest.lineHeight;
+  const caretBottom = box.top + suggest.top;
+  const below = window.innerHeight - caretBottom - 8;
+  const above = caretTop - 8;
+  const down = below >= 160 || below >= above;
+  const left = box.left + Math.max(padLeft, Math.min(suggest.left, box.width - 250));
+  return {
+    left: Math.max(8, Math.min(left, window.innerWidth - 248)),
+    maxHeight: Math.max(90, Math.min(220, down ? below : above)),
+    ...(down ? { top: caretBottom + 4 } : { bottom: window.innerHeight - caretTop + 4 }),
+  };
+}
+
+const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll, onSave, theme = 'light', defaultDb, defaultSchema, placeholder, cq = '', readOnly = false, session = null, peerColor, onSelect }, ref) {
   const E = useEngine();
   const taRef = useRef(null);
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
   const [suggest, setSuggest] = useState(null);
+  const suggestRef = useRef(null);
+  // The list sits on the page, not in the editor: close it when the page
+  // moves under it, but not when the list itself or the editor scrolls.
+  const suggestOpen = Boolean(suggest);
+  useEffect(() => {
+    if (!suggestOpen) return undefined;
+    const close = (e) => {
+      if (e.type === 'scroll' && (e.target === taRef.current || suggestRef.current?.contains(e.target))) return;
+      setSuggest(null);
+    };
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => { window.removeEventListener('resize', close); window.removeEventListener('scroll', close, true); };
+  }, [suggestOpen]);
   const objectCache = useRef({});
   const updateRef = useRef(() => {});
   const th = THEMES[theme] || THEMES.light;
@@ -2257,6 +2584,24 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
   const padLeft = gutterW + 14;
 
   const lines = useMemo(() => splitLines(tokenizeSql(value || '')), [value]);
+  // Shared worksheets: tell the others where this cursor is.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const readSel = () => {
+    const ta = taRef.current;
+    if (!ta) return null;
+    const back = ta.selectionDirection === 'backward';
+    return { a: back ? ta.selectionEnd : ta.selectionStart, h: back ? ta.selectionStart : ta.selectionEnd };
+  };
+  const shared = Boolean(onSelect);
+  useEffect(() => {
+    if (!shared) return undefined;
+    const report = () => {
+      if (document.activeElement === taRef.current) onSelectRef.current?.(readSel());
+    };
+    document.addEventListener('selectionchange', report);
+    return () => document.removeEventListener('selectionchange', report);
+  }, [shared]);
 
   // The painted layer has to wrap at exactly the textarea's inner width, which
   // shrinks when its scrollbar shows up.
@@ -2457,8 +2802,17 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
   };
 
   useImperativeHandle(ref, () => ({
-    command: runCommand,
+    command: (name) => { if (!readOnly) runCommand(name); },
     focus: () => taRef.current?.focus(),
+    // { a: anchor, h: head }, and back. Used to keep the caret where it was
+    // when someone else's edit lands in a shared worksheet.
+    getSelection: readSel,
+    setSelection: (a, h) => taRef.current?.setSelectionRange(Math.min(a, h), Math.max(a, h), a > h ? 'backward' : 'forward'),
+    // Scroll so a position is in view, without moving this user's own caret.
+    reveal: (pos) => {
+      const ta = taRef.current;
+      if (ta) ta.scrollTop = Math.max(0, (ta.value.slice(0, pos).split('\n').length - 3) * LINE_H);
+    },
     // Selected text if there is any, else the statement the cursor is in
     // (or the last one before it), like Snowsight.
     statement: () => {
@@ -2473,6 +2827,7 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
       return text.slice(pick.start, pick.end).trim();
     },
     insert: (text) => {
+      if (readOnly) return;
       const ta = taRef.current;
       if (!ta) { onChange((value ? `${value} ` : '') + text); return; }
       const s = ta.selectionStart ?? ta.value.length;
@@ -2515,7 +2870,7 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
               </span>
               {line.length ? line.map((tok, j) => (
                 <span key={j} style={{ color: palette[tok.kind] || palette.plain, fontStyle: tok.kind === 'comment' ? 'italic' : undefined }}>{tok.text}</span>
-              )) : '​'}
+              )) : '\u200b'}
             </div>
           ))}
         </pre>
@@ -2525,13 +2880,16 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
         ref={taRef}
         value={value}
         onChange={e => { onChange(e.target.value); updateSuggest(e.target); }}
-        onFocus={() => ensureObjects([])}
+        readOnly={readOnly}
+        onFocus={() => { ensureObjects([]); onSelect?.(readSel()); }}
+        onSelect={() => onSelect?.(readSel())}
         onClick={() => setSuggest(null)}
-        onBlur={() => setTimeout(() => setSuggest(null), 150)}
+        onBlur={() => { setTimeout(() => setSuggest(null), 150); onSelect?.(null); }}
         onScroll={e => { setSuggest(null); setScroll({ top: e.target.scrollTop, left: e.target.scrollLeft }); }}
         onKeyDown={e => {
           const mod = e.ctrlKey || e.metaKey;
           if (mod && e.key === 'Enter') { e.preventDefault(); setSuggest(null); (e.shiftKey ? onRunAll : onRun)?.(); return; }
+          if (readOnly) return;
           const combo = [mod && 'mod', e.altKey && 'alt', e.shiftKey && 'shift', e.code].filter(Boolean).join('+');
           const cmd = {
             'mod+shift+KeyF': 'format',
@@ -2576,16 +2934,15 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
         style={{ ...textStyle, caretColor: th.caret, '--sf-sel': th.sel, '--sf-ph': th.placeholder }}
       />
       <style>{`textarea[aria-label="SQL editor"]::selection{background:var(--sf-sel)} textarea[aria-label="SQL editor"]::placeholder{color:var(--sf-ph)}`}</style>
+      {session && (
+        <PeerLayer session={session} taRef={taRef} text={value || ''} width={innerW} scroll={scroll} colorOf={peerColor} nameOf={peerLabel} />
+      )}
 
-      {suggest && (
+      {suggest && taRef.current && createPortal(
         <div
-          className="absolute z-20 min-w-[240px] max-w-[540px] w-max max-h-[220px] overflow-y-auto rounded-lg border border-[#e8e6e3] bg-white py-1 shadow-[0_12px_32px_rgba(49,44,42,.18)] text-[12.5px] font-mono"
-          style={{
-            left: Math.max(padLeft, Math.min(suggest.left, (taRef.current?.clientWidth || 800) - 250)),
-            ...(suggest.boxHeight - suggest.top < 150
-              ? { bottom: `calc(100% - ${suggest.top - suggest.lineHeight}px)` }
-              : { top: suggest.top + 4 }),
-          }}
+          ref={suggestRef}
+          className="fixed z-[1000] min-w-[240px] max-w-[540px] w-max overflow-y-auto rounded-lg border border-[#e8e6e3] bg-white py-1 shadow-[0_12px_32px_rgba(49,44,42,.18)] text-[12.5px] font-mono"
+          style={suggestBox(taRef.current, suggest, padLeft)}
           role="listbox"
         >
           {suggest.items.map((item, i) => {
@@ -2611,7 +2968,8 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
               </div>
             );
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -2671,6 +3029,7 @@ const EMPTY_VIEW = {
   newRows: [],
   rowSel: [],
   editTarget: null, // { database, schema, table } when a query result is being edited
+  ranBy: null,      // shared worksheet: who started this run, when it wasn't us
 };
 
 const newQueryTab = (n) => ({ id: `q${Date.now().toString(36)}${n}`, kind: 'query', name: `Worksheet ${n}`, sql: '' });
@@ -2904,6 +3263,10 @@ function StudioPane({ active: paneActive = true }) {
   const active = urlTab || tabs.find(t => t.id === fallbackId) || tabs[0];
   const activeIdRef = useRef(active.id);
   activeIdRef.current = active.id;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const sharedLinkRef = useRef(null);
+  const [sharedLinkTick, setSharedLinkTick] = useState(0);
 
   useEffect(() => {
     if (fallbackId !== active.id) setFallbackId(active.id);
@@ -2939,8 +3302,9 @@ function StudioPane({ active: paneActive = true }) {
     if (!paneActive) return;
     if (urlTable) return; // a table link, handled below once connected
     if (urlWs && tabs.some(t => t.id === urlWs)) return;
+    if (urlWs?.startsWith('s_') && sharedLinkRef.current !== `failed:${urlWs}`) return; // a shared link, opened below
     writeUrl(active);
-  }, [paneActive, urlWs, urlTable, tabs, active, writeUrl]);
+  }, [paneActive, urlWs, urlTable, tabs, active, writeUrl, sharedLinkTick]);
 
   const [views, setViews] = useState({});
   const view = views[active.id] || EMPTY_VIEW;
@@ -2949,8 +3313,38 @@ function StudioPane({ active: paneActive = true }) {
   }, []);
   const patchActive = useCallback((patch) => patchView(activeIdRef.current, patch), [patchView]);
 
+  const viewsRef = useRef(views);
+  viewsRef.current = views;
+
   const setTabSql = (id, sql) => setTabs(ts => ts.map(t => (t.id === id ? { ...t, sql } : t)));
   const queryText = active.sql || '';
+
+  // Shared worksheets (tab.shared = the worksheet's id on the server). Each
+  // has a session that keeps its text in step with the other people in it;
+  // see collab/sharedSession.js. Everything further down that changes a
+  // worksheet's text goes through editSql so the others get it too.
+  const sessionsRef = useRef(new Map());
+  const sessionOf = (id) => sessionsRef.current.get(id) || null;
+  const sharedOf = (id) => tabsRef.current.find(t => t.id === id)?.shared || null;
+  const [, bumpShared] = useState(0);
+  const session = active.shared ? sessionOf(active.id) : null;
+  const sharedRole = session?.meta?.role || null;
+  // A shared worksheet can't be typed in until its text has arrived, or at all with view-only access.
+  const lockedTab = Boolean(active.shared) && !session?.canEdit();
+  const editSql = (id, sql) => {
+    const s = sessionOf(id);
+    if (s) {
+      if (!s.canEdit()) return;
+      s.edit(sql, id === activeIdRef.current ? editorRef.current?.getSelection() : undefined);
+    }
+    setTabSql(id, sql);
+  };
+  // Name, database and schema of a shared worksheet are everyone's.
+  const patchShared = (id, body) => {
+    const ws = sharedOf(id);
+    if (!ws || !sessionOf(id)?.canEdit()) return;
+    fetchJson(`/api/studio/shared/${ws}`, { method: 'PATCH', body }).catch(err => toast(err.message || 'Could not update the shared worksheet', 'error'));
+  };
 
   // Each worksheet has its own database, login (conn) and role. Kept in a ref
   // too, so a tab created a moment ago is already right when its query starts.
@@ -2987,8 +3381,15 @@ function StudioPane({ active: paneActive = true }) {
     metaRef.current[id] = { ...(metaRef.current[id] || {}), ...patch };
     setTabs(ts => ts.map(t => (t.id === id ? { ...t, ...patch } : t)));
   };
-  const setTabDb = (id, database) => { if (database) setTabMeta(id, { database, schema: undefined }); };
-  const setTabSchema = (id, schema) => setTabMeta(id, { schema: schema || undefined });
+  const setTabDb = (id, database) => {
+    if (!database) return;
+    setTabMeta(id, { database, schema: undefined });
+    patchShared(id, { database, schema: null });
+  };
+  const setTabSchema = (id, schema) => {
+    setTabMeta(id, { schema: schema || undefined });
+    patchShared(id, { schema: schema || null });
+  };
   // A new login starts on its own default database, schema and role.
   const setTabConn = (id, conn) => setTabMeta(id, { conn, role: undefined, database: undefined, schema: undefined });
   const setTabRole = (id, role) => setTabMeta(id, { role: role || undefined });
@@ -3063,6 +3464,10 @@ function StudioPane({ active: paneActive = true }) {
     const list = next.length ? next : [newQueryTab(1)];
     setTabs(list);
     stopPolling(id);
+    // A shared worksheet stays on the server; this only closes the tab.
+    sessionOf(id)?.destroy();
+    sessionsRef.current.delete(id);
+    delete seenMetaRef.current[id];
     // Postgres keeps a session per worksheet; let it go with the tab.
     if (E.pickDb) apiFetch(`${E.api}/session/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
     setViews(v => { const n = { ...v }; delete n[id]; return n; });
@@ -3072,7 +3477,10 @@ function StudioPane({ active: paneActive = true }) {
   const [renaming, setRenaming] = useState(null);
   const commitRename = (id, name) => {
     const clean = name.trim();
-    if (clean) setTabs(ts => ts.map(t => (t.id === id ? { ...t, name: clean.slice(0, 60) } : t)));
+    if (clean && !(sharedOf(id) && !sessionOf(id)?.canEdit())) {
+      setTabs(ts => ts.map(t => (t.id === id ? { ...t, name: clean.slice(0, 60) } : t)));
+      patchShared(id, { name: clean.slice(0, 60) });
+    }
     setRenaming(null);
   };
 
@@ -3118,18 +3526,24 @@ function StudioPane({ active: paneActive = true }) {
   });
 
   const workRef = useRef(null);
+  // Until someone drags the divider, the editor takes a share of the window
+  // (about 40%) instead of a fixed height, so a tall screen isn't left with a
+  // ten line editor.
+  const [, setWorkH] = useState(0);    // re-render once the work area has a height, and when it changes
   const [editorH, setEditorH] = useState(() => {
     const n = parseInt(readLocal(LS.editorH, ''), 10);
-    return Number.isFinite(n) ? n : 220;
+    return Number.isFinite(n) ? n : null;
   });
   const clampEditor = useCallback((h) => {
-    const room = (workRef.current?.clientHeight || 700) - 190;
-    return Math.max(110, Math.min(Math.max(110, room), h));
+    const whole = workRef.current?.clientHeight || 700;
+    return Math.max(110, Math.min(Math.max(110, whole - 190), h ?? Math.round(Math.max(220, whole * 0.4))));
   }, []);
+  // Editor over the whole work area, results tucked away. A run brings them back.
+  const [editorMax, setEditorMax] = useState(false);
   const startEditorResize = (e) => {
     e.preventDefault();
     const startY = e.clientY;
-    const startH = editorH;
+    const startH = editorH ?? clampEditor(null);
     let last = startH;
     const onMove = (ev) => { last = clampEditor(startH + ev.clientY - startY); setEditorH(last); };
     const onUp = () => {
@@ -3144,7 +3558,8 @@ function StudioPane({ active: paneActive = true }) {
   };
   // Keep the editor from swallowing the results on short windows.
   useEffect(() => {
-    const fix = () => setEditorH(h => clampEditor(h));
+    // A height nobody picked stays unset, so it keeps following the window.
+    const fix = () => { setWorkH(workRef.current?.clientHeight || 0); setEditorH(h => (h === null ? h : clampEditor(h))); };
     fix();
     window.addEventListener('resize', fix);
     return () => window.removeEventListener('resize', fix);
@@ -3295,7 +3710,12 @@ function StudioPane({ active: paneActive = true }) {
     try {
       const data = await fetchJson(withQs(`${E.api}/query`, cqOf(tabId)), {
         method: 'POST',
-        body: { sql, confirm, wait_ms: 2500, page_size: pageSize, ...(E.pickDb ? { database: dbOf(tabId), session_id: tabId } : { database: dbOf(tabId), schema: schemaOf(tabId) }) },
+        body: {
+          sql, confirm, wait_ms: 2500, page_size: pageSize,
+          ...(E.pickDb ? { database: dbOf(tabId), session_id: tabId } : { database: dbOf(tabId), schema: schemaOf(tabId) }),
+          // Run into a shared worksheet: the others get to read the result.
+          ...(sharedOf(tabId) ? { shared_ws: sharedOf(tabId) } : {}),
+        },
       });
       if (seq !== runSeqRef.current[tabId]) return;
       logInPage(`${E.log}_query_run`, `Ran ${E.label} query${confirm ? ' (confirmed destructive)' : ''}: ${sql.slice(0, 300)}`);
@@ -3322,14 +3742,22 @@ function StudioPane({ active: paneActive = true }) {
     // Hand the old job's session back to the pool straight away.
     if (previousJobId) apiFetch(`${E.api}/query/${previousJobId}`, { method: 'DELETE' }).catch(() => {});
     patchView(tabId, { ...EMPTY_VIEW, status: 'starting', sql, startedAt: Date.now() });
+    setEditorMax(false);
     setResultTab('data');
     submitQuery(tabId, sql, false);
   };
 
   const busy = view.status === 'running' || view.status === 'starting';
+  // ranBy is set on a run someone else started in a shared worksheet. It is
+  // shown like any other, but it is not ours to wait for or cancel.
+  const ownBusy = busy && !view.ranBy;
 
   const runQuery = (sqlOverride) => {
-    if (active.kind !== 'query' || busy) return;
+    if (active.kind !== 'query' || ownBusy) return;
+    if (lockedTab) {
+      toast(sharedRole === 'view' ? 'You have view-only access to this shared worksheet' : 'Still connecting to the shared worksheet', 'info');
+      return;
+    }
     const sql = (typeof sqlOverride === 'string' ? sqlOverride : editorRef.current?.statement()) || queryText.trim();
     if (!sql) return;
     if (view.editTarget && Object.keys(view.edits || {}).length + (view.deleted || []).length + (view.newRows || []).length) {
@@ -3353,6 +3781,192 @@ function StudioPane({ active: paneActive = true }) {
   };
 
   const elapsed = useElapsed(busy, view.startedAt);
+
+  /* --------------------------- shared worksheets --------------------------- */
+  const seenMetaRef = useRef({});
+  const stoppingRef = useRef(new Set());
+  const [shareOpen, setShareOpen] = useState(false);
+  const [sharedMenu, setSharedMenu] = useState(null); // null = closed, else { status, items }
+  const closeSharedMenu = useCallback(() => setSharedMenu(null), []);
+
+  // Someone else ran a query in the worksheet: show their result here as well.
+  // The job belongs to them; the server lets the people in the worksheet read it.
+  const adoptRun = async (tabId, run, announce) => {
+    const mine = (v) => v.jobId === run.job_id || ((v.status === 'running' || v.status === 'starting') && !v.ranBy);
+    if (!run?.job_id || mine(viewsRef.current[tabId] || EMPTY_VIEW)) return;
+    if (Date.now() / 1000 - run.at > 45 * 60) return; // the server only keeps a result that long
+    let data;
+    try { data = await fetchJson(`${E.api}/query/${run.job_id}/status`); } catch { return; }
+    if (!sharedOf(tabId) || mine(viewsRef.current[tabId] || EMPTY_VIEW)) return;
+    runSeqRef.current[tabId] = (runSeqRef.current[tabId] || 0) + 1;
+    const seq = runSeqRef.current[tabId];
+    stopPolling(tabId);
+    patchView(tabId, { ...EMPTY_VIEW, status: 'running', jobId: run.job_id, sql: run.sql, startedAt: run.at * 1000, ranBy: firstName(run.by_name || run.by) });
+    if (announce) toast(`${firstName(run.by_name || run.by)} ran a query`, 'info', 2500);
+    if (data.status === 'running') pollStatus(tabId, run.job_id, seq);
+    else applyFinished(tabId, run.job_id, data, seq);
+  };
+
+  // Swap a tab for one with another id (private <-> shared). Its result is
+  // let go: on Postgres it lives on the old tab's connection.
+  const rekeyTab = (oldId, next) => {
+    stopPolling(oldId);
+    metaRef.current[next.id] = metaRef.current[oldId];
+    setTabs(ts => ts.map(t => (t.id === oldId ? next : t)));
+    setViews(v => { const n = { ...v }; delete n[oldId]; return n; });
+    if (E.pickDb) apiFetch(`${E.api}/session/${encodeURIComponent(oldId)}`, { method: 'DELETE' }).catch(() => {});
+    if (activeIdRef.current === oldId) selectTab(next);
+  };
+
+  // Called by the sessions. Kept in a ref so a session made on an earlier
+  // render still reaches the current state.
+  const sharedHandlers = useRef({});
+  sharedHandlers.current = {
+    // Someone else's edit. The caret stays on the text it was on.
+    text: (id, text, mapPos) => {
+      const ed = id === activeIdRef.current ? editorRef.current : null;
+      const sel = ed?.getSelection();
+      flushSync(() => setTabSql(id, text));
+      if (sel) ed.setSelection(mapPos(sel.a), mapPos(sel.h));
+    },
+    change: (id) => {
+      const m = sessionOf(id)?.meta;
+      if (m && seenMetaRef.current[id] !== m.meta_rev) {
+        const first = seenMetaRef.current[id] === undefined;
+        seenMetaRef.current[id] = m.meta_rev;
+        const t = tabsRef.current.find(x => x.id === id);
+        if (t && (t.name !== m.name || (t.database || null) !== m.database || (t.schema || null) !== m.schema)) {
+          setTabMeta(id, { name: m.name, database: m.database || undefined, schema: m.schema || undefined });
+        }
+        adoptRun(id, m.last_run || {}, !first);
+      }
+      bumpShared(n => n + 1);
+    },
+    event: (id, ev) => {
+      if (id === activeIdRef.current) toast(`${firstName(ev.name)} ${ev.type === 'join' ? 'joined' : 'left'}`, 'info', 2200);
+    },
+    // Edits that could not be merged are never thrown away: they go to a tab of their own.
+    lost: (id, text, why) => {
+      const t = tabsRef.current.find(x => x.id === id);
+      const n = tabsRef.current.filter(x => x.kind === 'query').length + 1;
+      setTabs(ts => [...ts, { ...newQueryTab(n), name: `${t?.name || 'Worksheet'} (my edits)`.slice(0, 60), sql: text, database: t?.database, conn: t?.conn, role: t?.role }]);
+      const reason = why === 'view_only' ? 'You now have view-only access to this worksheet.'
+        : why === 'too_large' ? 'The shared worksheet is at its size limit.'
+          : 'Your latest edits could not be merged into the shared worksheet.';
+      toast(`${reason} Your text is kept in a new private tab.`, 'error', 10000);
+    },
+    gone: (id, why) => {
+      const t = tabsRef.current.find(x => x.id === id);
+      sessionsRef.current.delete(id);
+      delete seenMetaRef.current[id];
+      if (!t) return;
+      const stopped = stoppingRef.current.delete(t.shared);
+      const n = tabsRef.current.filter(x => x.kind === 'query').length + 1;
+      rekeyTab(id, { ...t, id: newQueryTab(n).id, shared: undefined, name: (stopped ? t.name : `${t.name} (copy)`).slice(0, 60) });
+      if (stopped) toast(`Stopped sharing "${t.name}"`, 'success', 4000);
+      else toast(`"${t.name}" is ${why === 'denied' ? 'not available to you any more' : 'no longer shared with you'}. Its text is kept here as a private copy.`, 'info', 10000);
+    },
+  };
+
+  // Sessions follow the tabs: one per shared tab, gone when the tab is.
+  useEffect(() => {
+    const map = sessionsRef.current;
+    return () => { map.forEach(s => s.destroy()); map.clear(); };
+  }, []);
+  useEffect(() => {
+    const map = sessionsRef.current;
+    tabs.forEach(t => {
+      if (!t.shared || map.has(t.id)) return;
+      const call = (name) => (...args) => sharedHandlers.current[name](t.id, ...args);
+      map.set(t.id, new SharedSession(
+        t.shared,
+        { post: (path, body) => fetchJson(path, { method: 'POST', body }), stream: apiEventSource },
+        { text: call('text'), change: call('change'), lost: call('lost'), gone: call('gone'), event: call('event') },
+      ));
+    });
+    [...map.keys()].forEach(id => {
+      if (!tabs.some(t => t.id === id)) { map.get(id).destroy(); map.delete(id); }
+    });
+  }, [tabs]);
+  // Only the worksheet on screen holds a connection (a browser allows few).
+  useEffect(() => {
+    sessionsRef.current.forEach((s, id) => (paneActive && id === active.id ? s.connect() : s.disconnect()));
+  }, [paneActive, active.id, tabs]);
+  // The others see "is running a query" next to this person.
+  useEffect(() => {
+    if (active.shared) sessionOf(active.id)?.select(undefined, ownBusy ? 'running' : 'idle');
+  }, [ownBusy, active.id, active.shared]);
+
+  const openShared = async (wsId) => {
+    const id = `s_${wsId}`;
+    const have = tabsRef.current.find(t => t.id === id);
+    if (have) { selectTab(have); return; }
+    const snap = await fetchJson(`/api/studio/shared/${encodeURIComponent(wsId)}`);
+    if (snap.meta.engine !== E.id) throw new Error(`That worksheet belongs to the ${ENGINES[snap.meta.engine]?.label || 'other'} pane`);
+    const from = metaRef.current[activeIdRef.current] || {};
+    const tab = { id, kind: 'query', shared: wsId, name: snap.meta.name, sql: snap.sql, database: snap.meta.database || undefined, schema: snap.meta.schema || undefined, conn: from.conn, role: from.role };
+    metaRef.current[id] = { database: tab.database, schema: tab.schema, conn: tab.conn, role: tab.role };
+    setTabs(ts => (ts.some(t => t.id === id) ? ts : [...ts, tab]));
+    selectTab(tab);
+  };
+
+  // A link to a shared worksheet (?ws=s_<id>) that isn't open yet.
+  useEffect(() => {
+    if (!paneActive || !urlWs?.startsWith('s_') || tabs.some(t => t.id === urlWs)) return;
+    if (sharedLinkRef.current === urlWs || sharedLinkRef.current === `failed:${urlWs}`) return;
+    sharedLinkRef.current = urlWs;
+    openShared(urlWs.slice(2))
+      .then(() => { sharedLinkRef.current = null; })
+      .catch(err => {
+        sharedLinkRef.current = `failed:${urlWs}`;
+        setSharedLinkTick(n => n + 1);
+        toast(err.status === 404 ? 'That shared worksheet does not exist, or is not shared with you' : err.message || 'Could not open the shared worksheet', 'error', 8000);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paneActive, urlWs, tabs]);
+
+  const shareWorksheet = async () => {
+    const id = active.id;
+    if (active.kind !== 'query' || active.shared) return;
+    if (ownBusy) throw new Error('Wait for the running query to finish, then share');
+    const snap = await fetchJson('/api/studio/shared', {
+      method: 'POST',
+      body: { engine: E.id, name: active.name, sql: active.sql || '', database: active.database || null, schema: active.schema || null },
+    });
+    const now = tabsRef.current.find(t => t.id === id) || active;
+    rekeyTab(id, { ...now, id: `s_${snap.meta.id}`, shared: snap.meta.id });
+    logInPage(`${E.log}_share`, `Shared ${E.label} worksheet "${active.name}"`);
+  };
+  const sharedCall = async (method, path, body) => {
+    const snap = await fetchJson(`/api/studio/shared/${active.shared}${path}`, { method, body });
+    const s = sessionOf(active.id);
+    if (s && snap?.meta) { s.meta = snap.meta; sharedHandlers.current.change(active.id); }
+  };
+  const inviteToShared = (email, canEdit, name = '') => sharedCall('PUT', '/members', { email, can_edit: canEdit, name });
+  const removeFromShared = (email) => sharedCall('DELETE', `/members/${encodeURIComponent(email)}`);
+  const stopSharing = async () => {
+    stoppingRef.current.add(active.shared);
+    try { await sharedCall('DELETE', ''); } catch (err) { stoppingRef.current.delete(active.shared); throw err; }
+  };
+  const openSharedMenu = () => {
+    setSharedMenu({ status: 'loading', items: [] });
+    fetchJson(`/api/studio/shared?engine=${E.id}`)
+      .then(d => setSharedMenu(m => m && { status: 'ready', items: d.worksheets || [] }))
+      .catch(err => setSharedMenu(m => m && { status: 'error', items: [], error: err.message }));
+  };
+
+  // One colour per person, the same on everyone's screen.
+  const sharedMeta = session?.meta || null;
+  const peerColor = (email) => {
+    const order = sharedMeta ? [sharedMeta.owner.email, ...sharedMeta.members.map(m => m.email)] : [];
+    return PEER_COLORS[Math.max(0, order.indexOf(email)) % PEER_COLORS.length];
+  };
+  const shareLink = (() => {
+    if (!active.shared || typeof window === 'undefined') return '';
+    const u = new URL(window.location.href);
+    u.search = `?pane=${E.id}&ws=${active.id}`;
+    return u.toString();
+  })();
 
   /* ---------------------------- data editor tabs --------------------------- */
   const loadTablePage = useCallback(async (tabId, target, pageNum, size, sortVal, filterVal) => {
@@ -3784,10 +4398,10 @@ function StudioPane({ active: paneActive = true }) {
 
   const loadSql = (sql, name, newTab = false, database = null) => {
     const dbName = E.pickDb ? database || null : null;
-    if (!newTab && active.kind === 'query') {
-      setTabSql(active.id, sql);
+    if (!newTab && active.kind === 'query' && !lockedTab) {
+      editSql(active.id, sql);
       setTabDb(active.id, dbName);
-      if (name) setTabs(ts => ts.map(t => (t.id === active.id && /^Worksheet \d+$/.test(t.name) ? { ...t, name } : t)));
+      if (name && !active.shared) setTabs(ts => ts.map(t => (t.id === active.id && /^Worksheet \d+$/.test(t.name) ? { ...t, name } : t)));
     } else {
       addTab(sql, name, dbName);
     }
@@ -3801,8 +4415,8 @@ function StudioPane({ active: paneActive = true }) {
   const previewTable = (database, schema, tableName) => {
     const sql = `SELECT *\nFROM "${database}"."${schema}"."${tableName}"\nLIMIT 100;`;
     let tab = active;
-    if (active.kind !== 'query' || busy) tab = addTab(sql, tableName, database);
-    else { setTabSql(active.id, sql); setTabDb(active.id, database); }
+    if (active.kind !== 'query' || ownBusy || lockedTab) tab = addTab(sql, tableName, database);
+    else { editSql(active.id, sql); setTabDb(active.id, database); }
     setExplorerSel({ kind: 'table', fq: `${database}.${schema}.${tableName}` });
     if (!isWide) setDrawerOpen(false);
     startRun(tab.id, sql, tab.id === active.id ? view.jobId : null);
@@ -3821,7 +4435,7 @@ function StudioPane({ active: paneActive = true }) {
   };
 
   const insertIntoEditor = (text) => {
-    if (active.kind !== 'query') { addTab(text); return; }
+    if (active.kind !== 'query' || lockedTab) { addTab(text); return; }
     editorRef.current?.insert(text);
   };
 
@@ -3844,6 +4458,7 @@ function StudioPane({ active: paneActive = true }) {
       const key = view.keyColumns?.length ? `key ${view.keyColumns.join(', ')}` : 'no primary key, rows matched on every column';
       return { color: T.green, text: `${plural(view.rowCount ?? 0, 'row')} · ${canEdit ? 'editable' : 'read only'} · ${key}` };
     }
+    if (busy && view.ranBy) return { color: T.red, pulse: true, text: `${view.ranBy} is running a query · ${fmtMs(elapsed)}` };
     if (busy) return { color: T.red, pulse: true, text: `Running in ${E.pickDb ? tabDb : activeConn?.warehouse || serverInfo?.warehouse || E.label} · ${fmtMs(elapsed)}` };
     if (editingResult && view.status === 'success') return { color: T.amber, text: `${plural(view.rowCount ?? 0, 'row')} · editing ${view.editTarget.table}${dirtyCount ? ` · ${plural(dirtyCount, 'unsaved change')}` : ''}` };
     if (view.status === 'failed') return { color: T.maroon, text: `Failed${view.meta?.elapsed_ms != null ? ` after ${fmtMs(view.meta.elapsed_ms)}` : ''}` };
@@ -3855,6 +4470,7 @@ function StudioPane({ active: paneActive = true }) {
       if (view.meta.bytes_scanned_human) bits.push(`${view.meta.bytes_scanned_human} scanned`);
       if (view.meta.from_cache) bits.push('from cache');
       if (view.meta.statement_count > 1) bits.push(`${view.meta.statement_count} statements, showing the last`);
+      if (view.ranBy) bits.push(`run by ${view.ranBy}`);
       return { color: T.green, text: bits.join(' · ') };
     }
     return { color: T.lineStrong, text: 'Ready' };
@@ -3909,6 +4525,7 @@ function StudioPane({ active: paneActive = true }) {
     if (tab.kind === 'data') return <Pencil size={12} className="flex-shrink-0 text-[#a14a00]" />;
     if (tab.kind === 'copier') return <CopyPlus size={13} className="flex-shrink-0 text-[#6e6259]" />;
     if (tv.status === 'running' || tv.status === 'starting') return <Spinner size={12} />;
+    if (tab.shared) return <Users size={13} className="flex-shrink-0 text-[#0f68b2]" aria-label="Shared worksheet" />;
     const c = tv.status === 'failed' ? T.maroon : tv.status === 'success' ? T.green : null;
     return c
       ? <StatusDot color={c} />
@@ -4048,6 +4665,11 @@ function StudioPane({ active: paneActive = true }) {
           </div>
 
           <div className="flex-shrink-0 flex items-center gap-2">
+            {E.copier && canCopy && (
+              <Button variant="secondary" icon={CopyPlus} onClick={addCopierTab} title="Copy a table or schema" aria-label="Copy tables" className={isMd ? '' : '!px-2'}>
+                {isMd && 'Copy tables'}
+              </Button>
+            )}
             <Button variant={panel === 'history' ? 'dark' : 'secondary'} icon={History} onClick={() => openPanel('history')} title="Query history" aria-label="Query history" className={isMd ? '' : '!px-2'}>
               {isMd && 'History'}
             </Button>
@@ -4055,22 +4677,22 @@ function StudioPane({ active: paneActive = true }) {
               {isMd && 'Saved'}
             </Button>
             {active.kind === 'query' && (
-              busy ? (
+              ownBusy ? (
                 <Button variant="dark" icon={Square} onClick={cancelQuery} className="min-w-[96px]">Cancel</Button>
               ) : (
                 <Button
                   variant={leadHint ? 'danger' : 'primary'}
                   icon={Play}
                   onClick={() => runQuery()}
-                  disabled={!queryText.trim() || connState !== 'ready'}
-                  title={statementCount > 1 ? 'Ctrl/Cmd + Enter runs the selection, or the statement at the cursor' : 'Ctrl/Cmd + Enter runs the selection, or the whole worksheet'}
+                  disabled={!queryText.trim() || connState !== 'ready' || lockedTab}
+                  title={sharedRole === 'view' ? 'You have view-only access to this shared worksheet' : statementCount > 1 ? 'Ctrl/Cmd + Enter runs the selection, or the statement at the cursor' : 'Ctrl/Cmd + Enter runs the selection, or the whole worksheet'}
                   className="min-w-[96px]"
                 >
                   {leadHint ? `Run ${leadHint}` : 'Run'}
                 </Button>
               )
             )}
-            {active.kind === 'query' && !busy && statementCount > 1 && (
+            {active.kind === 'query' && !ownBusy && !lockedTab && statementCount > 1 && (
               <Button
                 icon={Play}
                 onClick={runAll}
@@ -4106,7 +4728,7 @@ function StudioPane({ active: paneActive = true }) {
                   onKeyDown={e => { if (e.key === 'Enter') selectTab(tab); }}
                   onAuxClick={e => { if (e.button === 1) { e.preventDefault(); closeTab(tab.id); } }}
                   onDoubleClick={() => tab.kind === 'query' && setRenaming(tab.id)}
-                  title={tab.kind === 'data' ? `${tab.table.database}.${tab.table.schema}.${tab.table.table}` : `${tab.name}\nDouble-click to rename`}
+                  title={tab.kind === 'data' ? `${tab.table.database}.${tab.table.schema}.${tab.table.table}` : `${tab.name}${tab.shared ? '\nShared worksheet' : ''}\nDouble-click to rename`}
                   className={`group relative flex-shrink-0 flex items-center gap-2 h-[32px] min-w-[120px] max-w-[280px] pl-3 pr-1.5 mr-1 rounded-t-md cursor-pointer select-none text-[12.5px] transition-colors ${
                     on ? 'bg-white text-[#312c2a] font-medium border border-b-0 border-[#e8e6e3] -mb-px h-[33px]' : 'text-[#6e6259] hover:bg-[#f1efed] hover:text-[#312c2a]'
                   }`}
@@ -4141,9 +4763,45 @@ function StudioPane({ active: paneActive = true }) {
             </div>
           </div>
           <div className="flex-shrink-0 flex items-center h-full pb-[3px] pl-2">
+              {active.shared && session && (
+                <PeerBar session={session} meta={sharedMeta} colorOf={peerColor} onFollow={pos => editorRef.current?.reveal(pos)} />
+              )}
+              {active.kind === 'query' && (
+                <Button size="sm" variant={active.shared ? 'secondary' : 'ghost'} icon={UserPlus} onClick={() => setShareOpen(true)} title={active.shared ? 'People in this worksheet' : 'Work in this worksheet with other people'} className="mr-1">
+                  <span className="hidden sm:inline">Share</span>
+                </Button>
+              )}
+              <span className="relative mr-1">
+                <IconButton
+                  icon={Users}
+                  label="Shared worksheets"
+                  active={Boolean(sharedMenu)}
+                  onClick={e => { e.stopPropagation(); if (sharedMenu) setSharedMenu(null); else openSharedMenu(); }}
+                />
+                <Menu open={Boolean(sharedMenu)} onClose={closeSharedMenu}>
+                  <div className="w-[260px] max-h-[320px] overflow-y-auto">
+                    {sharedMenu?.status === 'loading' && <div className="flex items-center gap-2 px-3 py-2 text-[12.5px] text-[#6e6259]"><Spinner size={12} /> Loading...</div>}
+                    {sharedMenu?.status === 'error' && <div className="px-3 py-2 text-[12.5px] text-[#9e0000]">{sharedMenu.error || 'Could not load shared worksheets'}</div>}
+                    {sharedMenu?.status === 'ready' && sharedMenu.items.length === 0 && (
+                      <div className="px-3 py-2 text-[12.5px] text-[#6e6259]">No shared worksheets yet. Use Share on a worksheet to start one.</div>
+                    )}
+                    {sharedMenu?.items.map(w => (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => { setSharedMenu(null); openShared(w.id).catch(err => toast(err.message || 'Could not open the shared worksheet', 'error')); }}
+                        className="block w-full text-left px-3 py-1.5 hover:bg-[#f4f2f0]"
+                      >
+                        <span className="block truncate text-[12.5px] text-[#312c2a]">{w.name}</span>
+                        <span className="block truncate text-[11px] text-[#81766f]">{w.owned ? 'Yours' : `From ${w.owner.name || w.owner.email}`} · {plural(w.people, 'person').replace('persons', 'people')}</span>
+                      </button>
+                    ))}
+                  </div>
+                </Menu>
+              </span>
               {serverInfo && (
                 <div
-                  className={`${E.pickDb ? 'hidden md:flex' : 'flex'} items-center gap-2 h-7 pl-2.5 pr-1 mr-1 rounded-md border border-[#e8e6e3] bg-white text-[11.5px] text-[#4a423e] max-w-[480px]`}
+                  className={`${E.pickDb ? 'hidden md:flex' : 'flex'} items-center gap-2 h-7 pl-2.5 ${E.pickDb ? 'pr-2.5' : 'pr-1'} mr-1 rounded-md border border-[#e8e6e3] bg-white text-[11.5px] text-[#4a423e] max-w-[480px]`}
                   title={E.pickDb ? `Server ${activeConn?.host || serverInfo.account}\nUser ${activeConn?.user || serverInfo.user}` : `Account ${activeConn?.account || serverInfo.account}\nUser ${activeConn?.user || serverInfo.user}\nRole ${activeRole || 'default'}\nWarehouse ${activeConn?.warehouse || serverInfo.warehouse || 'default'}`}
                 >
                   <StatusDot color={connState === 'error' ? T.maroon : T.green} />
@@ -4154,16 +4812,16 @@ function StudioPane({ active: paneActive = true }) {
                       {roleOptions.map(o => <option key={`${o.conn}|${o.role}`} value={`${o.conn}|${o.role}`}>{roleLabel(o)}</option>)}
                     </Picker>
                   )}
-                  <span className="text-[#cbc4bc]">|</span>
-                  <span className="truncate">{E.pickDb ? activeConn?.host || serverInfo.account : activeConn?.warehouse || serverInfo.warehouse || 'default warehouse'}</span>
+                  {/* Postgres: the server name is long and adds nothing here; it is in the tooltip. */}
+                  {!E.pickDb && (
+                    <>
+                      <span className="text-[#cbc4bc]">|</span>
+                      <span className="truncate">{activeConn?.warehouse || serverInfo.warehouse || 'default warehouse'}</span>
+                    </>
+                  )}
                   {!writesOk && <span className="flex-shrink-0 text-[#a14a00] font-medium">read only</span>}
                 </div>
               )}
-            {E.copier && canCopy && (
-              <Button size="sm" variant="ghost" icon={CopyPlus} onClick={addCopierTab} title="Copy a table or schema">
-                <span className="hidden sm:inline">Copy tables</span>
-              </Button>
-            )}
           </div>
         </div>
 
@@ -4188,13 +4846,17 @@ function StudioPane({ active: paneActive = true }) {
         {/* editor */}
         {active.kind === 'query' && (
           <>
-            <div className="flex-shrink-0 relative" style={{ height: editorH }}>
+            <div className={editorMax ? 'flex-1 min-h-0 relative' : 'flex-shrink-0 relative'} style={editorMax ? undefined : { height: editorH ?? clampEditor(null) }}>
               <SfEditor
                 key={`${active.id}|${cq}`}
                 cq={cq}
                 ref={editorRef}
                 value={queryText}
-                onChange={sql => setTabSql(active.id, sql)}
+                onChange={sql => editSql(active.id, sql)}
+                readOnly={lockedTab}
+                session={active.shared ? session : null}
+                peerColor={peerColor}
+                onSelect={active.shared ? (sel => sessionOf(active.id)?.select(sel)) : undefined}
                 onRun={() => runQuery()}
                 onRunAll={runAll}
                 onSave={() => queryText.trim() && setSavePromptOpen(true)}
@@ -4205,9 +4867,11 @@ function StudioPane({ active: paneActive = true }) {
               />
             </div>
             <div className="flex-shrink-0 flex items-center gap-2 h-[36px] px-3 bg-[#f8f7f5] border-y border-[#e8e6e3]">
-              <div className="hidden md:flex items-center gap-1.5 min-w-0 text-[11.5px] text-[#6e6259] truncate">
-                <Kbd>Ctrl</Kbd><span>+</span><Kbd>Enter</Kbd><span className="ml-1 truncate">runs the selection or the statement at the cursor. Add Shift to run all.</span>
-              </div>
+              <PeerActivity session={active.shared ? session : null} meta={sharedMeta}>
+                <div className="hidden md:flex items-center gap-1.5 min-w-0 text-[11.5px] text-[#6e6259] truncate">
+                  <Kbd>Ctrl</Kbd><span>+</span><Kbd>Enter</Kbd><span className="ml-1 truncate">runs the selection or the statement at the cursor. Add Shift to run all.</span>
+                </div>
+              </PeerActivity>
               <div className="ml-auto flex items-center gap-1">
                 <Button size="sm" variant="ghost" icon={AlignLeft} onClick={() => editorRef.current?.command('format')} disabled={!queryText.trim()} title={`Format SQL (${MOD} Shift F)`}>
                   <span className="hidden sm:inline">Format</span>
@@ -4229,23 +4893,24 @@ function StudioPane({ active: paneActive = true }) {
                 <Button size="sm" variant="ghost" icon={Save} onClick={() => setSavePromptOpen(true)} disabled={!queryText.trim()}>Save</Button>
                 <IconButton icon={editorTheme === 'dark' ? Sun : Moon} label={editorTheme === 'dark' ? 'Light editor' : 'Dark editor'} onClick={toggleEditorTheme} />
                 <IconButton icon={Keyboard} label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)} />
+                <IconButton icon={editorMax ? Minimize2 : Maximize2} label={editorMax ? 'Show results' : 'Expand editor'} active={editorMax} onClick={() => setEditorMax(m => !m)} />
               </div>
             </div>
-            <div
+            {!editorMax && <div
               onMouseDown={startEditorResize}
-              onDoubleClick={() => { setEditorH(clampEditor(220)); writeLocal(LS.editorH, '220'); }}
+              onDoubleClick={() => { setEditorH(null); try { window.localStorage.removeItem(LS.editorH); } catch { /* private mode */ } }}
               title="Drag to resize, double-click to reset"
               role="separator"
               aria-orientation="horizontal"
               className="group flex-shrink-0 h-[8px] -mt-[1px] flex items-center justify-center cursor-row-resize bg-white border-b border-[#e8e6e3] hover:bg-[#fdeeec]"
             >
               <div className="w-10 h-[3px] rounded-full bg-[#d5cfc9] group-hover:bg-[#eb1700]" />
-            </div>
+            </div>}
           </>
         )}
 
         {/* results */}
-        {!isCopier && (
+        {!isCopier && !(editorMax && active.kind === 'query') && (
           <div ref={resultsRef} className="flex-1 min-h-0 flex flex-col bg-white">
             <div className="flex-shrink-0 flex items-center gap-4 h-[42px] px-4 border-b border-[#e8e6e3]">
               <div className="flex items-stretch gap-4 h-full" role="tablist" aria-label="Result views">
@@ -4675,6 +5340,20 @@ function StudioPane({ active: paneActive = true }) {
           <p className="py-3 text-[11.5px] text-[#81766f]">Case changes apply to the selection, or to the word under the cursor when nothing is selected. Ctrl+Z undoes any of them.</p>
         </div>
       </Modal>
+      <ShareModal
+        open={shareOpen && active.kind === 'query'}
+        onClose={() => setShareOpen(false)}
+        tab={active}
+        meta={sharedMeta}
+        session={session}
+        engineLabel={E.label}
+        colorOf={peerColor}
+        onShare={shareWorksheet}
+        onInvite={inviteToShared}
+        onRemove={removeFromShared}
+        onStop={stopSharing}
+        link={shareLink}
+      />
       <SavePromptModal
         open={savePromptOpen}
         initialName={active.kind === 'query' ? active.name : ''}
