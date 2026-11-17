@@ -119,7 +119,6 @@ const CSS = `
 .sb-logo-full { height:38px; width:auto; }
 .sb-logo-mark { width:40px; height:40px; }
 
-.sb:not(.open) 
 .sb-nav { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:0 13px 16px; overscroll-behavior:contain; }
 .sb-nav::-webkit-scrollbar { width:3px; }
 .sb-nav::-webkit-scrollbar-track { background:transparent; }
