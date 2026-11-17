@@ -45,12 +45,22 @@ const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString());
 const compact = (n) => (n == null ? '—' : new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n));
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 const isEmpty = (v) => v == null || v === '';
-const show = (v) => (isEmpty(v) ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+// Some Cortellis text was saved as UTF-8 and read back as Latin-1 upstream, so "ß" arrives as
+// "Ã" + an invisible control character. Put those byte pairs (and triples) back together.
+function fixMojibake(t) {
+  if (!/[\u00C2-\u00EF][\u0080-\u00BF]/.test(t)) return t;
+  return t
+    .replace(/[\u00E0-\u00EF][\u0080-\u00BF]{2}/g, m => String.fromCharCode(((m.charCodeAt(0) & 0x0F) << 12) | ((m.charCodeAt(1) & 0x3F) << 6) | (m.charCodeAt(2) & 0x3F)))
+    .replace(/[\u00C2-\u00DF][\u0080-\u00BF]/g, m => String.fromCharCode(((m.charCodeAt(0) & 0x1F) << 6) | (m.charCodeAt(1) & 0x3F)));
+}
+const show = (v) => (isEmpty(v) ? '' : typeof v === 'object' ? JSON.stringify(v) : fixMojibake(String(v)));
 // Cortellis capitalises the first letter of a name, which turns β-sitosterol into
 // "Β-sitosterol" with a capital Greek Beta that looks exactly like a Latin B. Drug names
 // use the small letter, so show that (only for a lone leading Greek capital).
+// Older drug databases typed β as the German ß ("ß-glucan", "ßcct"); at the start of a word
+// it can only mean beta (German words never start with ß), so show β there.
 const niceName = (v) => {
-  const t = show(v);
+  const t = show(v).replace(/(^|[\s(/-])ß/g, '$1β');
   return /^[\u0391-\u03A9](?![\u0391-\u03A9])/.test(t) ? t[0].toLowerCase() + t.slice(1) : t;
 };
 const isUrl = (v) => typeof v === 'string' && /^https?:\/\/\S+$/i.test(v.trim());

@@ -350,13 +350,18 @@ def _greek_variants(q: str) -> List[str]:
         words = words.replace(ch, word).replace(ch.upper(), word)
     letters = _re.sub(r"(?i)(?<![a-z])(" + "|".join(sorted(GREEK.values(), key=len, reverse=True)) + r")(?![a-z])",
                       lambda m: next(ch for ch, w in GREEK.items() if w == m.group(1).lower()), q)
-    return [words, letters]
+    out = [words, letters]
+    if "β" in letters:  # beta is also stored as "ß", and garbled as "Ã" + U+009F
+        out += [letters.replace("β", "ß"), letters.replace("β", "Ã\u009f")]
+    return out
 
 
 def _sort_name_sql(col: str) -> str:
     """Sort key for a name column: Greek letters read as words, so "β-sitosterol" sorts
     with the B's (as "beta-sitosterol") instead of after Z, where Unicode puts it."""
     expr = f"LOWER({_q(col)}::STRING)"
+    # beta also arrives as the German "ß" and, garbled upstream, as "Ã" + CHR(159)
+    expr = f"REPLACE(REPLACE({expr}, 'ã' || CHR(159), 'beta'), 'ß', 'beta')"
     for ch, word in GREEK.items():
         expr = f"REPLACE({expr}, '{ch}', '{word}')"
     return expr
@@ -396,7 +401,7 @@ def _where(spec, filters: Dict[str, List[str]], q: str, years, params: Dict[str,
         # "beta-sitosterol" also finds "β-sitosterol" and the other way round
         variants = [q] + [v for v in _greek_variants(q) if v != q]
         ors = []
-        for i, v in enumerate(variants[:3]):
+        for i, v in enumerate(variants[:5]):
             name = "q" if i == 0 else f"q{i}"
             params[name] = f"%{v}%"
             ors += [f"{_q(c)}::STRING ILIKE %({name})s" for c in spec["search"]]

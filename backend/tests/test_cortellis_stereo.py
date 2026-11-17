@@ -160,22 +160,24 @@ def test_chiral_pairs_counted_in_snowflake(api):
 # ---- Greek letters in drug names (β-sitosterol) -------------------------------------
 
 @pytest.mark.parametrize("q, expected", [
-    ("beta-sitosterol", ["beta-sitosterol", "β-sitosterol"]),
-    ("β-sitosterol", ["beta-sitosterol", "β-sitosterol"]),
-    ("Β3 agonists", ["beta3 agonists", "Β3 agonists"]),   # capital Greek Beta, as Cortellis stores it
-    ("beta3", ["beta3", "β3"]),
+    ("beta-sitosterol", ["beta-sitosterol", "β-sitosterol", "ß-sitosterol", "Ã\u009f-sitosterol"]),
+    ("β-sitosterol", ["beta-sitosterol", "β-sitosterol", "ß-sitosterol", "Ã\u009f-sitosterol"]),
+    ("Β3 agonists", ["beta3 agonists", "Β3 agonists"]),   # capital Greek Beta
+    ("alpha-glucosidase", ["alpha-glucosidase", "α-glucosidase"]),
     ("betamethasone", ["betamethasone", "betamethasone"]),  # a real word, left alone
 ])
 def test_search_matches_greek_both_ways(q, expected):
     assert C._greek_variants(q) == expected
 
 
-def test_search_sql_has_the_greek_variant():
+def test_search_sql_has_the_greek_variants():
     params = {}
-    C._where(PRODUCTS, {}, "beta-sitosterol", None, params)
-    assert params == {"q": "%beta-sitosterol%", "q1": "%β-sitosterol%"}
+    C._where(PRODUCTS, {}, "beta-catenin", None, params)
+    # beta as the Greek letter, as the German ß older data uses, and as the garbled "Ã" + U+009F
+    assert params == {"q": "%beta-catenin%", "q1": "%β-catenin%", "q2": "%ß-catenin%", "q3": "%Ã\u009f-catenin%"}
 
 
 def test_name_sort_reads_greek_as_words():
     expr = C._sort_name_sql("drugPrimaryName")
-    assert expr.count("REPLACE(") == len(C.GREEK) and "'β', 'beta'" in expr and 'LOWER("drugPrimaryName"::STRING)' in expr
+    assert expr.count("REPLACE(") == len(C.GREEK) + 2 and "'β', 'beta'" in expr and 'LOWER("drugPrimaryName"::STRING)' in expr
+    assert "'ã' || CHR(159), 'beta'" in expr and "'ß', 'beta'" in expr
