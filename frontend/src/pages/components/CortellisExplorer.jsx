@@ -1097,7 +1097,7 @@ function ChiralCard({ chiral, meta, openRecord }) {
           <div key={i} className="grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2 py-2 border-b border-jj-gray-01 last:border-0 text-[12.5px] font-johnson-text">
             <button onClick={() => openRecord({ key: p.single.key, title: p.single.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
               <span className="font-bold truncate">{p.single.name}</span>
-              <span className="flex gap-1.5 flex-wrap"><StereoTag kind={KIND_BY_LABEL[p.single.kind]} />{p.single.status && <Pill color={statusColor(p.single.status)}>{p.single.status}</Pill>}</span>
+              <span className="flex gap-1.5 flex-wrap"><StereoTag kind={stereoInfo(p.single.name)?.kind || KIND_BY_LABEL[p.single.kind]} desc={stereoInfo(p.single.name)?.desc} />{p.single.status && <Pill color={statusColor(p.single.status)}>{p.single.status}</Pill>}</span>
             </button>
             <span className="text-jj-gray-06 text-center" aria-hidden="true">↔</span>
             <button onClick={() => openRecord({ key: p.original.key, title: p.original.name })} className="text-left min-w-0 flex flex-col gap-1 hover:text-[#c21300]">
@@ -1502,7 +1502,7 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
     if (c === meta.title) return (
       <>
         <div className="font-medium text-jj-gray-08 leading-snug line-clamp-2 whitespace-normal">{highlight(show(v), state.q)}</div>
-        {meta.facets.includes(STEREO) && stereoKind(v) && <StereoTag kind={stereoKind(v)} className="mt-1" />}
+        {meta.facets.includes(STEREO) && stereoInfo(v) && <StereoTag kind={stereoInfo(v).kind} desc={stereoInfo(v).desc} className="mt-1" />}
       </>
     );
     return <span title={show(v)}>{highlight(show(v), state.q)}</span>;
@@ -2164,23 +2164,40 @@ const STEREO = '__stereo';
 const STEREO_KINDS = {
   minus: { label: 'Single hand (−)', cls: 'text-[#5b2a86] bg-[#f3ebf8]', tip: 'One of the two mirror-image forms of this molecule, developed on its own. It turns polarised light to the left.' },
   plus: { label: 'Single hand (+)', cls: 'text-[#0c5a99] bg-[#e8f0f8]', tip: 'One of the two mirror-image forms of this molecule, developed on its own. It turns polarised light to the right.' },
+  rs: { label: 'Single hand (R/S)', cls: 'text-[#00615c] bg-[#e4f3f1]', tip: 'One specific mirror-image form, named by its 3D arrangement (R or S at each stereo centre) rather than by how it turns light.' },
   mix: { label: 'Mixture (±)', cls: 'text-[#5c5450] bg-[#f4f2f0]', tip: 'Both mirror-image forms, 50/50 (a racemate).' },
 };
-const KIND_BY_LABEL = { 'Single hand (−)': 'minus', 'Single hand (+)': 'plus', 'Mixture (±)': 'mix' };
-function stereoKind(name) {
-  const m = /^\s*\((-|−|\+|±|\+\/-|\+-|l|d|rac)\)-/i.exec(String(name || ''));
-  if (!m) return null;
-  return /^(-|−|l)$/i.test(m[1]) ? 'minus' : /^(\+|d)$/i.test(m[1]) ? 'plus' : 'mix';
+const KIND_BY_LABEL = { 'Single hand (−)': 'minus', 'Single hand (+)': 'plus', 'Single hand (R/S)': 'rs', 'Mixture (±)': 'mix' };
+// same rules and order as the backend (cortellis.py STEREO_PATTERNS)
+const CENTRE = "(\\d+'?[RS]|[RS])";
+const STEREO_RULES = [
+  ['mix', /^\((±|\+\/-|\+-|rac|RAC|Rac|RS|SR|R\/S|S\/R|R-S|S-R|R,S|S,R|R\*,S\*)\)[- ]/],
+  ['minus', /^\((-|−|l)\)[- ]/],
+  ['plus', /^\((\+|d)\)[- ]/],
+  ['rs', new RegExp(`^\\((${CENTRE}(\\s*,\\s*${CENTRE})*)\\)[- ]`)],
+];
+// "(2R,4S)-itraconazole" -> { kind: 'rs', desc: '2R,4S' }; isotopes like "(18)F" and codes like "(E1)" -> null
+function stereoInfo(name) {
+  const n = String(name || '').trim();
+  for (const [kind, re] of STEREO_RULES) {
+    const m = re.exec(n);
+    if (m) return { kind, desc: kind === 'rs' ? m[1].replace(/\s+/g, '') : null };
+  }
+  return null;
 }
-function StereoTag({ kind, className = '' }) {
+const stereoKind = (name) => stereoInfo(name)?.kind || null;
+// the mirror image of an R/S form flips every centre: (2R,4S) <-> (2S,4R)
+const flipRS = (desc) => desc.replace(/[RS]/g, c => (c === 'R' ? 'S' : 'R'));
+function StereoTag({ kind, desc, className = '' }) {
   const k = STEREO_KINDS[kind];
   if (!k) return null;
+  const label = kind === 'rs' && desc ? (desc.includes(',') ? `Single isomer (${desc})` : `Single hand (${desc})`) : k.label;
   return (
-    <span tabIndex={0} title={k.tip} aria-label={`${k.label}: ${k.tip}`}
+    <span tabIndex={0} title={k.tip} aria-label={`${label}: ${k.tip}`}
       className={`inline-flex items-center gap-[5px] text-[11px] font-johnson-text font-bold rounded-md px-[7px] py-[2px] whitespace-nowrap cursor-help ${k.cls} ${className}`}>
       <span aria-hidden="true" className="w-2.5 h-2.5 rounded-[2px] flex-shrink-0"
         style={kind === 'mix' ? { background: 'currentColor' } : { background: 'linear-gradient(90deg,currentColor 50%,transparent 50%)', boxShadow: 'inset 0 0 0 1.4px currentColor' }} />
-      {k.label}
+      {label}
     </span>
   );
 }
@@ -2200,14 +2217,22 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
       .catch(e => { if (!dead && !isAbort(e)) setFailed(true); });
     return () => { dead = true; ctl.abort(); };
   }, [meta.id, record.key, onFound]);
-  const mine = stereoKind(title);
+  const me = stereoInfo(title);
+  const mine = me && me.kind !== 'mix' ? me.kind : null;
   if (failed || !data) return null;
   const forms = data.forms || [];
-  const hands = forms.filter(f => KIND_BY_LABEL[f.kind] === 'minus' || KIND_BY_LABEL[f.kind] === 'plus');
-  const originals = forms.filter(f => !KIND_BY_LABEL[f.kind] || KIND_BY_LABEL[f.kind] === 'mix');
+  const single = (f) => ['minus', 'plus', 'rs'].includes(stereoKind(f.name));
+  const hands = forms.filter(single);
+  const originals = forms.filter(f => !single(f));
   if (!forms.length && !mine) return null;
-  const other = mine === 'minus' ? 'plus' : mine === 'plus' ? 'minus' : null;
-  const twin = other && hands.find(f => KIND_BY_LABEL[f.kind] === other);
+  // the other hand: (-) <-> (+), (R) <-> (S), (2R,4S) <-> (2S,4R)
+  const otherDesc = mine === 'rs' ? flipRS(me.desc) : null;
+  const twin = mine === 'minus' ? hands.find(f => stereoKind(f.name) === 'plus')
+    : mine === 'plus' ? hands.find(f => stereoKind(f.name) === 'minus')
+    : mine === 'rs' ? hands.find(f => stereoInfo(f.name)?.desc === otherDesc) : null;
+  const twinName = mine === 'rs' ? `(${otherDesc})-${data.base || 'form'}` : `${mine === 'minus' ? '(+)' : '(−)'}-${data.base || 'form'}`;
+  // same molecule written with the other notation, e.g. (R)- next to (-)-: shown, but not called the twin
+  const sameHandOtherNotation = hands.filter(f => f !== twin);
   const bestOriginal = [...originals].sort((a, b) => /launch|marketed|registered/i.test(b.status || '') - /launch|marketed|registered/i.test(a.status || ''))[0];
 
   const formCard = (f, here) => (
@@ -2219,7 +2244,7 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
       )}
       <div className="text-[13px] font-johnson-text font-bold text-jj-gray-08 break-words">{f.name}</div>
       <div className="flex flex-wrap gap-1.5">
-        {KIND_BY_LABEL[f.kind] && <StereoTag kind={KIND_BY_LABEL[f.kind]} />}
+        {stereoInfo(f.name) && <StereoTag kind={stereoInfo(f.name).kind} desc={stereoInfo(f.name).desc} />}
         {f.status && <Pill color={statusColor(f.status)}>{f.status}</Pill>}
       </div>
       {here ? <span className="text-[11.5px] font-johnson-text text-jj-gray-07">You are here</span>
@@ -2232,14 +2257,14 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
       sub={`Other records of the same molecule${data.base ? ` (“${data.base}”)` : ''}`}>
       {mine && (
         <div className="grid grid-cols-[1fr_30px_1fr] items-stretch">
-          {formCard({ key: record.key, name: title, kind: STEREO_KINDS[mine].label, status, smiles }, true)}
+          {formCard({ key: record.key, name: title, status, smiles }, true)}
           <div className="relative flex items-center justify-center" aria-hidden="true">
             <span className="absolute top-2 bottom-2 border-l-2 border-dashed border-jj-gray-03" />
             <span className="relative bg-white py-1.5 text-[9.5px] font-johnson-text font-bold tracking-[.1em] text-jj-gray-07" style={{ writingMode: 'vertical-rl' }}>MIRROR</span>
           </div>
           {twin ? formCard(twin, false) : (
             <div className="rounded-[14px] border-[1.5px] border-dashed border-jj-gray-03 bg-[#fbfaf9] p-3 flex flex-col justify-center gap-1 text-[12.5px] font-johnson-text text-jj-gray-07">
-              <b className="text-jj-gray-08">{other === 'plus' ? '(+)' : '(−)'}-{data.base || 'form'}</b>
+              <b className="text-jj-gray-08">{twinName}</b>
               <span>The other hand isn't in {meta.label}.</span>
             </div>
           )}
@@ -2247,6 +2272,13 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound }) {
       )}
       {!mine && hands.length > 0 && (
         <div className="text-[12.5px] font-johnson-text text-jj-gray-07">This record is the original; {hands.length === 1 ? 'a single-hand version was' : `${hands.length} single-hand versions were`} developed separately:</div>
+      )}
+      {mine && sameHandOtherNotation.length > 0 && (
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="col-span-2 text-[10.5px] font-johnson-text font-bold tracking-[.1em] text-jj-gray-07 uppercase">Other single-hand records</div>
+          <div className="col-span-2 -mt-1.5 text-[11.5px] font-johnson-text text-jj-gray-07">Written with the other notation ((+)/(−) vs R/S), so it may be this same hand or its mirror.</div>
+          {sameHandOtherNotation.slice(0, 4).map(f => formCard(f, false))}
+        </div>
       )}
       {(mine ? originals : hands).length > 0 && (
         <div className="grid grid-cols-2 gap-2.5">
@@ -2413,7 +2445,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, labelOf, face
                 {(tags.length > 0 || (meta.facets.includes(STEREO) && stereoKind(title))) && (
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {tags.map(([c, v]) => <Pill key={c} color={facetColors[c]} title={labelOf(c)}>{show(v)}</Pill>)}
-                    <StereoTag kind={meta.facets.includes(STEREO) ? stereoKind(title) : null} />
+                    {meta.facets.includes(STEREO) && stereoInfo(title) && <StereoTag kind={stereoInfo(title).kind} desc={stereoInfo(title).desc} />}
                   </div>
                 )}
               </div>

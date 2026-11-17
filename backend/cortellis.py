@@ -282,31 +282,56 @@ def _stack_facet(spec, cols):
 # It is read from the name, so it works on the live table with no extra data.
 STEREO = "__stereo"
 STEREO_LABEL = "Stereo form"
-ST_MINUS, ST_PLUS, ST_MIX, ST_NONE = "Single hand (−)", "Single hand (+)", "Mixture (±)", "Not marked"
-STEREO_ORDER = [ST_MINUS, ST_PLUS, ST_MIX, ST_NONE]
+ST_MINUS, ST_PLUS, ST_RS, ST_MIX, ST_NONE = "Single hand (−)", "Single hand (+)", "Single hand (R/S)", "Mixture (±)", "Not marked"
+STEREO_ORDER = [ST_MINUS, ST_PLUS, ST_RS, ST_MIX, ST_NONE]
+
+# The prefixes Cortellis uses, checked in this order (a mixture written "(R,S)" wins over
+# a single R/S form). Both notations name one mirror-image form: (+)/(-) by how it turns
+# light, (R)/(S) or (2R,4S) by its 3D arrangement. Isotopes like "(18)F" and codes like
+# "(E1)" match none of these, so they stay "Not marked".
+_CENTRE = r"(\d+'?[RS]|[RS])"
+STEREO_PATTERNS = [
+    (ST_MIX, r"^\((±|\+/-|\+-|rac|RAC|Rac|RS|SR|R/S|S/R|R-S|S-R|R,S|S,R|R\*,S\*)\)[- ]"),
+    (ST_MINUS, r"^\((-|−|l)\)[- ]"),
+    (ST_PLUS, r"^\((\+|d)\)[- ]"),
+    (ST_RS, rf"^\({_CENTRE}(\s*,\s*{_CENTRE})*\)[- ]"),
+]
+STEREO_PREFIX = r"^\((±|\+/-|\+-|rac|RAC|Rac|RS|SR|R/S|S/R|R-S|S-R|R,S|S,R|R\*,S\*|-|−|\+|l|d|" + _CENTRE + r"(\s*,\s*" + _CENTRE + r")*)\)[- ]\s*"
 
 
 def _has_stereo(spec) -> bool:
     return "stereo" in spec
 
 
+def _sql_lit(v: str) -> str:
+    return "'" + v.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 def _stereo_sql(spec) -> str:
     n = f"TRIM({_q(spec['title'])}::STRING)"
-    return (f"CASE WHEN {n} LIKE '(-)-%' OR {n} LIKE '(−)-%' OR {n} LIKE '(l)-%' THEN '{ST_MINUS}' "
-            f"WHEN {n} LIKE '(+)-%' OR {n} LIKE '(d)-%' THEN '{ST_PLUS}' "
-            f"WHEN {n} LIKE '(±)-%' OR {n} LIKE '(+/-)-%' OR {n} LIKE '(+-)-%' OR {n} LIKE '(rac)-%' THEN '{ST_MIX}' "
-            f"ELSE '{ST_NONE}' END")
+    # REGEXP_LIKE matches the whole string, hence the trailing .*
+    whens = " ".join(f"WHEN REGEXP_LIKE({n}, {_sql_lit(pat + '.*')}, 's') THEN '{label}'" for label, pat in STEREO_PATTERNS)
+    return f"CASE {whens} ELSE '{ST_NONE}' END"
 
 
 def _stereo_base_sql(spec) -> str:
     # "(-)-pantoprazole, Sunovion" -> "pantoprazole": prefix off, developer/place after the comma off
     n = f"TRIM({_q(spec['title'])}::STRING)"
-    return (f"LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE({n}, '^\\\\((-|−|\\\\+|±|\\\\+/-|\\\\+-|l|d|rac)\\\\)-', ''), ',.*$', '')))")
+    return f"LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE({n}, {_sql_lit(STEREO_PREFIX)}, ''), ',.*$', '')))"
+
+
+def stereo_kind(name: str) -> str:
+    import re as _re
+    n = (name or "").strip()
+    for label, pat in STEREO_PATTERNS:
+        if _re.match(pat, n):
+            return label
+    return ST_NONE
 
 
 def stereo_base(name: str) -> str:
     import re as _re
-    s = _re.sub(r"^\((-|−|\+|±|\+/-|\+-|l|d|rac)\)-", "", (name or "").strip())
+    s = _re.sub(STEREO_PREFIX, "", (name or "").strip())
     return s.split(",")[0].strip().lower()
 
 
@@ -483,7 +508,7 @@ def get_overview(
             got = {v: n for v, n in _run_or_fail(f"SELECT {_stereo_sql(spec)} v, COUNT(*) FROM {t}{w} GROUP BY 1",
                                                   params, "overview stereo").rows}
             # only worth a filter when some names actually carry a prefix
-            if any(got.get(k) for k in (ST_MINUS, ST_PLUS, ST_MIX)) or f.get(STEREO):
+            if any(got.get(k) for k in (ST_MINUS, ST_PLUS, ST_RS, ST_MIX)) or f.get(STEREO):
                 out_facets.append({"column": STEREO, "label": STEREO_LABEL, "more": False,
                                    "values": [{"value": k, "count": got.get(k, 0)} for k in STEREO_ORDER if got.get(k)]})
         yield {"facets": out_facets}
@@ -665,7 +690,7 @@ def _chiral_pairs(spec, cols) -> Dict[str, Any]:
     sql = (f"WITH r AS (SELECT {k} k, TRIM({_q(spec['title'])}::STRING) n, {st} s, {_stereo_sql(spec)} kind, "
            f"{_stereo_base_sql(spec)} b FROM {t} WHERE NULLIF(TRIM({_q(spec['title'])}::STRING), '') IS NOT NULL) "
            f"SELECT x.k, x.n, x.s, x.kind, o.k, o.n, o.s FROM r x JOIN r o ON o.b = x.b AND o.b <> '' "
-           f"AND x.kind IN ('{ST_MINUS}', '{ST_PLUS}') AND o.kind IN ('{ST_NONE}', '{ST_MIX}') LIMIT 5000")
+           f"AND x.kind IN ('{ST_MINUS}', '{ST_PLUS}', '{ST_RS}') AND o.kind IN ('{ST_NONE}', '{ST_MIX}') LIMIT 5000")
     rows = _run_or_fail(sql, {}, "insights chiral").rows
     import re as _re
     launched = lambda v: bool(v and _re.search(LAUNCHED_RE, v, _re.I))
