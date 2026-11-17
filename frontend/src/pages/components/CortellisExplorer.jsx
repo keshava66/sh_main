@@ -1601,8 +1601,10 @@ function NestedValue({ value, depth = 0 }) {
     </button>
   );
 
-  // plain values, or small objects like {id, name}: chips
-  const small = (o) => !isScalar(o) && !Array.isArray(o) && Object.values(o).every(isScalar) && Object.keys(o).length <= 2;
+  // plain values, or a name plus its code like {meshId, name}: chips. Anything else
+  // (say a class and its status) keeps its field names so it reads on its own.
+  const small = (o) => !isScalar(o) && !Array.isArray(o) && Object.values(o).every(isScalar) && Object.keys(o).length <= 2
+    && Object.keys(o).every(k => k === headKey(o) || /(id|code|key)$/i.test(k));
   if (items.every(isScalar) || items.every(small)) {
     return (
       <div className="flex flex-col gap-1.5">
@@ -1630,6 +1632,8 @@ function NestedValue({ value, depth = 0 }) {
       {shown.map((o, i) => {
         if (isScalar(o) || Array.isArray(o)) return <NestedValue key={i} value={o} depth={depth + 1} />;
         const hk = headKey(o);
+        const stem = hk ? hk.replace(HEAD_RE, '$1') : '';
+        const label = (k) => humanKey(stem && k.startsWith(stem) && k.length > stem.length ? k.slice(stem.length) : k);
         const rest = Object.entries(o).filter(([k, v]) => k !== hk && k !== dk && !isEmpty(v) && !(Array.isArray(v) && !v.length) && !(k === 'id' && hk));
         return (
           <div key={i} className={dk ? 'relative' : 'rounded-lg border border-jj-gray-02 bg-[#faf9f8] px-2.5 py-2'}>
@@ -1642,8 +1646,8 @@ function NestedValue({ value, depth = 0 }) {
               <div className="mt-1 flex flex-col gap-1">
                 {rest.map(([k, v]) => (
                   isScalar(v)
-                    ? <div key={k} className="text-[11.5px]"><span className="text-jj-gray-07">{humanKey(k)}: </span><span className="text-jj-gray-08">{scalarText(v)}</span></div>
-                    : <div key={k} className="text-[11.5px]"><div className="text-jj-gray-07 mb-1">{humanKey(k)}</div><NestedValue value={v} depth={depth + 1} /></div>
+                    ? <div key={k} className="text-[11.5px]"><span className="text-jj-gray-07">{label(k)}: </span><span className="text-jj-gray-08">{scalarText(v)}</span></div>
+                    : <div key={k} className="text-[11.5px]"><div className="text-jj-gray-07 mb-1">{label(k)}</div><NestedValue value={v} depth={depth + 1} /></div>
                 ))}
               </div>
             )}
