@@ -2169,19 +2169,19 @@ const STEREO_KINDS = {
 };
 const KIND_BY_LABEL = { 'Single hand (−)': 'minus', 'Single hand (+)': 'plus', 'Single hand (R/S)': 'rs', 'Mixture (±)': 'mix' };
 // same rules and order as the backend (cortellis.py STEREO_PATTERNS)
-const CENTRE = "(\\d+'?[RS]|[RS])";
+const CENTRE = "([0-9]+'?[RS]|[RS])";
 const STEREO_RULES = [
   ['mix', /^\((±|\+\/-|\+-|rac|RAC|Rac|RS|SR|R\/S|S\/R|R-S|S-R|R,S|S,R|R\*,S\*)\)[- ]/],
   ['minus', /^\((-|−|l)\)[- ]/],
   ['plus', /^\((\+|d)\)[- ]/],
-  ['rs', new RegExp(`^\\((${CENTRE}(\\s*,\\s*${CENTRE})*)\\)[- ]`)],
+  ['rs', new RegExp(`^\\((${CENTRE}( *, *${CENTRE})*)\\)[- ]`)],
 ];
 // "(2R,4S)-itraconazole" -> { kind: 'rs', desc: '2R,4S' }; isotopes like "(18)F" and codes like "(E1)" -> null
 function stereoInfo(name) {
   const n = String(name || '').trim();
   for (const [kind, re] of STEREO_RULES) {
     const m = re.exec(n);
-    if (m) return { kind, desc: kind === 'rs' ? m[1].replace(/\s+/g, '') : null };
+    if (m) return { kind, desc: kind === 'rs' ? m[1].replace(/ +/g, '') : null };
   }
   return null;
 }
@@ -2207,24 +2207,39 @@ const statusColor = (s) => (/launch|marketed|registered/i.test(s || '') ? '#2a7a
 function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onSearchIn }) {
   const [data, setData] = useState(null);
   const [far, setFar] = useState(null); // the same molecule in the other Cortellis tables
+  const [farWanted, setFarWanted] = useState(false);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     setData(null); setFailed(false);
     if (!record.key) return;
     let dead = false;
     const ctl = new AbortController();
-    setFar(null);
+    setFar(null); setFarWanted(false);
     apiJson(`/api/cortellis/mirror/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
       .then(res => { if (!dead) { setData(res); onFound?.((res.forms || []).length > 0); } })
       .catch(e => { if (!dead && !isAbort(e)) setFailed(true); });
-    // slower (one search per table), so it fills in after the section is up
-    apiJson(`/api/cortellis/mirror-elsewhere/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
-      .then(res => { if (!dead) setFar(res); })
-      .catch(e => { if (!dead && !isAbort(e)) setFar({ error: true, tables: [] }); });
     return () => { dead = true; ctl.abort(); };
   }, [meta.id, record.key, onFound]);
   const me = stereoInfo(title);
   const mine = me && me.kind !== 'mix' ? me.kind : null;
+  // searching every table is 9 queries: do it by itself only when the other hand is
+  // missing here (the question the reader has), otherwise on request
+  useEffect(() => {
+    if (!farWanted || !record.key) return;
+    let dead = false;
+    const ctl = new AbortController();
+    apiJson(`/api/cortellis/mirror-elsewhere/${meta.id}?key=${encodeURIComponent(record.key)}`, { signal: ctl.signal })
+      .then(res => { if (!dead) setFar(res); })
+      .catch(e => { if (!dead && !isAbort(e)) setFar({ error: true, tables: [] }); });
+    return () => { dead = true; ctl.abort(); };
+  }, [farWanted, meta.id, record.key]);
+  useEffect(() => {
+    if (!data || !mine) return;
+    const forms = data.forms || [];
+    const other = mine === 'minus' ? 'plus' : mine === 'plus' ? 'minus' : null;
+    const found = mine === 'rs' ? forms.some(f => stereoInfo(f.name)?.desc === flipRS(me.desc)) : forms.some(f => stereoKind(f.name) === other);
+    if (!found) setFarWanted(true);
+  }, [data, mine, me?.desc]);
   if (failed || !data) return null;
   const forms = data.forms || [];
   const single = (f) => ['minus', 'plus', 'rs'].includes(stereoKind(f.name));
@@ -2275,7 +2290,8 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
             <div className="rounded-[14px] border-[1.5px] border-dashed border-jj-gray-03 bg-[#fbfaf9] p-3 flex flex-col justify-center gap-1 text-[12.5px] font-johnson-text text-jj-gray-07">
               <b className="text-jj-gray-08">{twinName}</b>
               <span>Not in {meta.label}.</span>
-              {!far && <span className="text-[11.5px] text-jj-gray-06 animate-pulse">Checking the other Cortellis tables…</span>}
+              {farWanted && !far && <span className="text-[11.5px] text-jj-gray-06 animate-pulse">Checking the other Cortellis tables…</span>}
+              {far?.error && <span className="text-[11.5px] text-jj-gray-06">Couldn't check the other tables. <button onClick={() => { setFar(null); setFarWanted(false); setTimeout(() => setFarWanted(true)); }} className="text-jj-blue-03 underline">Retry</button></span>}
               {far && !far.error && (farTwin.length ? (
                 <span className="flex flex-col gap-1 mt-1">
                   <span className="text-jj-gray-08">Found in:</span>
@@ -2332,7 +2348,16 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
         </div>
       )}
       {far && !far.error && !far.tables.length && plain.length >= 4 && (
-        <div className="text-[11.5px] font-johnson-text text-jj-gray-06">“{plain}” isn't mentioned in any other Cortellis table.</div>
+        <div className="text-[11.5px] font-johnson-text text-jj-gray-06">“{plain}” isn't mentioned in any other Cortellis table{far.incomplete ? ' that answered in time' : ''}.</div>
+      )}
+      {far?.incomplete && far.tables.length > 0 && (
+        <div className="text-[11px] font-johnson-text text-jj-gray-06">Some tables didn't answer in time, so this list may be short.</div>
+      )}
+      {!farWanted && plain.length >= 4 && (
+        <button onClick={() => setFarWanted(true)}
+          className="self-start border border-jj-gray-03 bg-white rounded-full px-3.5 py-1.5 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
+          Search all Cortellis tables for “{plain}”
+        </button>
       )}
     </Section>
   );

@@ -25,6 +25,7 @@ all happen in Snowflake.
 from __future__ import annotations
 
 import json
+import time
 import logging
 from typing import Any, Dict, List
 
@@ -289,14 +290,14 @@ STEREO_ORDER = [ST_MINUS, ST_PLUS, ST_RS, ST_MIX, ST_NONE]
 # a single R/S form). Both notations name one mirror-image form: (+)/(-) by how it turns
 # light, (R)/(S) or (2R,4S) by its 3D arrangement. Isotopes like "(18)F" and codes like
 # "(E1)" match none of these, so they stay "Not marked".
-_CENTRE = r"(\d+'?[RS]|[RS])"
+_CENTRE = r"([0-9]+'?[RS]|[RS])"
 STEREO_PATTERNS = [
     (ST_MIX, r"^\((±|\+/-|\+-|rac|RAC|Rac|RS|SR|R/S|S/R|R-S|S-R|R,S|S,R|R\*,S\*)\)[- ]"),
     (ST_MINUS, r"^\((-|−|l)\)[- ]"),
     (ST_PLUS, r"^\((\+|d)\)[- ]"),
-    (ST_RS, rf"^\({_CENTRE}(\s*,\s*{_CENTRE})*\)[- ]"),
+    (ST_RS, rf"^\({_CENTRE}( *, *{_CENTRE})*\)[- ]"),
 ]
-STEREO_PREFIX = r"^\((±|\+/-|\+-|rac|RAC|Rac|RS|SR|R/S|S/R|R-S|S-R|R,S|S,R|R\*,S\*|-|−|\+|l|d|" + _CENTRE + r"(\s*,\s*" + _CENTRE + r")*)\)[- ]\s*"
+STEREO_PREFIX = r"^\((±|\+/-|\+-|rac|RAC|Rac|RS|SR|R/S|S/R|R-S|S-R|R,S|S,R|R\*,S\*|-|−|\+|l|d|" + _CENTRE + r"( *, *" + _CENTRE + r")*)\)[- ] *"
 
 
 def _has_stereo(spec) -> bool:
@@ -658,7 +659,7 @@ def get_insights(
 
         # chiral switches: single-hand drugs that have an original (plain or mixture) record
         if _has_stereo(spec) and spec["title"] in cols:
-            out["chiral"] = _chiral_pairs(spec, cols)
+            out["chiral"] = _chiral_pairs(spec, cols, bypass_cache)
             yield {"chiral": out["chiral"]}
 
         # how full the key columns are
@@ -679,42 +680,50 @@ def get_insights(
 
 LAUNCHED_RE = "launch|marketed|registered"
 STOPPED_RE = "no development|discontinued|suspended|withdrawn|terminated"
+CHIRAL_EXAMPLES = 24
 
 
-def _chiral_pairs(spec, cols) -> Dict[str, Any]:
+def _chiral_pairs(spec, cols, bypass: bool = False) -> Dict[str, Any]:
+    """Single-hand drugs paired with their original (plain-named or mixture) record by name.
+    Whole table on purpose: the original is often outside the current filters. Each single
+    hand is paired once, with the original that got furthest (a launched one first)."""
+    cache_key = _cache_key("cortellis-chiral", {"t": spec["table"]})
+    if not bypass:
+        hit = _cache_get(cache_key)
+        if hit is not None:
+            return hit
     t = _fq(spec)
     status = spec.get("stereo") if spec.get("stereo") in cols else None
     key = spec.get("key") if spec.get("key") in cols else None
+    title = _q(spec["title"])
     st = f"TRIM({_q(status)}::STRING)" if status else "NULL"
-    k = f"{_q(key)}::STRING" if key else "NULL"
-    sql = (f"WITH r AS (SELECT {k} k, TRIM({_q(spec['title'])}::STRING) n, {st} s, {_stereo_sql(spec)} kind, "
-           f"{_stereo_base_sql(spec)} b FROM {t} WHERE NULLIF(TRIM({_q(spec['title'])}::STRING), '') IS NOT NULL) "
-           f"SELECT x.k, x.n, x.s, x.kind, o.k, o.n, o.s FROM r x JOIN r o ON o.b = x.b AND o.b <> '' "
-           f"AND x.kind IN ('{ST_MINUS}', '{ST_PLUS}', '{ST_RS}') AND o.kind IN ('{ST_NONE}', '{ST_MIX}') LIMIT 5000")
+    k = f"{_q(key)}::STRING" if key else f"TRIM({title}::STRING)"
+    is_l = lambda col: f"REGEXP_LIKE(COALESCE({col}, ''), {_sql_lit('.*(' + LAUNCHED_RE + ').*')}, 'is')"
+    is_s = lambda col: f"REGEXP_LIKE(COALESCE({col}, ''), {_sql_lit('.*(' + STOPPED_RE + ').*')}, 'is')"
+    sql = (
+        f"WITH r AS (SELECT {k} k, TRIM({title}::STRING) n, {st} s, {_stereo_sql(spec)} kind, {_stereo_base_sql(spec)} b "
+        f"FROM {t} WHERE NULLIF(TRIM({title}::STRING), '') IS NOT NULL), "
+        f"p AS (SELECT x.k xk, x.n xn, x.s xs, x.kind xkind, o.k ok, o.n onm, o.s os FROM r x JOIN r o "
+        f"ON o.b = x.b AND o.b <> '' AND x.kind IN ('{ST_MINUS}', '{ST_PLUS}', '{ST_RS}') AND o.kind IN ('{ST_NONE}', '{ST_MIX}') "
+        f"QUALIFY ROW_NUMBER() OVER (PARTITION BY x.k ORDER BY IFF({is_l('o.s')}, 0, 1), o.n) = 1) "
+        f"SELECT xk, xn, xs, xkind, ok, onm, os, COUNT(*) OVER () n, "
+        f"SUM(IFF({is_l('os')}, 1, 0)) OVER () ol, SUM(IFF({is_l('xs')}, 1, 0)) OVER () xl, SUM(IFF({is_s('xs')}, 1, 0)) OVER () xs_stop "
+        f"FROM p ORDER BY IFF({is_l('os')}, 0, 1), IFF({is_s('xs')}, 0, 1), xn LIMIT {CHIRAL_EXAMPLES}"
+    )
     rows = _run_or_fail(sql, {}, "insights chiral").rows
-    import re as _re
-    launched = lambda v: bool(v and _re.search(LAUNCHED_RE, v, _re.I))
-    stopped = lambda v: bool(v and _re.search(STOPPED_RE, v, _re.I))
-    best: Dict[Any, Dict[str, Any]] = {}
-    for xk, xn, xs, xkind, ok, on, os_ in rows:
-        cur = best.get(xk or xn)
-        cand = {"single": {"key": _to_json_safe(xk), "name": xn, "status": xs, "kind": xkind},
-                "original": {"key": _to_json_safe(ok), "name": on, "status": os_}}
-        # keep the original that got furthest (a launched one beats a stopped one)
-        if cur is None or (launched(os_) and not launched(cur["original"]["status"])):
-            best[xk or xn] = cand
-    pairs = list(best.values())
-    n = len(pairs)
-    pct = lambda c: round(100 * c / n) if n else 0
-    pairs.sort(key=lambda p: (not launched(p["original"]["status"]), not stopped(p["single"]["status"]), p["single"]["name"] or ""))
-    return {
+    n = rows[0][7] if rows else 0
+    pct = lambda c: round(100 * (c or 0) / n) if n else 0
+    out = {
         "pairs": n,
-        "original_launched_pct": pct(sum(launched(p["original"]["status"]) for p in pairs)),
-        "single_launched_pct": pct(sum(launched(p["single"]["status"]) for p in pairs)),
-        "single_stopped_pct": pct(sum(stopped(p["single"]["status"]) for p in pairs)),
+        "original_launched_pct": pct(rows[0][8]) if rows else 0,
+        "single_launched_pct": pct(rows[0][9]) if rows else 0,
+        "single_stopped_pct": pct(rows[0][10]) if rows else 0,
         "has_status": bool(status),
-        "examples": pairs[:24],
+        "examples": [{"single": {"key": _to_json_safe(r[0]), "name": r[1], "status": r[2], "kind": r[3]},
+                      "original": {"key": _to_json_safe(r[4]), "name": r[5], "status": r[6]}} for r in rows],
     }
+    _cache_set(cache_key, out)
+    return out
 
 
 @cortellis_router.get("/mirror/{tid}")
@@ -770,6 +779,13 @@ def stereo_twin_names(name: str) -> List[str]:
     return []
 
 
+# shared by every request: at most 4 table searches at once, so one busy drawer can't
+# flood the warehouse or the connection
+from concurrent.futures import ThreadPoolExecutor as _Pool, TimeoutError as _Timeout
+_ELSEWHERE_POOL = _Pool(max_workers=4, thread_name_prefix="cortellis-elsewhere")
+ELSEWHERE_WAIT = 75  # seconds; the Snowflake statement timeout is 60
+
+
 @cortellis_router.get("/mirror-elsewhere/{tid}")
 def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_length=100), bypass_cache: bool = Query(False),
                          auth: dict = Depends(PERM)):
@@ -777,7 +793,6 @@ def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_lengt
     not just this one: trials, milestones, approvals and news mention drugs too.
     One query per table, side by side, each capped at 25 rows."""
     import re as _re
-    from concurrent.futures import ThreadPoolExecutor
     spec = _spec(tid)
     k = spec.get("key")
     cache_key = _cache_key("cortellis-mirror-elsewhere", {"tid": tid, "key": key})
@@ -823,17 +838,23 @@ def get_mirror_elsewhere(tid: str, key: str = Query(..., min_length=1, max_lengt
                 "twin_hits": [{"key": r[0], "title": r[1]} for r in rows if r[2]],
                 "examples": [{"key": r[0], "title": r[1]} for r in rows if not r[2]][:5]}
 
-    with ThreadPoolExecutor(max_workers=len(TABLES)) as pool:
-        futures = {tid2: pool.submit(one, tid2) for tid2 in TABLES}
+    futures = {tid2: _ELSEWHERE_POOL.submit(one, tid2) for tid2 in TABLES}
+    deadline = time.time() + ELSEWHERE_WAIT
+    incomplete = False
     for tid2, fut in futures.items():
         try:
-            r = fut.result()
-        except HTTPException:
-            r = None  # one table failing must not hide the others
+            r = fut.result(timeout=max(0.1, deadline - time.time()))
+        except (HTTPException, _Timeout):
+            r, incomplete = None, True  # one table failing or timing out must not hide the others
+        except Exception as e:
+            logger.warning(f"Cortellis elsewhere {tid2} failed: {e}")
+            r, incomplete = None, True
         if r:
             out["tables"].append(r)
+    out["incomplete"] = incomplete
     out["tables"].sort(key=lambda t: (-len(t["twin_hits"]), -t["mentions"]))
-    _cache_set(cache_key, out)
+    if not incomplete:  # don't keep a partial answer for 5 minutes
+        _cache_set(cache_key, out)
     return out
 
 

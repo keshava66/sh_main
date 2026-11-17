@@ -167,6 +167,12 @@ def main():
     except Exception as e:
         report("WARN", "VR / IMMBOT profile", short(e))
 
+    print("\n== Cortellis single-hand drugs (RP Products) ==", flush=True)
+    try:
+        cortellis_stereo_check(client)
+    except Exception as e:
+        report("WARN", "Cortellis single-hand drugs", short(e))
+
     # The rest needs a real server so requests can overlap.
     port = free_port()
     srv = uvicorn.Server(uvicorn.Config(A.app, host="127.0.0.1", port=port, log_level="critical", log_config=None))
@@ -456,6 +462,53 @@ def vr_immbot_profile(client):
         detail = (f"{secs:.2f}s | {len(qids)} quer{'y' if len(qids) == 1 else 'ies'}, slowest exec {slowest:.1f}s, "
                   f"queued {queued:.1f}s, scanned {scanned:,.0f} MB" + (f", SPILLED {spill:,.0f} MB" if spill else ""))
         report("WARN" if secs > SLOW_PART else "OK", label, detail)
+
+
+def cortellis_stereo_check(client):
+    """Runs the new queries for real: the Stereo form filter counts, the chiral pairs,
+    mirror forms and the search across every Cortellis table. Counts and timings only."""
+    import cortellis as CT
+    import unstructured as U
+    if not U._config:
+        report("WARN", "Cortellis", "not configured here, skipped")
+        return
+    tid = "rp_products"
+    secs, ov, err = _get_part(client, f"/api/cortellis/overview/{tid}?bypass_cache=true")
+    if err:
+        report("FAIL", "overview with Stereo form filter", f"{err} after {secs:.2f}s")
+        return
+    facet = next((f for f in ov.get("facets") or [] if f.get("column") == CT.STEREO), None)
+    if facet:
+        counts = ", ".join(f"{v['value']}: {v['count']:,}" for v in facet["values"])
+        report("OK", "Stereo form counts", f"{secs:.2f}s (whole overview) | {counts}")
+    else:
+        report("WARN", "Stereo form counts", "no names with a (+)/(-)/(R)/(S) prefix found; check how Cortellis writes them")
+
+    secs, _, err = _get_part(client, f"/api/cortellis/table/{tid}?page=1&size=50&bypass_cache=true&filters="
+                                     + quote(json.dumps({CT.STEREO: [CT.ST_MINUS]})))
+    report("FAIL" if err else ("WARN" if secs > SLOW_PART else "OK"), "Records filtered to Single hand (-)", err or f"{secs:.2f}s")
+
+    secs, ins, err = _get_part(client, f"/api/cortellis/insights/{tid}?bypass_cache=true")
+    chiral = (ins or {}).get("chiral")
+    if err or not chiral:
+        report("FAIL" if err else "WARN", "Chiral switches", err or "no pairs returned")
+        return
+    report("WARN" if secs > SLOW_PART * 2 else "OK", "Chiral switches",
+           f"{secs:.2f}s (all insights) | {chiral['pairs']:,} pairs, original launched {chiral['original_launched_pct']}%, "
+           f"single hand launched {chiral['single_launched_pct']}%, single hand stopped {chiral['single_stopped_pct']}%")
+    if not chiral["examples"]:
+        return
+    key = chiral["examples"][0]["single"]["key"]
+    secs, mir, err = _get_part(client, f"/api/cortellis/mirror/{tid}?key={quote(str(key))}&bypass_cache=true")
+    report("FAIL" if err else "OK", "Mirror forms (one record)", err or f"{secs:.2f}s | {len(mir.get('forms') or [])} other record(s) of the same molecule")
+    secs, far, err = _get_part(client, f"/api/cortellis/mirror-elsewhere/{tid}?key={quote(str(key))}&bypass_cache=true")
+    if err:
+        report("FAIL", "Search across all Cortellis tables", f"{err} after {secs:.2f}s")
+        return
+    tables = far.get("tables") or []
+    report("WARN" if far.get("incomplete") or secs > SLOW_PART * 2 else "OK", "Search across all Cortellis tables",
+           f"{secs:.2f}s | mentioned in {len(tables)} table(s), other hand found in {sum(1 for t in tables if t['twin_hits'])}"
+           + (" | some tables did not answer in time" if far.get("incomplete") else ""))
 
 
 def _session_history(sf_client):
