@@ -2062,7 +2062,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
           {(structure || chemCols.length > 0) && (
             <div id="ct-rec-chemistry">
               <Section icon={<path d="M6 2h4M7 2v4L3 13a1 1 0 0 0 .9 1.5h8.2A1 1 0 0 0 13 13L9 6V2" />} title="Chemistry"
-                sub={structure ? 'Structure drawn from the SMILES in the record' : null}>
+                sub={structure ? 'Drawn from the structure code in the record' : null}>
                 <div className={`grid gap-3.5 ${structure ? 'grid-cols-[300px_1fr]' : ''}`}>
                   {structure && (
                     <div className="group relative rounded-2xl border border-jj-gray-02 flex items-center justify-center" style={{ background: 'radial-gradient(circle at 50% 40%,#ffffff,#f7f5f3)' }}>
@@ -2097,7 +2097,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
                 </div>
                 {smiles && (
                   <div className="flex items-center gap-2 border border-jj-gray-02 rounded-[10px] pl-3 pr-1.5 py-1.5">
-                    <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07">SMILES</span>
+                    <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07 uppercase" title="SMILES notation">Structure code</span>
                     <code className="flex-1 min-w-0 font-mono text-[12px] text-jj-gray-08 truncate" title={String(get(info.smilesCol))}>{String(get(info.smilesCol))}</code>
                     <button onClick={() => copy(String(get(info.smilesCol)), 'smiles')} className="flex-shrink-0 border border-jj-gray-03 bg-white rounded-lg px-2.5 py-1 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
                       {copied === 'smiles' ? 'Copied' : 'Copy'}
@@ -2212,7 +2212,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, labelOf, facetColors 
               <MoleculeView smiles={smiles.main} width={Math.min(760, window.innerWidth - 100)} height={Math.min(540, window.innerHeight - 260)} />
             </div>
             <div className="flex items-center gap-2 border border-jj-gray-02 rounded-[10px] pl-3 pr-1.5 py-1.5">
-              <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07">SMILES</span>
+              <span className="text-[10px] font-johnson-text font-bold tracking-wider text-jj-gray-07 uppercase" title="SMILES notation">Structure code</span>
               <code className="flex-1 min-w-0 font-mono text-[12px] text-jj-gray-08 truncate">{String(get(info.smilesCol))}</code>
               <button onClick={() => copy(String(get(info.smilesCol)), 'smiles')} className="flex-shrink-0 border border-jj-gray-03 bg-white rounded-lg px-2.5 py-1 text-[12px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01">
                 {copied === 'smiles' ? 'Copied' : 'Copy'}
