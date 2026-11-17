@@ -89,7 +89,7 @@ function nameScore(wanted, candidate) {
   return pool.length > 2 ? score * 0.9 : score;
 }
 
-const FIELDS = 'id,displayName,givenName,surname,mail,userPrincipalName,accountEnabled,jobTitle,department';
+const FIELDS = 'id,displayName,mail,userPrincipalName,accountEnabled,jobTitle,department';
 
 async function searchUsers(name, token) {
   const runs = [
@@ -378,20 +378,12 @@ export function useDirectoryPhotos(people = []) {
     return photos[who] || null;
   }, [photos]);
 }
-const NAME_KEY = (who) => `dir_name_v1_${who}`;
-
-// "Brian Patti", not the directory's "Patti, Brian [JNJUS]"
-function readableName(u) {
-  const full = [u.givenName, u.surname].filter(Boolean).join(' ').trim();
-  if (full) return full;
-  const plain = cleanName(u.displayName);
-  const [last, first] = plain.split(',').map((x) => x.trim());
-  return first ? `${first} ${last}` : plain;
-}
+const NAME_KEY = (who) => `dir_name_v2_${who}`; // v2: exact directory display name
 
 /*
- * names: array of display names. Returns nameFor(name): the person's name as
- * the directory has it, or null until it is known (or if nobody matches).
+ * names: array of display names. Returns nameFor(name): the person's display
+ * name exactly as the directory has it, or null until it is known (or if
+ * nobody matches).
  */
 export function useDirectoryNames(names = []) {
   const { instance, accounts } = useMsal();
@@ -423,7 +415,7 @@ export function useDirectoryNames(names = []) {
       const results = await Promise.all(todo.map(async (who) => {
         try {
           const best = (await rankMatches(who, token))[0];
-          const name = best ? readableName(best.u) : null;
+          const name = best?.u.displayName || null;
           remember(NAME_KEY(who), name || NONE);
           return [who, name];
         } catch {
