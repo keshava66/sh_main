@@ -206,6 +206,7 @@ def main():
             close()
         except Exception:
             pass
+    _close_leftover_snowflake()
     fails = results.count("FAIL")
     warns = results.count("WARN")
     print(f"\n{len(results) - fails - warns} OK, {warns} WARN, {fails} FAIL")
@@ -465,6 +466,23 @@ def _session_history(sf_client):
         return {r[cols.index("QUERY_ID")]: dict(zip(cols, r)) for r in cur.fetchall()}
     finally:
         cur.close()
+
+
+def _close_leftover_snowflake():
+    """Anything still open (say a connection the explorer swapped out and
+    meant to close later) gets logged out now, not at interpreter exit."""
+    import gc
+    try:
+        from snowflake.connector import SnowflakeConnection
+    except ImportError:
+        return
+    for obj in gc.get_objects():
+        if isinstance(obj, SnowflakeConnection):
+            try:
+                if not obj.is_closed():
+                    obj.close()
+            except Exception:
+                pass
 
 
 def _close_explorer_snowflake():
