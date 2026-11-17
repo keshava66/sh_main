@@ -160,8 +160,10 @@ const CSS = `
 .sb:not(.open) .sb-skel { justify-content:center; padding:0; }
 .sb-skel i { display:block; border-radius:6px; background:#ece7e2; animation:sbBreath 1.4s ease-in-out infinite; }
 
-.sb-about { padding:8px 13px; border-top:1px solid #efeae6; }
-.sb-user { padding:12px 14px 14px; border-top:1px solid #efeae6; }
+.sb-about { padding:2px 13px 6px; }
+.sb-about .sb-link { height:34px; border-radius:10px; }
+.sb-about .sb-link.on { box-shadow:0 4px 10px -6px rgba(235,23,0,.55); }
+.sb-user { padding:8px 14px 10px; border-top:1px solid #efeae6; }
 .sb-ubtn { width:100%; display:flex; align-items:center; gap:10px; padding:6px; border-radius:14px; border:1px solid #ece7e2; background:#faf8f6;
   cursor:pointer; text-align:left; font:inherit; color:inherit; overflow:hidden; transition:border-color .25s, background-color .2s; }
 .sb:not(.open) .sb-ubtn { justify-content:center; }
