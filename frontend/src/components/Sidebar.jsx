@@ -114,8 +114,10 @@ const CSS = `
 .sb-panel { position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden; background:#fdfcfb;
   border-right:1px solid #d9d1ca; box-shadow:inset -1px 0 0 #fff, 1px 0 0 rgba(255,255,255,.9), 18px 0 36px -26px rgba(60,30,20,.3); }
 
-/* sits above the scrolling list, like About us at the bottom: tools slide under it */
-.sb-brand { position:relative; z-index:1; display:flex; align-items:center; height:60px; flex-shrink:0; padding:0 16px 0 18px; background:#fdfcfb; border-bottom:1px solid #efeae6; box-shadow:0 10px 18px -12px rgba(40,20,10,.28); }
+.sb-brand { position:relative; z-index:1; display:flex; align-items:center; height:60px; flex-shrink:0; padding:0 16px 0 18px; background:#fdfcfb;
+  border-bottom:1px solid transparent; transition:box-shadow .2s, border-color .2s; }
+/* the list slides under the logo and About us: a shadow shows only where something is hidden */
+.sb.sb-scrolled .sb-brand { border-bottom-color:#efeae6; box-shadow:0 8px 12px -10px rgba(40,20,10,.35); }
 .sb-brand img { display:block; user-select:none; }
 .sb-logo-full { height:38px; width:auto; }
 .sb-logo-mark { width:40px; height:40px; }
@@ -150,8 +152,8 @@ const CSS = `
 .sb:not(.open) .sb-skel { justify-content:center; padding:0; }
 .sb-skel i { display:block; border-radius:6px; background:#ece7e2; animation:sbBreath 1.4s ease-in-out infinite; }
 
-/* sits above the scrolling list: soft shadow on top so tools slide under it */
-.sb-about { position:relative; z-index:1; padding:6px 13px; background:#fdfcfb; border-top:1px solid #efeae6; box-shadow:0 -10px 18px -12px rgba(40,20,10,.28); }
+.sb-about { position:relative; z-index:1; padding:6px 13px; background:#fdfcfb; border-top:1px solid #efeae6; transition:box-shadow .2s; }
+.sb.sb-more .sb-about { box-shadow:0 -8px 12px -10px rgba(40,20,10,.35); }
 .sb-about .sb-link { height:34px; border-radius:10px; }
 .sb-about .sb-link.on { box-shadow:0 4px 10px -6px rgba(235,23,0,.55); }
 .sb-user { padding:12px 14px 14px; border-top:1px solid #efeae6; }
@@ -288,6 +290,24 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
 
   const toggle = useCallback(() => setOwnOpen((o) => !o), []);
 
+  // Mark which ends of the list have tools hidden under them (drives the shadows)
+  const markEdges = useCallback(() => {
+    const nav = navRef.current;
+    const aside = asideRef.current;
+    if (!nav || !aside) return;
+    aside.classList.toggle("sb-scrolled", nav.scrollTop > 1);
+    aside.classList.toggle("sb-more", nav.scrollTop + nav.clientHeight < nav.scrollHeight - 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    markEdges();
+    const nav = navRef.current;
+    if (!nav) return undefined;
+    const ro = new ResizeObserver(markEdges);
+    ro.observe(nav);
+    return () => ro.disconnect();
+  }, [markEdges, open, rbacLoading]);
+
   // [ toggles, Escape dismisses.
   useEffect(() => {
     const onKey = (e) => {
@@ -392,7 +412,7 @@ const Sidebar = ({ showUserMenu = false, showLogo = true, expanded }) => {
           </div>
         )}
 
-        <nav className="sb-nav" ref={navRef} onScroll={fly ? closeFly : undefined}>
+        <nav className="sb-nav" ref={navRef} onScroll={() => { if (fly) closeFly(); markEdges(); }}>
           {rbacLoading && (
             <div className="sb-group" aria-hidden="true">
               {Array.from({ length: 6 }, (_, i) => (
