@@ -1372,7 +1372,11 @@ export default function ITChecksView({
         // Looking at all runs combined: pull the new results in straight away.
         toast('ok', 'Validation complete', 'Results saved to Snowflake. Loading the latest results…');
         onLoadRuns(null);
-      } else toast('ok', 'Validation complete', 'Results saved to Snowflake. Pick “All runs combined” or the new run to see them.');
+      } else {
+        // Looking at picked runs: keep them, but refresh the run list so the new run shows up in the picker.
+        toast('ok', 'Validation complete', 'Results saved to Snowflake. Pick “All runs combined” or the new run to see them.');
+        onLoadRuns(appliedRuns, true);
+      }
       setRun((r) => (r ? { ...r, min: false, stopping: false } : r));
     }
     wasRunning.current = runActive;

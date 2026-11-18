@@ -437,7 +437,7 @@ function DataQualityEngine() {
   const resetState = useCallback(() => setSearchParams({}), [setSearchParams]);
 
   // Loads IT Checks results. loadDates: null = all runs, string[] = those runs.
-  const loadReport = useCallback(async (loadDates = null) => {
+  const loadReport = useCallback(async (loadDates = null, refreshRuns = false) => {
     const dates = Array.isArray(loadDates) ? loadDates : loadDates ? [loadDates] : [];
     loadedKeyRef.current = dates.join('|');
     const seq = ++loadSeq.current;
@@ -445,7 +445,7 @@ function DataQualityEngine() {
     setIsLoading(true); setLoadError('');
     // The run list and the report don't depend on each other, so fetch both at once.
     // The run list is best-effort: if it fails the report still shows.
-    if (!dates.length || !availableRunsRef.current.length) {
+    if (!dates.length || refreshRuns || !availableRunsRef.current.length) {
       setRunsLoading(true);
       apiFetch(`/dq/validation_report_dates`)
         .then(r => (r.ok ? r.json() : null))
