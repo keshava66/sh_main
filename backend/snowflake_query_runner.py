@@ -1299,7 +1299,12 @@ def build_where(filters: Optional[List[ColumnFilter]], valid_columns: Optional[L
                 clauses.append(f"{col} IS NOT NULL")
                 continue
             # Compared as text so the same filter works against any column type
-            # without the caller having to know the column's declared type.
+            # without the caller having to know the column's declared type. A
+            # number in a range filter is compared as a number, or 9 sorts after 10.
+            if op in ("gt", "gte", "lt", "lte") and re.match(r"^\s*[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?\s*$", str(f.value or "")):
+                clauses.append(f"TRY_TO_DOUBLE(TO_VARCHAR({col})) {sql_op} ?")
+                params.append(float(str(f.value).strip()))
+                continue
             clauses.append(f"TO_VARCHAR({col}) {sql_op} ?")
             params.append("" if f.value is None else str(f.value))
     if not clauses:
@@ -1432,11 +1437,19 @@ def _get_job(job_id: str, owner: Optional[str] = None, shared: bool = False) -> 
     return _touch(job)
 
 
+# Statements that change the session itself. A connection that ran one is
+# closed instead of going back to the pool, or the next person's query (any
+# user) would run with this one's role, database, settings or open transaction.
+_SESSION_CHANGE = re.compile(r"^\s*(USE|ALTER\s+SESSION|SET|UNSET|BEGIN|START\s+TRANSACTION|CALL|EXECUTE\s+IMMEDIATE|DECLARE)\b", re.IGNORECASE)
+
+
 def _close_job(job: Dict[str, Any]):
     """Hand the job's connection back to the pool so the next query reuses the
     warm session instead of logging in again."""
     conn = job.get("conn")
-    if conn is not None:
+    if conn is not None and job.get("dirty_session"):
+        _quiet_close(conn)
+    elif conn is not None:
         _pool.release(conn, job.get("pool_key") or _ConnectionPool._key(job["database"], job["schema"], job["warehouse"], job["profile"]),
                       job.get("pool_created") or time.time())
     job["conn"] = None
@@ -1776,6 +1789,25 @@ class RowsRequest(BaseModel):
     page_size: int = 100
     sort: Optional[List[Dict[str, str]]] = None
     filters: Optional[List[ColumnFilter]] = None
+
+
+class CellRequest(RowsRequest):
+    """One cell of a page the grid already showed: the page as it was asked
+    for (same sort and filters), the row's place on it and the column."""
+    index: int = Field(..., ge=0)
+    column: str
+
+
+CELL_FULL_MAX_CHARS = 10_000_000      # "Load full value" in the grid; bigger than this, download the result
+
+
+def full_cell(v) -> Dict[str, Any]:
+    """A cell for the cell viewer: the whole value, up to CELL_FULL_MAX_CHARS."""
+    if isinstance(v, (dict, list)):
+        v = json.dumps(v, default=str, ensure_ascii=False)
+    if isinstance(v, str) and len(v) > CELL_FULL_MAX_CHARS:
+        return {"value": v[:CELL_FULL_MAX_CHARS], "truncated": True, "size": len(v)}
+    return {"value": v, "truncated": False}
 
 
 class TableRowsRequest(BaseModel):
@@ -2579,6 +2611,7 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
     job["statements"] = planned
     job["statement_results"] = []
     job["profile"] = profile
+    job["dirty_session"] = any(_SESSION_CHANGE.search(_strip_sql_comments(p["sql"])) for p in planned)
     job["shared_ws"] = body.shared_ws
     job["is_destructive"] = bool(risky)
     if len(planned) > 1:
@@ -2653,6 +2686,28 @@ def get_query_status(job_id: str, wait_ms: int = Query(0, ge=0, le=15000),
         _touch(job)
     _record_history_once(job["owner"] or auth["user"]["email"], job)   # the runner's history, whoever asks first
     return _job_status_payload(job)
+
+
+# What the grid gets of one value. A file in a BINARY / bytea column, or a
+# document in a text or JSON column, can be megabytes; a page of a hundred of
+# those froze (or crashed) the browser. The grid gets a short preview and the
+# full size; downloads still get every byte.
+CELL_MAX_CHARS = 20_000
+CELL_PREVIEW_CHARS = 2_000
+
+
+def grid_cell(v):
+    if isinstance(v, str):
+        return {"$truncated": True, "preview": v[:CELL_PREVIEW_CHARS], "size": len(v)} if len(v) > CELL_MAX_CHARS else v
+    if isinstance(v, (dict, list)):
+        text = json.dumps(v, default=str, ensure_ascii=False)
+        if len(text) > CELL_MAX_CHARS:
+            return {"$truncated": True, "preview": text[:CELL_PREVIEW_CHARS], "size": len(text)}
+    return v
+
+
+def grid_rows(rows):
+    return [[grid_cell(v) for v in r] for r in rows]
 
 
 def _paged_inline(job: Dict[str, Any], body: RowsRequest):
@@ -2757,7 +2812,7 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(sf_auth)
         rows, total = _paged_inline(job, body)
         return {
             "columns": job["columns"],
-            "rows": rows,
+            "rows": grid_rows(rows),
             "page": page,
             "page_size": page_size,
             "total_rows": total,
@@ -2781,7 +2836,7 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(sf_auth)
                 f"SELECT * FROM {base}{where_sql}{order_sql} LIMIT {page_size} OFFSET {offset}",
                 (job["query_id"], *where_params),
             )
-            return [[_to_json_safe(v) for v in r] for r in cur.fetchall()], total
+            return grid_rows([[_to_json_safe(v) for v in r] for r in cur.fetchall()]), total
         finally:
             try:
                 cur.close()
@@ -2832,6 +2887,56 @@ def _friendly_result_scan_error(e: Exception) -> str:
     if "does not exist" in text.lower() and "result" in text.lower():
         return "This result set has expired in Snowflake (results are kept for 24 hours). Re-run the query."
     return f"Failed to fetch rows: {text}"
+
+
+@snowflake_router.post("/query/{job_id}/cell")
+def get_query_cell(job_id: str, body: CellRequest, auth: dict = Depends(sf_auth)):
+    """The whole value of one cell the grid could only show the start of."""
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
+    _touch(job)
+    if job["status"] != "success" or not job["returns_rows"]:
+        raise HTTPException(status_code=409, detail="This result is not available any more. Run the query again.")
+    names = [c["name"] for c in job["columns"]]
+    if body.column not in names:
+        raise HTTPException(status_code=400, detail=f"Unknown column '{body.column}'")
+    size = max(1, min(int(body.page_size), ROWS_PAGE_MAX_SIZE))
+    if job["inline_rows"] is not None:
+        rows, _ = _paged_inline(job, body.model_copy(update={"page_size": size}))
+        if body.index >= len(rows):
+            raise HTTPException(status_code=404, detail="That row is no longer on this page")
+        return full_cell(rows[body.index][names.index(body.column)])
+    where_sql, where_params = build_where(body.filters, names)
+    order_sql = build_order_by(body.sort, names)
+    offset = (max(1, int(body.page)) - 1) * size + body.index
+
+    def scan(conn):
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT {quote_ident(body.column)} FROM ({_result_scan_sql(job['query_id'])}){where_sql}{order_sql} LIMIT 1 OFFSET {offset}",
+                (job["query_id"], *where_params))
+            got = cur.fetchone()
+        finally:
+            cur.close()
+        if got is None:
+            raise HTTPException(status_code=404, detail="That row is no longer on this page")
+        return full_cell(_to_json_safe(got[0]))
+
+    with job["job_lock"]:
+        try:
+            return scan(_job_connection(job))
+        except HTTPException:
+            raise
+        except Exception as first:
+            if not _looks_stale(first):
+                raise HTTPException(status_code=500, detail=_friendly_result_scan_error(first))
+            _drop_job_connection(job)
+            try:
+                return scan(_job_connection(job))
+            except HTTPException:
+                raise
+            except Exception as second:
+                raise HTTPException(status_code=500, detail=_friendly_result_scan_error(second))
 
 
 @snowflake_router.post("/query/{job_id}/cancel")
@@ -3234,7 +3339,7 @@ def table_rows(body: TableRowsRequest, conn_id: Optional[str] = Query(None), rol
                     tuple(where_params),
                 )
                 result_columns = _describe_columns(cur)
-                rows = [[_to_json_safe(v) for v in r] for r in cur.fetchall()]
+                rows = grid_rows([[_to_json_safe(v) for v in r] for r in cur.fetchall()])
             finally:
                 cur.close()
     except HTTPException:
@@ -4907,7 +5012,7 @@ def cancel_copy(job_id: str, auth: dict = Depends(sf_auth)):
 
 @snowflake_router.delete("/copy/{job_id}")
 def close_copy(job_id: str, auth: dict = Depends(sf_auth)):
-    job = _get_copy_job(job_id, auth["user"]["email"])
+    _get_copy_job(job_id, auth["user"]["email"])     # 404 unless it's yours
     with _copy_jobs_lock:
         _copy_jobs.pop(job_id, None)
     return {"job_id": job_id, "status": "closed"}

@@ -28,7 +28,7 @@ import shared_worksheets
 from auth import require_permission
 from snowflake_query_runner import (
     ALL_OPS, EXPORT_FORMATS, ROWS_PAGE_MAX_SIZE, SET_OPS, TEXT_OPS,
-    ColumnFilter, MutateRequest, RowsRequest, SavedQueryRequest, TableRowsRequest,
+    CELL_MAX_CHARS, CELL_PREVIEW_CHARS, CellRequest, ColumnFilter, full_cell, MutateRequest, RowsRequest, SavedQueryRequest, TableRowsRequest, grid_rows,
     _DuplicateRow, _MutationMismatch, _statement_result, confirm_detail, failed_at, numbered_sections, plan_statements, _cache_drop_prefix, _cache_get, _cache_set,
     _change_summary, _dedupe_columns, _key_columns_for, _paged_inline, _parse_json_param,
     _stream_rows, build_order_by, qualified, quote_ident,
@@ -245,6 +245,15 @@ def _http_error(e: Exception, what: str) -> HTTPException:
 # Filters (same contract as the Snowflake pane, Postgres SQL)
 # ============================================================================
 
+RANGE_OPS = {"gt", "gte", "lt", "lte"}
+NUMBER_RE = r"^\s*[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?\s*$"
+
+
+def _is_number(v) -> bool:
+    import re
+    return v is not None and not isinstance(v, bool) and re.match(NUMBER_RE, str(v)) is not None
+
+
 def build_where(filters: Optional[List[ColumnFilter]], valid_columns: Optional[List[str]] = None):
     if not filters:
         return "", []
@@ -286,8 +295,13 @@ def build_where(filters: Optional[List[ColumnFilter]], valid_columns: Optional[L
                 clauses.append(f"{col} IS {'' if op == 'eq' else 'NOT '}NULL")
                 continue
             sql_op = {"eq": "=", "neq": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-            clauses.append(f"{text} {sql_op} ?")
-            params.append(str(f.value))
+            if op in RANGE_OPS and _is_number(f.value):
+                # A number compared as text puts 9 after 10; compare as numbers.
+                # Values that aren't numbers (text in a text column) just don't match.
+                clauses.append(f"(CASE WHEN {text} ~ '{NUMBER_RE}' THEN CAST({text} AS numeric) END) {sql_op} CAST(? AS numeric)")
+            else:
+                clauses.append(f"{text} {sql_op} ?")
+            params.append(str(f.value).strip() if op in RANGE_OPS else str(f.value))
     return (" WHERE " + " AND ".join(clauses), params) if clauses else ("", [])
 
 
@@ -413,8 +427,22 @@ def _object_ddl(database: str, schema: str, name: str, conn_id: Optional[str] = 
 # ============================================================================
 
 SESSION_IDLE_SECONDS = 20 * 60
+SESSION_WAIT_SECONDS = 120          # a run waits this long for a download on the same worksheet
+
+
+class _Held:
+    """Releases a lock that was already acquired, on the way out of a with block."""
+    def __init__(self, lock):
+        self.lock = lock
+
+    def __enter__(self):
+        return self.lock
+
+    def __exit__(self, *exc):
+        self.lock.release()
 
 _executor = ThreadPoolExecutor(max_workers=32, thread_name_prefix="pgstudio")
+_search_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pgstudio-search")   # table search, one task per database
 _slots = threading.Semaphore(pgqr.DEFAULT_MAX_CONCURRENT_JOBS)
 _slots_size = pgqr.DEFAULT_MAX_CONCURRENT_JOBS
 _slots_lock = threading.Lock()
@@ -437,7 +465,7 @@ def _resize_slots(n: int):
 
 def _new_session(key: Optional[str], database: str, conn_id: Optional[str]) -> Dict[str, Any]:
     return {"key": key, "database": database, "conn_id": conn_id, "conn": None, "temp": None,
-            "lock": threading.Lock(), "last_used": time.time()}
+            "lock": threading.Lock(), "last_used": time.time(), "job": None}
 
 
 def _session_for(owner: str, session_id: Optional[str], database: str, conn_id: str) -> Dict[str, Any]:
@@ -527,6 +555,29 @@ def _type_names(cur, oids) -> Dict[int, str]:
     return {int(o): t for o, t in cur.fetchall()}
 
 
+def _user_error(e: Exception, sql: str, prefix: Optional[str]) -> str:
+    """Postgres error text for a statement we wrapped (SELECT * FROM (...)),
+    pointing at the person's own SQL instead of the wrapper around it."""
+    msg = str(e).strip()
+    diag = getattr(e, "diag", None)
+    pos = getattr(diag, "statement_position", None) if diag else None
+    if not prefix or not pos or not getattr(diag, "message_primary", None):
+        return msg
+    p = int(pos) - len(prefix)                 # 1-based, in the person's SQL
+    if p < 1 or p > len(sql) + 1:
+        return diag.message_primary
+    line_start = sql.rfind("\n", 0, p - 1) + 1
+    line_end = sql.find("\n", line_start)
+    line = sql[line_start:line_end if line_end >= 0 else len(sql)]
+    lead = f"LINE {sql.count(chr(10), 0, p - 1) + 1}: "
+    out = [diag.message_primary, lead + line, " " * (len(lead) + p - 1 - line_start) + "^"]
+    if getattr(diag, "message_detail", None):
+        out.append(f"DETAIL:  {diag.message_detail}")
+    if getattr(diag, "message_hint", None):
+        out.append(f"HINT:  {diag.message_hint}")
+    return "\n".join(out)
+
+
 def _in_failed_transaction(conn) -> bool:
     import psycopg2.extensions as ext
     return conn.info.transaction_status == ext.TRANSACTION_STATUS_INERROR
@@ -538,6 +589,7 @@ def _run_last(job: Dict[str, Any], cur, st: Dict[str, Any]):
     use_temp = c.returns_rows and c.cursorable
     if use_temp:
         # Newline before ')' so a trailing -- comment can't eat it.
+        job["_wrap"] = "SELECT * FROM ("
         cur.execute(f"SELECT * FROM ({sql}\n) AS _q LIMIT 0")
         desc = cur.description
         # A void column (SELECT pg_sleep(1)) can't go in a table, so that result is read inline.
@@ -548,11 +600,9 @@ def _run_last(job: Dict[str, Any], cur, st: Dict[str, Any]):
         tmp = f"_sh_result_{job['job_id'][:16]}"
         # ponytail: the whole result is copied into a temp table, same as Snowflake keeping it for
         # RESULT_SCAN. A 100M row SELECT costs that much temp space; add a row cap here if it bites.
-        cur.execute(
-            f"CREATE TEMP TABLE {quote_ident(tmp)} AS "
-            f"SELECT row_number() OVER () AS {quote_ident(RN)}, _q.* "
-            f"FROM ({sql}\n) AS _q({', '.join(quote_ident(n) for n in names)})"
-        )
+        job["_wrap"] = f"CREATE TEMP TABLE {quote_ident(tmp)} AS SELECT row_number() OVER () AS {quote_ident(RN)}, _q.* FROM ("
+        cur.execute(f"{job['_wrap']}{sql}\n) AS _q({', '.join(quote_ident(n) for n in names)})")
+        job["_wrap"] = None
         job["session"]["temp"] = job["temp_table"] = tmp
         count = cur.rowcount
         if count is None or count < 0:
@@ -566,6 +616,7 @@ def _run_last(job: Dict[str, Any], cur, st: Dict[str, Any]):
         job["columns"] = [{"name": n, "type": t, "display_type": t} for n, t in cur.fetchall()]
         job["row_count"] = int(count)
     elif c.returns_rows:
+        job["_wrap"] = None
         cur.execute(sql)
         if cur.description is None:
             raise ValueError("The statement returned no result set")
@@ -576,6 +627,7 @@ def _run_last(job: Dict[str, Any], cur, st: Dict[str, Any]):
         job["inline_rows"] = [[_safe(v) for v in r] for r in rows]
         job["row_count"] = len(job["inline_rows"])
     else:
+        job["_wrap"] = None
         cur.execute(sql)
         job["rows_affected"] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
         job["columns"] = []
@@ -589,8 +641,20 @@ def _run_job(job_id: str):
     s = job["session"]
     planned = job["statements"]
     k = 0
-    with s["lock"]:
+    # Something else on this worksheet's connection (a page of rows, a
+    # download) finishes first. Never wait forever on it.
+    if not s["lock"].acquire(timeout=SESSION_WAIT_SECONDS):
+        job.update(status="failed", error="This worksheet's connection is still busy (a download may be in progress). Try again in a moment.",
+                   finished_at=time.time())
+        if s["job"] is job:
+            s["job"] = None
+        job["done"].set()
+        _slots.release()
+        return
+    with _Held(s["lock"]):
         try:
+            if job["cancel_requested"]:
+                raise _Cancelled()      # cancelled before it got the connection
             if s["conn"] is None or s["conn"].closed:
                 s["conn"], s["temp"] = _connect(job["database"], s["conn_id"]), None
             conn = job["conn"] = s["conn"]
@@ -607,9 +671,11 @@ def _run_job(job_id: str):
                         c = st["cls"]
                         if c.returns_rows and c.cursorable:
                             # Counted, not fetched, so a big SELECT mid-script never lands in API memory.
+                            job["_wrap"] = "SELECT count(*) FROM ("
                             cur.execute(f"SELECT count(*) FROM ({st['sql']}\n) AS _q")
                             extra = {"row_count": cur.fetchone()[0]}
                         else:
+                            job["_wrap"] = None
                             cur.execute(st["sql"])
                             extra = {"rows_affected": max(cur.rowcount or 0, 0)}
                     else:
@@ -629,10 +695,13 @@ def _run_job(job_id: str):
                 else:
                     job.update(status="failed", error=failed_at(f"Query timed out after {job['timeout_seconds']}s", planned, k))
             else:
-                job.update(status="failed", error=failed_at(str(e).strip(), planned, k))
+                text = _user_error(e, planned[k]["sql"], job.get("_wrap")) if k < len(planned) else str(e).strip()
+                job.update(status="failed", error=failed_at(text, planned, k))
             if s["conn"] is not None and s["conn"].closed:
                 s["conn"], s["temp"] = None, None
         finally:
+            if s["job"] is job:
+                s["job"] = None
             job["finished_at"] = time.time()
             if s["key"] is None and (not job.get("temp_table") or job["status"] != "success" or job.get("closed")):
                 _quiet_close(s["conn"])
@@ -670,12 +739,49 @@ def _result_conn(job: Dict[str, Any]):
     return s["conn"]
 
 
-def _result_sql(job, sort, filters):
+_BIG_BYTES = {"bytea", "text", "character varying", "varchar", "character", "bpchar"}
+_BIG_OTHER = {"json", "jsonb", "xml"}
+
+
+def _grid_columns(columns, type_key: str) -> str:
+    """Select list for a page of the grid. A value bigger than the grid shows
+    is not read out at all (a 50 MB file in a bytea column would otherwise come
+    into API memory and then the browser): it comes back as NULL plus, at the
+    end of the row, its size and the start of its text. _grid_fix puts that in
+    its place. Downloads use the plain column list and get every byte."""
+    plain, extra = [], []
+    for i, c in enumerate(columns):
+        q = quote_ident(c["name"])
+        base = (c.get(type_key) or "").split("(")[0].strip().lower()
+        if base in _BIG_BYTES or base in _BIG_OTHER or base.endswith("[]"):
+            size = f"octet_length({q})" if base in _BIG_BYTES else f"pg_column_size({q})"
+            plain.append(f"CASE WHEN {size} > {CELL_MAX_CHARS} THEN NULL ELSE {q} END AS {q}")
+            extra.append(f"CASE WHEN {size} > {CELL_MAX_CHARS} THEN json_build_array({i}, {size}, "
+                         f"left(CAST({q} AS text), {CELL_PREVIEW_CHARS}))::text END")
+        else:
+            plain.append(q)
+    return ", ".join(plain + extra)
+
+
+def _grid_fix(raw_rows, ncols: int):
+    """Rows from a _grid_columns select, back to one value per column."""
+    out = []
+    for r in raw_rows:
+        row = [_safe(v) for v in r[:ncols]]
+        for big in r[ncols:]:
+            if big:
+                i, size, preview = json.loads(big)
+                row[i] = {"$truncated": True, "preview": preview, "size": size}
+        out.append(row)
+    return grid_rows(out)
+
+
+def _result_sql(job, sort, filters, grid: bool = False):
     names = [c["name"] for c in job["columns"]]
     where, params = build_where(filters, names)
     order = build_order_by(sort, names)
     order = f"{order}, {quote_ident(RN)}" if order else f" ORDER BY {quote_ident(RN)}"
-    cols = ", ".join(quote_ident(n) for n in names)
+    cols = _grid_columns(job["columns"], "type") if grid else ", ".join(quote_ident(n) for n in names)
     return f"SELECT {cols} FROM {quote_ident(job['temp_table'])}", where, order, params
 
 
@@ -846,6 +952,62 @@ def list_tables(database: str = Query(...), schema: str = Query(...), bypass_cac
     return payload
 
 
+@pg_studio_router.get("/search-tables")
+def search_tables(q: str = Query(..., min_length=2, max_length=100), limit: int = Query(100, ge=1, le=500),
+                  conn_id: Optional[str] = Query(None), auth: dict = Depends(require_permission(PERM))):
+    """Tables and views whose name has every word of q, in every database this
+    login can connect to (the explorer's search box). Same answer shape as the
+    Snowflake pane's search."""
+    cfg = _cfg(conn_id)
+    words = [w for w in q.lower().replace(".", " ").split() if w][:5]
+    if not words:
+        return {"results": [], "total": 0}
+    key = f"pg-search:{cfg['conn_id']}:{' '.join(words)}"
+    if (cached := _cache_get(key)) is not None:
+        return {**cached, "results": cached["results"][:limit]}
+
+    pattern = lambda w: "%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    where = " AND ".join("c.relname ILIKE %s" for _ in words)
+
+    def in_db(database):
+        def read(cur):
+            cur.execute(
+                f"""SELECT n.nspname, c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition
+                      AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%%'
+                      AND has_schema_privilege(n.oid, 'USAGE') AND {where}
+                    ORDER BY c.relname LIMIT 200""",
+                tuple(pattern(w) for w in words))
+            return [(database, sch, name, "view" if kind in ("v", "m") else "table") for sch, name, kind in cur.fetchall()]
+        # Its own short connection, not the pool: the pool keeps idle
+        # connections per database, and a search touches every database.
+        conn = None
+        try:
+            conn = _connect(database, cfg["conn_id"])
+            with conn.cursor() as cur:
+                return read(cur)
+        except Exception as e:      # a database we can list but not read: skip it
+            logger.info("Table search skipped %s: %s", database, getattr(e, "detail", e))
+            return []
+        finally:
+            _quiet_close(conn)
+
+    dbs = list_databases(conn_id=conn_id, auth=auth)["databases"][:60]
+    hits = [h for part in _search_pool.map(in_db, dbs) for h in part]
+    first = words[0]
+    # Names that start with what was typed first, then shorter names.
+    hits.sort(key=lambda h: (not h[2].lower().startswith(first), len(h[2]), h[0], h[1], h[2]))
+    payload = {"results": [{"database": d, "schema": sc, "name": n, "kind": k} for d, sc, n, k in hits[:500]], "total": len(hits)}
+    _cache_set(key, payload)
+    return {**payload, "results": payload["results"][:limit]}
+
+
+@pg_studio_router.post("/search-tables/warm")
+def warm_search(force: bool = Query(False), conn_id: Optional[str] = Query(None), auth: dict = Depends(require_permission(PERM))):
+    """Nothing to build ahead of time on Postgres; kept so the pane can call it on either engine."""
+    return {"ok": True}
+
+
 @pg_studio_router.get("/columns")
 def list_columns(database: str = Query(...), schema: str = Query(...), table: str = Query(...),
                  bypass_cache: bool = Query(False), conn_id: Optional[str] = Query(None),
@@ -888,8 +1050,20 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
         shared_worksheets.require_editor(body.shared_ws, "postgres", owner)
     database = body.database or cfg["default_database"]
     session = _session_for(owner, body.session_id, database, cfg["conn_id"])
-    if session["lock"].locked():
-        raise HTTPException(status_code=409, detail="This worksheet is still running something. Cancel it or wait for it to finish.")
+    # Busy means a run in progress. A page read, download or the close of the
+    # last result holds the lock only for a moment; the new run waits for it.
+    running = session.get("job")
+    if running:
+        # Cancelled a moment ago and still winding down: give it a few seconds.
+        if running["cancel_requested"]:
+            running["done"].wait(5)
+        running = session.get("job")
+        if running:
+            raise HTTPException(status_code=409, detail={
+                "message": "This worksheet is still running a query (perhaps from before the page was reloaded). "
+                           "Cancel it, or wait for it to finish.",
+                "running_job_id": running["job_id"] if running and running["owner"] == owner else None,
+            })
     if not _slots.acquire(blocking=False):
         raise HTTPException(status_code=429, detail=f"Too many queries already running (max {cfg['max_concurrent_jobs']} concurrent). Cancel one or wait for it to finish.")
 
@@ -917,6 +1091,7 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
     }
     with _jobs_lock:
         _jobs[job["job_id"]] = job
+    session["job"] = job        # busy from now, not from when the thread gets going
     _executor.submit(_run_job, job["job_id"])
     if body.shared_ws:
         shared_worksheets.note_run(body.shared_ws, auth, job["job_id"], job["sql"])
@@ -961,8 +1136,9 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(require_
 
     if job["inline_rows"] is not None:
         rows, total = _paged_inline(job, body)
+        rows = grid_rows(rows)
     else:
-        select, where, order, params = _result_sql(job, body.sort, body.filters)
+        select, where, order, params = _result_sql(job, body.sort, body.filters, grid=True)
         with job["session"]["lock"]:
             try:
                 with _result_conn(job).cursor() as cur:
@@ -971,7 +1147,7 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(require_
                         cur.execute(_ps(f"SELECT COUNT(*) FROM {quote_ident(job['temp_table'])}{where}"), tuple(params))
                         total = int(cur.fetchone()[0])
                     cur.execute(_ps(f"{select}{where}{order} LIMIT {size} OFFSET {(page - 1) * size}"), tuple(params))
-                    rows = [[_safe(v) for v in r] for r in cur.fetchall()]
+                    rows = _grid_fix(cur.fetchall(), len(job["columns"]))
             except HTTPException:
                 raise
             except Exception as e:
@@ -980,6 +1156,68 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(require_
         "columns": job["columns"], "rows": rows, "page": page, "page_size": size,
         "total_rows": total, "total_pages": max(1, -(-total // size)) if total else 1,
     }
+
+
+@pg_studio_router.post("/query/{job_id}/cell")
+def get_query_cell(job_id: str, body: CellRequest, auth: dict = Depends(require_permission(PERM))):
+    """The whole value of one cell the grid could only show the start of."""
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
+    if job["status"] != "success" or not job["returns_rows"]:
+        raise HTTPException(status_code=409, detail="This result is not available any more. Run the query again.")
+    names = [c["name"] for c in job["columns"]]
+    if body.column not in names:
+        raise HTTPException(status_code=400, detail=f"Unknown column '{body.column}'")
+    size = max(1, min(int(body.page_size), ROWS_PAGE_MAX_SIZE))
+    if job["inline_rows"] is not None:
+        rows, _ = _paged_inline(job, body.model_copy(update={"page_size": size}))
+        if body.index >= len(rows):
+            raise HTTPException(status_code=404, detail="That row is no longer on this page")
+        return full_cell(rows[body.index][names.index(body.column)])
+    _, where, order, params = _result_sql(job, body.sort, body.filters)
+    offset = (max(1, int(body.page)) - 1) * size + body.index
+    with job["session"]["lock"]:
+        try:
+            with _result_conn(job).cursor() as cur:
+                cur.execute(_ps(f"SELECT {quote_ident(body.column)} FROM {quote_ident(job['temp_table'])}{where}{order} LIMIT 1 OFFSET {offset}"),
+                            tuple(params))
+                got = cur.fetchone()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read the value: {e}")
+    if got is None:
+        raise HTTPException(status_code=404, detail="That row is no longer on this page")
+    return full_cell(_safe(got[0]))
+
+
+class TableCellRequest(BaseModel):
+    database: str
+    schema_: str = Field(..., alias="schema")
+    table: str
+    key: Dict[str, Any]            # the row's primary key values, as the grid shows them
+    column: str
+
+    model_config = {"populate_by_name": True}
+
+
+@pg_studio_router.post("/table/cell")
+def table_cell(body: TableCellRequest, conn_id: Optional[str] = Query(None), auth: dict = Depends(require_permission(PERM))):
+    """The whole value of one cell in the data editor, found by primary key."""
+    cfg = _cfg(conn_id)
+    columns = _fetch_columns(body.database, body.schema_, body.table, conn_id=cfg["conn_id"])
+    by_name = {c["name"]: c for c in columns}
+    pk = [c["name"] for c in columns if c["is_primary_key"]]
+    if not pk:
+        raise HTTPException(status_code=400, detail="This table has no primary key, so a single row can't be found. Download the result instead.")
+    if body.column not in by_name:
+        raise HTTPException(status_code=400, detail=f"Unknown column '{body.column}'")
+    where, params = _where_for_row(body.key, pk, by_name)
+    with _pooled(body.database, cfg["conn_id"]) as conn, conn.cursor() as cur:
+        cur.execute(_ps(f"SELECT {quote_ident(body.column)} FROM {qualified(None, body.schema_, body.table)} WHERE {where} LIMIT 2"), tuple(params))
+        got = cur.fetchall()
+    if len(got) != 1:
+        raise HTTPException(status_code=404, detail="That row is no longer in the table")
+    return full_cell(_safe(got[0][0]))
 
 
 @pg_studio_router.post("/query/{job_id}/cancel")
@@ -1158,8 +1396,8 @@ def table_rows(body: TableRowsRequest, conn_id: Optional[str] = Query(None), aut
     count_future = _executor.submit(count_rows) if body.exact_count else None
     try:
         with _pooled(body.database, conn_id) as conn, conn.cursor() as cur:
-            cur.execute(_ps(f"SELECT * FROM {target}{where}{order} LIMIT {size} OFFSET {(page - 1) * size}"), tuple(params))
-            rows = [[_safe(v) for v in r] for r in cur.fetchall()]
+            cur.execute(_ps(f"SELECT {_grid_columns(columns, 'data_type')} FROM {target}{where}{order} LIMIT {size} OFFSET {(page - 1) * size}"), tuple(params))
+            rows = _grid_fix(cur.fetchall(), len(columns))
     except Exception as e:
         if count_future:
             count_future.cancel()
@@ -1396,6 +1634,16 @@ def _selfcheck():
     assert _ps("SELECT ? FROM \"a?%\" WHERE x LIKE '5%'") == "SELECT %s FROM \"a?%%\" WHERE x LIKE '5%%'"
     w, p = build_where([ColumnFilter(col="n", op="contains", value="50%")], ["n"])
     assert w == ' WHERE CAST("n" AS text) ILIKE ?' and p == ["%50\\%%"], (w, p)
+    w, p = build_where([ColumnFilter(col="n", op="gt", value=" 9 ")], ["n"])
+    assert "CAST(? AS numeric)" in w and p == ["9"], (w, p)
+    w, p = build_where([ColumnFilter(col="n", op="gt", value="b")], ["n"])
+    assert w == ' WHERE CAST("n" AS text) > ?', w
     assert _bind([1, None, "a\"b"], "text[]") == '{"1",NULL,"a\\"b"}'
     assert _bind("[1,2]", "integer[]") == '{"1","2"}'
+    class _Diag:
+        statement_position, message_primary, message_detail, message_hint = "35", 'syntax error at or near "frm"', None, None
+    err = Exception("x")
+    err.diag = _Diag()
+    assert _user_error(err, "select 1,\nselect * frm t", "SELECT * FROM (").splitlines() == [
+        'syntax error at or near "frm"', "LINE 2: select * frm t", "                 ^"], _user_error(err, "select 1,\nselect * frm t", "SELECT * FROM (")
     print("ok")

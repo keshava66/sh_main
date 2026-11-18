@@ -74,6 +74,7 @@ const fmtMs = (ms) => {
 };
 
 const fmtN = (n) => (n ?? 0).toLocaleString();
+const fmtStat = (n) => (Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 4 }));
 
 const plural = (n, word) => `${fmtN(n)} ${word}${n === 1 ? '' : 's'}`;
 
@@ -177,6 +178,7 @@ function displayType(col) {
 
 function typeFamily(t) {
   const u = (t || '').toUpperCase();
+  if (/\[\]$/.test(u)) return 'vec';      // Postgres arrays (integer[] is a list, not a number)
   if (/^(NUMBER|FLOAT|FIXED|REAL|DECIMAL|NUMERIC|INT|INTEGER|BIGINT|SMALLINT|TINYINT|BYTEINT|DOUBLE)/.test(u)) return 'num';
   if (/^(DATE|TIME|TIMESTAMP|DATETIME)/.test(u)) return 'time';
   if (/^BOOL/.test(u)) return 'bool';
@@ -650,27 +652,71 @@ function SqlCode({ sql, className = '', theme = 'light', format = true }) {
   );
 }
 
-function TextModal({ title, subtitle, body, onClose, mono = true, sql = false }) {
+const SHOW_MAX = 2_000_000;    // characters drawn in the viewer; Copy and Download get all of it
+
+// Text viewer (DDL, a cell). For a cell the grid only had the start of,
+// loadFull fetches the whole value: shown pretty-printed when it is JSON,
+// and it can be copied or saved as a file.
+function TextModal({ title, subtitle, body, onClose, mono = true, sql = false, loadFull, fileName }) {
   const [copied, setCopied] = useState(false);
+  const [full, setFull] = useState(null);       // { text, truncated, size } | { error }
+  const [loading, setLoading] = useState(false);
+  useEffect(() => { setFull(null); setLoading(false); }, [title, body]);
+  const text = full?.text ?? body ?? '';
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(body || '');
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch { /* no clipboard */ }
   };
+  const load = async () => {
+    setLoading(true);
+    try {
+      const got = await loadFull();
+      let t = got.value === null || got.value === undefined ? 'NULL' : typeof got.value === 'string' ? got.value : JSON.stringify(got.value);
+      let json = false;
+      if (t.length < 5_000_000 && /^\s*[[{]/.test(t)) {
+        try { t = JSON.stringify(JSON.parse(t), null, 2); json = true; } catch { /* not JSON */ }
+      }
+      setFull({ text: t, json, truncated: got.truncated, size: got.size });
+    } catch (err) {
+      setFull({ error: err.message || 'Could not load the value' });
+    } finally {
+      setLoading(false);
+    }
+  };
+  const save = () => {
+    const blob = new Blob([text], { type: full?.json ? 'application/json' : 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(fileName || title || 'value').replace(/[^\w.-]+/g, '_')}.${full?.json ? 'json' : 'txt'}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const shown = text.length > SHOW_MAX ? `${text.slice(0, SHOW_MAX)}\n\n… the first ${fmtN(SHOW_MAX)} characters are shown. Copy or Download for all of it.` : text;
   return (
     <Modal open={!!title} onClose={onClose} width={820} labelledBy="sf-text-title">
-      <div className="flex items-center gap-3 px-5 py-3.5 border-b border-[#e8e6e3]">
+      <div className="flex items-center gap-2 px-5 py-3.5 border-b border-[#e8e6e3]">
         <div className="min-w-0 flex-1">
           <h3 id="sf-text-title" className="font-johnson-display font-bold text-[15px] text-[#312c2a] break-all">{title}</h3>
-          {subtitle && <div className="text-[11.5px] text-[#6e6259] mt-0.5">{subtitle}</div>}
+          {subtitle && <div className="text-[11.5px] text-[#6e6259] mt-0.5">{full?.text ? `${subtitle} · ${fmtN(full.text.length)} characters${full.json ? ' · JSON, formatted' : ''}` : subtitle}</div>}
         </div>
+        {loadFull && !full?.text && (
+          <Button size="sm" variant="primary" icon={loading ? undefined : Maximize2} disabled={loading} onClick={load}>
+            {loading ? <><Spinner size={12} /> Loading…</> : 'Load full value'}
+          </Button>
+        )}
+        {full?.text && <Button size="sm" icon={Download} onClick={save}>Download</Button>}
         <Button size="sm" icon={copied ? Check : Copy} onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button>
         <IconButton icon={X} label="Close" onClick={onClose} />
       </div>
+      {full?.error && <div className="mx-5 mt-3 flex items-start gap-2 rounded-md bg-[#fdf3f1] px-3 py-2 text-[12.5px] text-[#9e0000]"><TriangleAlert size={14} className="flex-shrink-0 mt-0.5" />{full.error}</div>}
+      {full?.truncated && <div className="mx-5 mt-3 rounded-md bg-[#fff6e5] px-3 py-2 text-[12.5px] text-[#7a4a00]">This value is {fmtN(full.size)} characters; the first {fmtN(full.text.length)} are here. Download the query result for all of it.</div>}
       <pre className={`flex-1 min-h-[120px] overflow-auto m-0 px-5 py-4 text-[12.5px] leading-relaxed text-[#312c2a] whitespace-pre-wrap break-words bg-[#fbfaf9] ${mono ? 'font-mono' : 'font-johnson-text'}`}>
-        {sql ? <SqlCode sql={body} /> : body}
+        {sql ? <SqlCode sql={shown} /> : shown}
       </pre>
     </Modal>
   );
@@ -712,7 +758,13 @@ function SavePromptModal({ open, initialName, onCancel, onSave }) {
 // One colour per person, by their place in the worksheet (owner first). Red is
 // left out: that is your own caret.
 const PEER_COLORS = ['#0f68b2', '#8c3bbb', '#328714'];
-const firstName = (name) => (name || '').split(/[\s@]/)[0] || 'Someone';
+// "Saggurthi, Keshava purna vardhan" (how the directory writes names) -> Keshava;
+// "Ann Tester" -> Ann; "ann@x.com" -> ann.
+const firstName = (name) => {
+  const n = (name || '').trim();
+  const given = n.includes(',') ? n.slice(n.indexOf(',') + 1) : n;
+  return given.trim().split(/[\s@]/)[0] || n.split(/[\s@,]/)[0] || 'Someone';
+};
 const initials = (name) => {
   const parts = (name || '?').split('@')[0].split(/[\s._-]+/).filter(Boolean);
   return ((parts[0]?.[0] || '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
@@ -1389,11 +1441,10 @@ function SfExplorer({
   const visibleDbs = (databases || []).filter(db => hit(db) || dbHasHit(db));
 
   // Search every database for table names, not just what's expanded.
-  // Snowflake only, Postgres has no endpoint for it yet.
   // Runs on its own only when the loaded tree has nothing. If the tree
   // already has hits, the user has to ask for it with the button.
   const [askedFind, setAskedFind] = useState('');
-  const canFind = E.id === 'snowflake';
+  const canFind = true;
   const hasLocal = !!q && visibleDbs.length > 0;
   const findOn = canFind && q.length >= 2 && (!hasLocal || askedFind === q.toLowerCase());
   const [found, setFound] = useState(null);
@@ -1806,7 +1857,21 @@ function FilterPopover({ column, current, onApply, onClear, onClose, alignRight 
   );
 }
 
+// 2026-11-17T13:51:17.682741-05:00 reads better with a space, the way psql and Snowsight show it.
+const ISO_STAMP = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/;
+
+const isBig = (v) => Boolean(v && typeof v === 'object' && v.$truncated);
+
 function CellValue({ value, numeric }) {
+  if (typeof value === 'string' && ISO_STAMP.test(value)) return <span className="tabular-nums">{value.replace('T', ' ')}</span>;
+  if (isBig(value)) {
+    return (
+      <span className="inline-flex items-center gap-1.5 max-w-full" title="Too large to show here. Download the result to get the whole value.">
+        <span className="flex-shrink-0 px-1.5 rounded bg-[#f1efed] text-[10.5px] font-medium text-[#6e6259]">{formatBytes(value.size)}</span>
+        <span className="truncate font-mono text-[12px] text-[#6e6259]">{value.preview.slice(0, 200)}</span>
+      </span>
+    );
+  }
   if (value === null || value === undefined) {
     return <span className="inline-block px-1.5 rounded bg-[#f1efed] text-[10.5px] font-medium tracking-wide text-[#81766f]">NULL</span>;
   }
@@ -1819,17 +1884,35 @@ function CellValue({ value, numeric }) {
   return <span className={numeric ? 'tabular-nums' : undefined}>{String(value)}</span>;
 }
 
-function SfGrid({
+// Typing in the editor re-renders the pane on every key. The grid only has
+// to repaint when its data does, so it is memoized, and its callbacks are
+// passed through a ref so they are always the latest ones anyway.
+const NO_META = {};
+const NO_ROWS = [];
+const GRID_FNS = ['setWidths', 'onSort', 'onFilter', 'onEditCell', 'onToggleDelete', 'onEditNewCell', 'onRemoveNewRow', 'onOpenCell', 'onCopied', 'onRowSelect', 'onCopyRow', 'onSelection'];
+
+function SfGrid(props) {
+  const latest = useRef(props);
+  latest.current = props;
+  const fns = useMemo(() => Object.fromEntries(GRID_FNS.map(k => [k, (...a) => latest.current[k]?.(...a)])), []);
+  return <SfGridView {...props} {...fns} />;
+}
+
+const SfGridView = React.memo(function SfGridView({
   columns, rows, widths, setWidths,
   sort, onSort, filters, onFilter,
   dimmed, rowOffset = 0,
   editable = false, columnMeta = {}, edits = {}, deleted = [], newRows = [],
   onEditCell, onToggleDelete, onEditNewCell, onRemoveNewRow, onOpenCell, onCopied,
-  selectedRows = [], onRowSelect, onCopyRow, dupNew = {}, dupRows = {},
+  selectedRows = [], onRowSelect, onCopyRow, dupNew = {}, dupRows = {}, onSelection,
 }) {
   const [openFilter, setOpenFilter] = useState(null);
   const rowSelSet = useMemo(() => new Set(selectedRows), [selectedRows]);
+  // A block of cells, spreadsheet style: sel is the cell with the cursor,
+  // anchor the corner the block was started from (Shift+click / Shift+arrows / drag).
   const [sel, setSel] = useState(null); // { r, c }
+  const [anchor, setAnchor] = useState(null);
+  const dragRef = useRef(false);
   const resizeRef = useRef(null);
   const wrapRef = useRef(null);
   const deletedSet = useMemo(() => new Set(deleted), [deleted]);
@@ -1841,7 +1924,18 @@ function SfGrid({
   }, []);
 
   // New result set, new selection.
-  useEffect(() => { setSel(null); }, [columns, rows]);
+  useEffect(() => { setSel(null); setAnchor(null); }, [columns, rows]);
+  useEffect(() => {
+    const up = () => { dragRef.current = false; };
+    window.addEventListener('mouseup', up);
+    return () => window.removeEventListener('mouseup', up);
+  }, []);
+  const box = sel ? {
+    r1: Math.min(sel.r, (anchor || sel).r), r2: Math.max(sel.r, (anchor || sel).r),
+    c1: Math.min(sel.c, (anchor || sel).c), c2: Math.max(sel.c, (anchor || sel).c),
+  } : null;
+  const inBox = (r, c) => box && r >= box.r1 && r <= box.r2 && c >= box.c1 && c <= box.c2;
+  const multi = box && (box.r2 > box.r1 || box.c2 > box.c1);
 
   const typeOf = useCallback((col) => displayType(columnMeta[col.name]) || displayType(col), [columnMeta]);
 
@@ -1897,31 +1991,79 @@ function SfGrid({
     });
   };
 
+  // The block as text: tab between cells, a line per row (pastes into Excel
+  // as cells). With headers, the column names go on top.
+  const blockText = (b, headers) => {
+    const lines = [];
+    if (headers) lines.push(columns.slice(b.c1, b.c2 + 1).map(c => c.name).join('\t'));
+    for (let r = b.r1; r <= b.r2; r += 1) {
+      const cells = [];
+      for (let c = b.c1; c <= b.c2; c += 1) {
+        const v = valueAt(r, c);
+        cells.push(v === null || v === undefined ? '' : String(cellText(v)).replace(/[\t\n\r]+/g, ' '));
+      }
+      lines.push(cells.join('\t'));
+    }
+    return lines.join('\n');
+  };
+
+  // Tell the page what is selected, so the status bar can show count / sum / average.
+  useEffect(() => {
+    if (!onSelection) return;
+    if (!box || !multi) { onSelection(null); return; }
+    let count = 0; let nums = 0; let sum = 0; let min = Infinity; let max = -Infinity;
+    for (let r = box.r1; r <= box.r2; r += 1) {
+      for (let c = box.c1; c <= box.c2; c += 1) {
+        const v = valueAt(r, c);
+        count += 1;
+        const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+        if (n !== null) { nums += 1; sum += n; if (n < min) min = n; if (n > max) max = n; }
+      }
+    }
+    onSelection({ count, rows: box.r2 - box.r1 + 1, cols: box.c2 - box.c1 + 1, nums, sum, min, max });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [box?.r1, box?.r2, box?.c1, box?.c2, multi, rows, edits]);
+  useEffect(() => () => onSelection?.(null), [onSelection]);
+
+  const pick = (r, c, extend) => {
+    if (extend && sel) setAnchor(a => a || sel);
+    else setAnchor(null);
+    setSel({ r, c });
+  };
+
   const onKeyDown = async (e) => {
-    if (!sel || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === 'a' && rows.length && columns.length) {
+      e.preventDefault();
+      setAnchor({ r: 0, c: 0 });
+      setSel({ r: rows.length - 1, c: columns.length - 1 });
+      return;
+    }
+    if (!sel) return;
     const move = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
     if (move) {
       e.preventDefault();
-      const r = Math.max(0, Math.min(rows.length - 1, sel.r + move[0]));
-      const c = Math.max(0, Math.min(columns.length - 1, sel.c + move[1]));
-      setSel({ r, c });
+      // Ctrl+arrow jumps to the edge, like a spreadsheet.
+      const r = Math.max(0, Math.min(rows.length - 1, mod ? (move[0] < 0 ? 0 : move[0] > 0 ? rows.length - 1 : sel.r) : sel.r + move[0]));
+      const c = Math.max(0, Math.min(columns.length - 1, mod ? (move[1] < 0 ? 0 : move[1] > 0 ? columns.length - 1 : sel.c) : sel.c + move[1]));
+      pick(r, c, e.shiftKey);
       scrollCellIntoView(r, c);
       return;
     }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+    if (mod && e.key.toLowerCase() === 'c') {
       e.preventDefault();
-      const v = valueAt(sel.r, sel.c);
       try {
-        await navigator.clipboard.writeText(v === null || v === undefined ? '' : cellText(v));
-        onCopied?.();
+        await navigator.clipboard.writeText(blockText(box, e.shiftKey));
+        onCopied?.(multi ? `${plural((box.r2 - box.r1 + 1) * (box.c2 - box.c1 + 1), 'cell')} copied${e.shiftKey ? ' with headers' : ''}` : undefined);
       } catch { /* no clipboard */ }
       return;
     }
     if (e.key === 'Enter' && !editable) {
       e.preventDefault();
-      onOpenCell?.(columns[sel.c].name, valueAt(sel.r, sel.c));
+      onOpenCell?.(columns[sel.c].name, valueAt(sel.r, sel.c), sel.r);
     }
-    if (e.key === 'Escape') setSel(null);
+    if (e.key === 'Escape') { setSel(null); setAnchor(null); }
   };
 
   const filterFor = (name) => (filters || []).find(f => f.col === name) || null;
@@ -1940,7 +2082,7 @@ function SfGrid({
       aria-label="Result grid"
     >
       <table
-        className="border-separate border-spacing-0 text-[12.5px] font-johnson-text text-[#312c2a]"
+        className="border-separate border-spacing-0 text-[12.5px] font-johnson-text text-[#312c2a] select-none"
         // Real pixel width: with max-content the browser drops fixed layout and long text ignores the column widths.
         style={{ tableLayout: 'fixed', width: gutterW + columns.reduce((s, c) => s + widthOf(c.name), 0), minWidth: '100%' }}
       >
@@ -2072,20 +2214,27 @@ function SfGrid({
                   const meta = columnMeta[name];
                   const type = typeOf(col);
                   const numeric = typeFamily(type) === 'num' || typeof row[c] === 'number';
-                  const cellEditable = editable && !isDeleted && (meta ? meta.editable : true);
+                  const cellEditable = editable && !isDeleted && (meta ? meta.editable : true) && !isBig(row[c]);
                   const isSel = sel && sel.r === r && sel.c === c;
+                  const inBlock = multi && inBox(r, c);
                   const text = value === null || value === undefined ? 'NULL' : cellText(value);
                   return (
                     <td
                       key={name}
                       data-cell={`${r}:${c}`}
-                      onMouseDown={() => setSel({ r, c })}
-                      onDoubleClick={() => !editable && onOpenCell?.(name, row[c])}
+                      onMouseDown={e => {
+                        if (e.button !== 0) return;
+                        pick(r, c, e.shiftKey);
+                        // Drag across cells to select a block (not while editing a cell).
+                        if (!e.shiftKey && !(e.target.tagName === 'INPUT')) { dragRef.current = true; setAnchor({ r, c }); }
+                      }}
+                      onMouseEnter={() => { if (dragRef.current) setSel({ r, c }); }}
+                      onDoubleClick={() => !cellEditable && onOpenCell?.(name, row[c], r)}
                       title={text && text.length > 24 ? text.slice(0, 600) : undefined}
-                      className={`${cellBase} px-3 group-hover/row:!bg-[#f4f2f0] focus-within:!bg-white focus-within:!shadow-[inset_0_0_0_2px_#eb1700] ${numeric ? 'text-right' : ''} ${isDeleted ? 'line-through text-[#81766f]' : ''}`}
+                      className={`${cellBase} px-3 ${inBlock ? '' : 'group-hover/row:!bg-[#f4f2f0]'} focus-within:!bg-white focus-within:!shadow-[inset_0_0_0_2px_#eb1700] ${numeric ? 'text-right' : ''} ${isDeleted ? 'line-through text-[#81766f]' : ''}`}
                       style={{
                         height: ROW_H,
-                        background: dirty ? '#fff3ea' : rowBg,
+                        background: inBlock ? '#fde3df' : dirty ? '#fff3ea' : rowBg,
                         boxShadow: isSel ? 'inset 0 0 0 2px #eb1700' : dirty && dupMsg ? 'inset 3px 0 0 #9e0000' : dirty ? 'inset 3px 0 0 #ff6017' : undefined,
                       }}
                     >
@@ -2147,7 +2296,7 @@ function SfGrid({
       </table>
     </div>
   );
-}
+});
 
 /* --------------------- editing a query's result rows --------------------- */
 // A result can be edited in place when it plainly comes from one table, the
@@ -2505,6 +2654,11 @@ const SHORTCUTS = [
   ['Indent / outdent', 'Tab / Shift Tab'],
   ['Show suggestions', `${MOD} Space`],
   ['Save query', `${MOD} S`],
+  ['Results: select cells', 'Drag / Shift click'],
+  ['Results: grow the selection', 'Shift ←↑↓→'],
+  ['Results: jump to the edge', `${MOD} ←↑↓→`],
+  ['Results: select the whole page', `${MOD} A`],
+  ['Results: copy cells / with headers', `${MOD} C / ${MOD} Shift C`],
 ];
 
 // SQL editor: a transparent textarea over a painted <pre>. Line numbers live
@@ -2621,12 +2775,29 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
   }, [value, innerW]);
 
   /* ------------------------------ completion ------------------------------ */
+  // Where a name points, as [database, schema, table]. Postgres can't reach
+  // another database from a query, so there a dotted name is schema.table
+  // inside the worksheet's database; Snowflake names go database.schema.table.
+  const pg = E.pickDb;
+  const homeSchema = defaultSchema || (pg ? 'public' : null);
   const refKey = useCallback((r) => {
     const parts = r.parts;
+    if (pg) {
+      if (!defaultDb) return null;
+      return parts.length >= 2 ? [defaultDb, ...parts.slice(-2)] : [defaultDb, homeSchema, parts[0]];
+    }
     if (parts.length >= 3) return parts.slice(-3);
     if (parts.length === 2) return defaultDb ? [defaultDb, parts[0], parts[1]] : null;
     return defaultDb && defaultSchema ? [defaultDb, defaultSchema, parts[0]] : null;
-  }, [defaultDb, defaultSchema]);
+  }, [pg, defaultDb, defaultSchema, homeSchema]);
+  // What typed "a." / "a.b." asks for: [db] schemas, [db, schema] tables, [db, schema, table] columns.
+  const lookupFor = useCallback((context) => {
+    if (!pg) return context;
+    return defaultDb ? [defaultDb, ...context.slice(-2)] : null;
+  }, [pg, defaultDb]);
+  // Bare words: Postgres offers the database's schemas and the default
+  // schema's tables, Snowflake its databases.
+  const topLevel = useCallback(() => (pg && defaultDb ? [[defaultDb], [defaultDb, homeSchema]] : [[]]), [pg, defaultDb, homeSchema]);
 
   const ensureObjects = useCallback((context) => {
     const cache = objectCache.current;
@@ -2674,24 +2845,29 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
     const clause = clauseAtCaret(ta.value, caret);
     let items;
     if (context.length > 0 && context.length <= 3) {
-      let lookup = context;
+      let lookup = lookupFor(context);
       if (context.length === 1) {
         const r = resolveRef(refs, context[0]);
         const resolved = r && refKey(r);
         if (resolved) lookup = resolved;
       }
+      if (!lookup) { setSuggest(null); return; }
       const objects = objectCache.current[lookup.join('.')];
       if (objects === undefined || objects === 'loading') { ensureObjects(lookup); setSuggest(null); return; }
       items = rankSuggestions(objects, word, clause).slice(0, 14);
     } else {
       if (word.length < (force ? 0 : 2)) { setSuggest(null); return; }
-      const dbs = Array.isArray(objectCache.current['']) ? objectCache.current[''] : [];
-      items = rankSuggestions([...columnsInScope(refs), ...STATIC_SUGGESTIONS, ...dbs], word, clause).slice(0, 12);
+      const named = topLevel().flatMap(k => {
+        const got = objectCache.current[k.join('.')];
+        if (got === undefined) ensureObjects(k);
+        return Array.isArray(got) ? got : [];
+      });
+      items = rankSuggestions([...columnsInScope(refs), ...STATIC_SUGGESTIONS, ...named], word, clause).slice(0, 12);
     }
     if (!items?.length) { setSuggest(null); return; }
     const pos = caretPixelPos(ta, caret);
     setSuggest({ items, index: 0, left: pos.left, top: pos.top, lineHeight: pos.lineHeight, boxHeight: ta.clientHeight });
-  }, [ensureObjects, columnsInScope, refKey]);
+  }, [ensureObjects, columnsInScope, refKey, lookupFor, topLevel]);
 
   useEffect(() => { updateRef.current = updateSuggest; }, [updateSuggest]);
 
@@ -2722,7 +2898,7 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
     if (!ta) return;
     ta.focus();
     ta.setSelectionRange(start, end);
-    let ok = false;
+    let ok;
     try { ok = document.execCommand('insertText', false, text); } catch { ok = false; }
     if (!ok) onChange(ta.value.slice(0, start) + text + ta.value.slice(end));
     const a = selA ?? start + text.length;
@@ -2881,7 +3057,7 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
         value={value}
         onChange={e => { onChange(e.target.value); updateSuggest(e.target); }}
         readOnly={readOnly}
-        onFocus={() => { ensureObjects([]); onSelect?.(readSel()); }}
+        onFocus={() => { topLevel().forEach(ensureObjects); onSelect?.(readSel()); }}
         onSelect={() => onSelect?.(readSel())}
         onClick={() => setSuggest(null)}
         onBlur={() => { setTimeout(() => setSuggest(null), 150); onSelect?.(null); }}
@@ -3030,6 +3206,7 @@ const EMPTY_VIEW = {
   rowSel: [],
   editTarget: null, // { database, schema, table } when a query result is being edited
   ranBy: null,      // shared worksheet: who started this run, when it wasn't us
+  stuckJob: null,   // Postgres: an earlier run still holding this worksheet, offered to cancel
 };
 
 const newQueryTab = (n) => ({ id: `q${Date.now().toString(36)}${n}`, kind: 'query', name: `Worksheet ${n}`, sql: '' });
@@ -3266,6 +3443,13 @@ function StudioPane({ active: paneActive = true }) {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const sharedLinkRef = useRef(null);
+  // Shared worksheets closed in this page. The URL can still point at one for
+  // a moment after its tab closes; it must not be reopened from the link.
+  const closedSharedRef = useRef(new Set());
+  // Once the URL has moved on, a later link to it opens it as usual.
+  useEffect(() => {
+    closedSharedRef.current.forEach(id => { if (id !== urlWs) closedSharedRef.current.delete(id); });
+  }, [urlWs]);
   const [sharedLinkTick, setSharedLinkTick] = useState(0);
 
   useEffect(() => {
@@ -3302,7 +3486,7 @@ function StudioPane({ active: paneActive = true }) {
     if (!paneActive) return;
     if (urlTable) return; // a table link, handled below once connected
     if (urlWs && tabs.some(t => t.id === urlWs)) return;
-    if (urlWs?.startsWith('s_') && sharedLinkRef.current !== `failed:${urlWs}`) return; // a shared link, opened below
+    if (urlWs?.startsWith('s_') && sharedLinkRef.current !== `failed:${urlWs}` && !closedSharedRef.current.has(urlWs)) return; // a shared link, opened below
     writeUrl(active);
   }, [paneActive, urlWs, urlTable, tabs, active, writeUrl, sharedLinkTick]);
 
@@ -3458,18 +3642,38 @@ function StudioPane({ active: paneActive = true }) {
     selectTab(tab);
   };
 
+  const closeArmed = useRef(null);
   const closeTab = (id) => {
+    // Unsaved row edits would be lost: the first close asks, the second within a few seconds closes.
+    const pending = viewsRef.current[id];
+    const unsaved = pending ? Object.keys(pending.edits || {}).length + (pending.deleted || []).length + (pending.newRows || []).length : 0;
+    if (unsaved && closeArmed.current !== id) {
+      closeArmed.current = id;
+      setTimeout(() => { if (closeArmed.current === id) closeArmed.current = null; }, 4000);
+      toast(`${plural(unsaved, 'unsaved change')} in this tab. Close it again to discard ${unsaved === 1 ? 'it' : 'them'}.`, 'error', 4000);
+      return;
+    }
+    closeArmed.current = null;
     const idx = tabs.findIndex(t => t.id === id);
     const next = tabs.filter(t => t.id !== id);
     const list = next.length ? next : [newQueryTab(1)];
     setTabs(list);
     stopPolling(id);
+    // A query still running in a closed worksheet would run on to the end for nobody.
+    const v = viewsRef.current[id];
+    if (v?.jobId && (v.status === 'running' || v.status === 'starting') && !v.ranBy) {
+      apiFetch(`${E.api}/query/${v.jobId}/cancel`, { method: 'POST' }).catch(() => {});
+    }
+    runSeqRef.current[id] = (runSeqRef.current[id] || 0) + 1;
     // A shared worksheet stays on the server; this only closes the tab.
+    if (tabsRef.current.find(t => t.id === id)?.shared) closedSharedRef.current.add(id);
     sessionOf(id)?.destroy();
     sessionsRef.current.delete(id);
     delete seenMetaRef.current[id];
-    // Postgres keeps a session per worksheet; let it go with the tab.
-    if (E.pickDb) apiFetch(`${E.api}/session/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+    // Postgres keeps a session per worksheet; let it go with the tab. Not for a
+    // shared worksheet: the last result run there lives on that session and
+    // the others may still be looking at it (it closes itself when idle).
+    if (E.pickDb && !tabsRef.current.find(t => t.id === id)?.shared) apiFetch(`${E.api}/session/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
     setViews(v => { const n = { ...v }; delete n[id]; return n; });
     if (id === active.id) selectTab(list[Math.max(0, Math.min(idx, list.length) - 1)] || list[0]);
   };
@@ -3599,6 +3803,27 @@ function StudioPane({ active: paneActive = true }) {
     return PAGE_SIZE_OPTIONS.includes(stored) ? stored : 100;
   });
   const [cellDetail, setCellDetail] = useState(null);
+  const [cellStats, setCellStats] = useState(null);    // the grid's selected block: count, sum, avg...
+  // How to fetch the whole of a cell the grid only had the start of: by its
+  // place in the result page, or in the data editor by primary key (Postgres).
+  const cellLoader = (col, r) => {
+    const tabId = active.id;
+    const v = viewsRef.current[tabId] || EMPTY_VIEW;
+    if (active.kind === 'data') {
+      const pk = v.keyColumns || [];
+      if (!E.pickDb || !pk.length) return undefined;
+      const names = (v.columns || []).map(c => c.name);
+      const key = Object.fromEntries(pk.map(k => [k, v.rows?.[r]?.[names.indexOf(k)]]));
+      const t = active.table;
+      return () => fetchJson(withQs(`${E.api}/table/cell`, cqRef.current(tabId)), {
+        method: 'POST', body: { database: t.database, schema: t.schema, table: t.table, key, column: col },
+      });
+    }
+    if (!v.jobId) return undefined;
+    return () => fetchJson(`${E.api}/query/${v.jobId}/cell`, {
+      method: 'POST', body: { page: v.page || 1, page_size: pageSize, sort: v.sort, filters: v.filters, index: r, column: col },
+    });
+  };
 
   /* --------------------------- history / saved --------------------------- */
   const [panel, setPanel] = useState(null); // history | saved | null
@@ -3626,6 +3851,24 @@ function StudioPane({ active: paneActive = true }) {
     loadSaved();
   }, [connState, loadHistory, loadSaved]);
 
+  const recentQueries = useMemo(() => {
+    const seen = new Set();
+    return history.items.filter(h => {
+      const k = (h.sql || '').trim();
+      if (h.status !== 'success' || !k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, 4);
+  }, [history.items]);
+
+  // Escape closes the history / saved drawer, unless a dialog on top has it.
+  useEffect(() => {
+    if (!panel) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('[role=dialog]')) setPanel(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [panel]);
+
   const openPanel = (which) => {
     setPanelFilter('');
     setPanel(p => (p === which ? null : which));
@@ -3646,17 +3889,28 @@ function StudioPane({ active: paneActive = true }) {
   };
   useEffect(() => () => Object.keys(pollRef.current).forEach(stopPolling), []);
 
+  const pageSeq = useRef({});
   const fetchPage = useCallback(async (tabId, jid, pageNum, size, sortVal, filterVal, seq) => {
+    const mine = (pageSeq.current[tabId] || 0) + 1;
+    pageSeq.current[tabId] = mine;
     patchView(tabId, { loading: true });
     try {
       const data = await fetchJson(`${E.api}/query/${jid}/rows`, {
         method: 'POST',
         body: { page: pageNum, page_size: size, sort: sortVal, filters: filterVal },
       });
+      if (mine !== pageSeq.current[tabId]) return;     // a newer page, sort or filter was asked for
       if (seq !== undefined && seq !== runSeqRef.current[tabId]) return;
       patchView(tabId, { rows: data.rows || [], page: data.page, rowCount: data.total_rows, totalPages: data.total_pages || 1, loading: false, rowSel: [] });
     } catch (err) {
+      if (mine !== pageSeq.current[tabId]) return;
       if (seq !== undefined && seq !== runSeqRef.current[tabId]) return;
+      // The result itself is gone (expired, or replaced by a newer run): say so
+      // in the grid, once, instead of an empty grid and a toast per request.
+      if (err.status === 410 || err.status === 404) {
+        patchView(tabId, { loading: false, rows: [], status: 'failed', error: err.status === 404 ? 'This result has expired on the server. Run the query again.' : err.message });
+        return;
+      }
       patchView(tabId, { loading: false });
       toast(err.message || 'Could not load that page of rows', 'error');
     }
@@ -3691,7 +3945,10 @@ function StudioPane({ active: paneActive = true }) {
     loadHistory();
   }, [fetchPage, pageSize, loadHistory, patchView]);
 
-  const pollStatus = useCallback((tabId, jid, seq) => {
+  // Long-polls the job. A dropped request (network blip, proxy timeout, a
+  // server restart in progress) is retried with backoff; the query is still
+  // running on the server, so one bad request must not fail it on screen.
+  const pollStatus = useCallback((tabId, jid, seq, misses = 0) => {
     pollRef.current[tabId] = setTimeout(async () => {
       try {
         const data = await fetchJson(`${E.api}/query/${jid}/status?wait_ms=10000`);
@@ -3700,9 +3957,11 @@ function StudioPane({ active: paneActive = true }) {
         applyFinished(tabId, jid, data, seq);
       } catch (err) {
         if (seq !== runSeqRef.current[tabId]) return;
-        patchView(tabId, { status: 'failed', error: err.message || 'Lost the connection while checking on the query' });
+        const gone = err.status === 404 || err.status === 403 || err.status === 401;
+        if (!gone && misses < 6) { pollStatus(tabId, jid, seq, misses + 1); return; }
+        patchView(tabId, { status: 'failed', error: gone ? 'The query result expired on the server. Run it again.' : err.message || 'Lost the connection while checking on the query' });
       }
-    }, 0);
+    }, misses ? Math.min(8000, 400 * 2 ** misses) : 0);
   }, [applyFinished, patchView]);
 
   const submitQuery = async (tabId, sql, confirm) => {
@@ -3717,7 +3976,12 @@ function StudioPane({ active: paneActive = true }) {
           ...(sharedOf(tabId) ? { shared_ws: sharedOf(tabId) } : {}),
         },
       });
-      if (seq !== runSeqRef.current[tabId]) return;
+      if (seq !== runSeqRef.current[tabId]) {
+        // Cancelled (or run again) while this was starting: the server never
+        // heard, so stop it now instead of letting it run to the end.
+        if (data.job_id && data.status === 'running') apiFetch(`${E.api}/query/${data.job_id}/cancel`, { method: 'POST' }).catch(() => {});
+        return;
+      }
       logInPage(`${E.log}_query_run`, `Ran ${E.label} query${confirm ? ' (confirmed destructive)' : ''}: ${sql.slice(0, 300)}`);
       patchView(tabId, { jobId: data.job_id });
       if (data.status && data.status !== 'running') { applyFinished(tabId, data.job_id, data, seq, data.first_page); return; }
@@ -3728,6 +3992,8 @@ function StudioPane({ active: paneActive = true }) {
       if (err.status === 409 && err.body?.detail?.requires_confirmation) {
         setPendingConfirm({ ...err.body.detail, sql, tabId });
         patchView(tabId, { status: 'idle', startedAt: null });
+      } else if (err.status === 409 && err.body?.detail?.running_job_id) {
+        patchView(tabId, { status: 'failed', error: err.message, stuckJob: err.body.detail.running_job_id });
       } else {
         patchView(tabId, { status: 'failed', error: err.message || 'Could not start the query' });
       }
@@ -3801,8 +4067,10 @@ function StudioPane({ active: paneActive = true }) {
     runSeqRef.current[tabId] = (runSeqRef.current[tabId] || 0) + 1;
     const seq = runSeqRef.current[tabId];
     stopPolling(tabId);
-    patchView(tabId, { ...EMPTY_VIEW, status: 'running', jobId: run.job_id, sql: run.sql, startedAt: run.at * 1000, ranBy: firstName(run.by_name || run.by) });
-    if (announce) toast(`${firstName(run.by_name || run.by)} ran a query`, 'info', 2500);
+    // Our own run from another browser tab is not "someone else".
+    const self = run.by && run.by === sessionOf(tabId)?.meta?.you;
+    patchView(tabId, { ...EMPTY_VIEW, status: 'running', jobId: run.job_id, sql: run.sql, startedAt: run.at * 1000, ranBy: self ? 'you' : firstName(run.by_name || run.by) });
+    if (announce && !self) toast(`${firstName(run.by_name || run.by)} ran a query`, 'info', 2500);
     if (data.status === 'running') pollStatus(tabId, run.job_id, seq);
     else applyFinished(tabId, run.job_id, data, seq);
   };
@@ -3899,6 +4167,7 @@ function StudioPane({ active: paneActive = true }) {
 
   const openShared = async (wsId) => {
     const id = `s_${wsId}`;
+    closedSharedRef.current.delete(id);       // opened on purpose again
     const have = tabsRef.current.find(t => t.id === id);
     if (have) { selectTab(have); return; }
     const snap = await fetchJson(`/api/studio/shared/${encodeURIComponent(wsId)}`);
@@ -3913,7 +4182,7 @@ function StudioPane({ active: paneActive = true }) {
   // A link to a shared worksheet (?ws=s_<id>) that isn't open yet.
   useEffect(() => {
     if (!paneActive || !urlWs?.startsWith('s_') || tabs.some(t => t.id === urlWs)) return;
-    if (sharedLinkRef.current === urlWs || sharedLinkRef.current === `failed:${urlWs}`) return;
+    if (sharedLinkRef.current === urlWs || sharedLinkRef.current === `failed:${urlWs}` || closedSharedRef.current.has(urlWs)) return;
     sharedLinkRef.current = urlWs;
     openShared(urlWs.slice(2))
       .then(() => { sharedLinkRef.current = null; })
@@ -3969,13 +4238,18 @@ function StudioPane({ active: paneActive = true }) {
   })();
 
   /* ---------------------------- data editor tabs --------------------------- */
+  const tablePageSeq = useRef({});
   const loadTablePage = useCallback(async (tabId, target, pageNum, size, sortVal, filterVal) => {
+    // Only the latest request lands, however the answers come back.
+    const seq = (tablePageSeq.current[tabId] || 0) + 1;
+    tablePageSeq.current[tabId] = seq;
     patchView(tabId, { loading: true, error: null });
     try {
       const data = await fetchJson(withQs(`${E.api}/table/rows`, cqRef.current(tabId)), {
         method: 'POST',
         body: { database: target.database, schema: target.schema, table: target.table, page: pageNum, page_size: size, sort: sortVal, filters: filterVal },
       });
+      if (seq !== tablePageSeq.current[tabId]) return;
       patchView(tabId, {
         columns: data.columns || [],
         rows: data.rows || [],
@@ -3989,6 +4263,7 @@ function StudioPane({ active: paneActive = true }) {
         rowSel: [],
       });
     } catch (err) {
+      if (seq !== tablePageSeq.current[tabId]) return;
       patchView(tabId, { error: err.message || 'Could not read the table', loading: false, status: 'failed' });
     }
   }, [patchView]);
@@ -4016,6 +4291,15 @@ function StudioPane({ active: paneActive = true }) {
     openDataEditor(urlDb, urlSchema, urlTable, { fromUrl: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneActive, connState, urlDb, urlSchema, urlTable]);
+
+  // Leaving the page with unsaved row edits in any tab asks first.
+  const anyUnsaved = Object.values(views).some(v => Object.keys(v.edits || {}).length || (v.deleted || []).length || (v.newRows || []).some(d => Object.values(d).some(x => x !== '' && x != null)));
+  useEffect(() => {
+    if (!anyUnsaved) return undefined;
+    const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [anyUnsaved]);
 
   const dirtyCount = useMemo(
     () => Object.keys(view.edits || {}).length + (view.deleted || []).length + (view.newRows || []).length,
@@ -4110,7 +4394,8 @@ function StudioPane({ active: paneActive = true }) {
       cols.forEach((c, i) => {
         if (c.editable === false) return;
         const v = Object.prototype.hasOwnProperty.call(e, c.name) ? e[c.name] : view.rows[r][i];
-        d[c.name] = v === null || v === undefined ? '' : cellText(v);
+        // Only the start of a big value is here; copying it would save a cut-off copy.
+        d[c.name] = v === null || v === undefined || isBig(v) ? '' : cellText(v);
       });
       return d;
     });
@@ -4328,14 +4613,23 @@ function StudioPane({ active: paneActive = true }) {
     reload({ sort: next, page: 1 });
   };
 
+  // Unsaved edits are kept by row position on this page. Anything that
+  // changes which rows are on the page would move them onto other rows.
+  const holdEdits = (what) => {
+    if (!(editing && dirtyCount)) return false;
+    toast(`Save or revert your changes before ${what}`, 'info');
+    return true;
+  };
+
   const handleFilter = (f) => {
+    if (holdEdits('filtering')) return;
     const without = view.filters.filter(x => x.col !== f.col);
     const next = f.op ? [...without, f] : without;
     patchActive({ filters: next });
     reload({ filters: next, page: 1 });
   };
 
-  const clearFilters = () => { patchActive({ filters: [] }); reload({ filters: [], page: 1 }); };
+  const clearFilters = () => { if (holdEdits('changing the filters')) return; patchActive({ filters: [] }); reload({ filters: [], page: 1 }); };
 
   const goToPage = (n) => {
     if (editing && dirtyCount) { toast('Save or revert your changes before changing page', 'info'); return; }
@@ -4345,6 +4639,7 @@ function StudioPane({ active: paneActive = true }) {
   };
 
   const changePageSize = (n) => {
+    if (holdEdits('changing the page size')) return;
     setPageSize(n);
     writeLocal(LS.pageSize, String(n));
     reload({ page: 1, pageSize: n });
@@ -4391,17 +4686,32 @@ function StudioPane({ active: paneActive = true }) {
     catch (err) { toast(err.message || 'Could not delete the saved query', 'error'); }
   };
 
+  // Clearing history and deleting a saved query can't be undone: the first
+  // click asks, a second click within a few seconds does it.
+  const [armed, setArmed] = useState(null);
+  const arm = (what, fn) => {
+    if (armed === what) { setArmed(null); fn(); return; }
+    setArmed(what);
+    setTimeout(() => setArmed(a => (a === what ? null : a)), 4000);
+  };
+
   const clearHistory = async () => {
     try { await fetchJson(`${E.api}/history`, { method: 'DELETE' }); setHistory({ status: 'ready', items: [], error: null }); }
     catch (err) { toast(err.message || 'Could not clear the history', 'error'); }
   };
 
+  // SQL from the explorer, history or saved queries goes into the worksheet
+  // on screen only when that holds nothing of the person's own: empty, or a
+  // table preview we put there. Anything else would be lost, so it opens a
+  // new worksheet instead.
+  const reusable = (tab) => tab.kind === 'query' && !ownBusy && !lockedTab
+    && (!(tab.sql || '').trim() || (tab.preview && tab.sql === tab.preview));
   const loadSql = (sql, name, newTab = false, database = null) => {
     const dbName = E.pickDb ? database || null : null;
-    if (!newTab && active.kind === 'query' && !lockedTab) {
+    if (!newTab && reusable(active)) {
       editSql(active.id, sql);
-      setTabDb(active.id, dbName);
-      if (name && !active.shared) setTabs(ts => ts.map(t => (t.id === active.id && /^Worksheet \d+$/.test(t.name) ? { ...t, name } : t)));
+      if (dbName) setTabDb(active.id, dbName);
+      setTabs(ts => ts.map(t => (t.id === active.id ? { ...t, preview: undefined, ...(name && !t.shared && /^Worksheet \d+$/.test(t.name) ? { name } : {}) } : t)));
     } else {
       addTab(sql, name, dbName);
     }
@@ -4413,10 +4723,13 @@ function StudioPane({ active: paneActive = true }) {
   const [explorerSel, setExplorerSel] = useState(null);
 
   const previewTable = (database, schema, tableName) => {
-    const sql = `SELECT *\nFROM "${database}"."${schema}"."${tableName}"\nLIMIT 100;`;
+    const q = (x) => `"${String(x).replace(/"/g, '""')}"`;
+    // Postgres can't name another database in a query; the worksheet is switched to it instead.
+    const sql = `SELECT *\nFROM ${E.pickDb ? '' : `${q(database)}.`}${q(schema)}.${q(tableName)}\nLIMIT 100;`;
     let tab = active;
-    if (active.kind !== 'query' || ownBusy || lockedTab) tab = addTab(sql, tableName, database);
+    if (!reusable(active)) tab = addTab(sql, tableName, database);
     else { editSql(active.id, sql); setTabDb(active.id, database); }
+    setTabs(ts => ts.map(t => (t.id === tab.id ? { ...t, preview: sql } : t)));
     setExplorerSel({ kind: 'table', fq: `${database}.${schema}.${tableName}` });
     if (!isWide) setDrawerOpen(false);
     startRun(tab.id, sql, tab.id === active.id ? view.jobId : null);
@@ -4441,7 +4754,8 @@ function StudioPane({ active: paneActive = true }) {
 
   /* -------------------------------- derived -------------------------------- */
   const leadHint = leadKeywordHint(queryText);
-  const gridColumns = (isData ? (view.columns || []) : (view.meta?.columns || [])).map(c => { const t = displayType(c); return { name: c.name, type: t, display_type: t }; });
+  const gridSource = isData ? view.columns : view.meta?.columns;
+  const gridColumns = useMemo(() => (gridSource || []).map(c => { const t = displayType(c); return { name: c.name, type: t, display_type: t }; }), [gridSource]);
   const canEdit = (isData ? view.tableMeta?.editable : editingResult) && writesOk;
   const hasGrid = isData ? (view.columns || []).length > 0 : (view.status === 'success' && view.meta?.returns_rows);
   const columnsList = isData ? (view.columns || []) : (view.meta?.columns || []);
@@ -4458,7 +4772,7 @@ function StudioPane({ active: paneActive = true }) {
       const key = view.keyColumns?.length ? `key ${view.keyColumns.join(', ')}` : 'no primary key, rows matched on every column';
       return { color: T.green, text: `${plural(view.rowCount ?? 0, 'row')} · ${canEdit ? 'editable' : 'read only'} · ${key}` };
     }
-    if (busy && view.ranBy) return { color: T.red, pulse: true, text: `${view.ranBy} is running a query · ${fmtMs(elapsed)}` };
+    if (busy && view.ranBy) return { color: T.red, pulse: true, text: `${view.ranBy === 'you' ? 'Running in another tab of yours' : `${view.ranBy} is running a query`} · ${fmtMs(elapsed)}` };
     if (busy) return { color: T.red, pulse: true, text: `Running in ${E.pickDb ? tabDb : activeConn?.warehouse || serverInfo?.warehouse || E.label} · ${fmtMs(elapsed)}` };
     if (editingResult && view.status === 'success') return { color: T.amber, text: `${plural(view.rowCount ?? 0, 'row')} · editing ${view.editTarget.table}${dirtyCount ? ` · ${plural(dirtyCount, 'unsaved change')}` : ''}` };
     if (view.status === 'failed') return { color: T.maroon, text: `Failed${view.meta?.elapsed_ms != null ? ` after ${fmtMs(view.meta.elapsed_ms)}` : ''}` };
@@ -4470,7 +4784,7 @@ function StudioPane({ active: paneActive = true }) {
       if (view.meta.bytes_scanned_human) bits.push(`${view.meta.bytes_scanned_human} scanned`);
       if (view.meta.from_cache) bits.push('from cache');
       if (view.meta.statement_count > 1) bits.push(`${view.meta.statement_count} statements, showing the last`);
-      if (view.ranBy) bits.push(`run by ${view.ranBy}`);
+      if (view.ranBy) bits.push(view.ranBy === 'you' ? 'run in another tab' : `run by ${view.ranBy}`);
       return { color: T.green, text: bits.join(' · ') };
     }
     return { color: T.lineStrong, text: 'Ready' };
@@ -5011,7 +5325,27 @@ function StudioPane({ active: paneActive = true }) {
               {resultTab === 'data' && (
                 <>
                   {!isData && view.status === 'idle' && (
-                    <EmptyState icon={Play} title="Run a query to see results here">
+                    <EmptyState
+                      icon={Play}
+                      title="Run a query to see results here"
+                      // Pick up where you left off: the last few distinct queries that worked.
+                      action={recentQueries.length > 0 && (
+                        <div className="w-full text-left">
+                          <div className="mb-1 px-2.5 text-[11px] font-bold uppercase tracking-wide text-[#81766f]">Recent</div>
+                          {recentQueries.map(h => (
+                            <button
+                              key={h.id}
+                              onClick={() => loadSql(h.sql, null, false, h.database)}
+                              title="Open in this worksheet (or a new one if this one has SQL in it)"
+                              className="flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left hover:bg-[#f4f2f0]"
+                            >
+                              <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-[#312c2a]">{h.sql.replace(/\s+/g, ' ')}</span>
+                              <span className="flex-shrink-0 text-[11px] text-[#81766f]">{formatWhen(h.created_at)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    >
                       Write SQL above and press <Kbd>Ctrl</Kbd> + <Kbd>Enter</Kbd>, or double-click any table on the left to preview its first 100 rows.
                     </EmptyState>
                   )}
@@ -5019,11 +5353,19 @@ function StudioPane({ active: paneActive = true }) {
                   {view.error && (
                     <ErrorPanel
                       error={view.error}
-                      retryLabel={isData ? 'Reload' : 'Run again'}
+                      retryLabel={isData ? 'Reload' : view.stuckJob ? 'Cancel it and run' : 'Run again'}
                       onRetry={isData
                         ? () => loadTablePage(active.id, active.table, view.page || 1, pageSize, view.sort, view.filters)
-                        : (view.sql ? () => startRun(active.id, view.sql, view.jobId) : undefined)}
-                      onJump={!isData && view.sql === queryText.trim() ? (line, col) => editorRef.current?.jumpTo(line, col) : undefined}
+                        : view.stuckJob
+                          ? async () => {
+                            await apiFetch(`${E.api}/query/${view.stuckJob}/cancel`, { method: 'POST' }).catch(() => {});
+                            startRun(active.id, view.sql, null);
+                          }
+                          : (view.sql ? () => startRun(active.id, view.sql, view.jobId) : undefined)}
+                      onJump={!isData && view.sql && queryText.includes(view.sql)
+                        // Lines count from the statement that ran; move them to where it sits in the editor.
+                        ? (line, col) => editorRef.current?.jumpTo(line + queryText.slice(0, queryText.indexOf(view.sql)).split('\n').length - 1, col)
+                        : undefined}
                     />
                   )}
                   {!isData && view.status === 'cancelled' && (
@@ -5050,21 +5392,28 @@ function StudioPane({ active: paneActive = true }) {
                         dimmed={view.loading}
                         rowOffset={rowOffset}
                         editable={canEdit}
-                        columnMeta={editing ? columnMetaByName : {}}
+                        columnMeta={editing ? columnMetaByName : NO_META}
                         edits={view.edits}
                         deleted={view.deleted}
-                        newRows={editing ? view.newRows : []}
+                        newRows={editing ? view.newRows : NO_ROWS}
                         onEditCell={editCell}
                         onToggleDelete={toggleDelete}
                         onEditNewCell={editNewCell}
                         onRemoveNewRow={i => patchActive({ newRows: view.newRows.filter((_, idx) => idx !== i) })}
-                        selectedRows={editing ? view.rowSel || [] : []}
+                        selectedRows={editing ? view.rowSel || NO_ROWS : NO_ROWS}
                         onRowSelect={selectRow}
                         onCopyRow={copyRows}
                         dupNew={dupInfo.news}
                         dupRows={dupInfo.rows}
-                        onOpenCell={(col, value) => setCellDetail({ title: col, body: cellText(value) ?? 'NULL' })}
-                        onCopied={() => toast('Cell copied', 'success', 1500)}
+                        onOpenCell={(col, value, r) => setCellDetail({
+                          title: col,
+                          body: isBig(value)
+                            ? `${value.preview}\n\n… only the first ${fmtN(value.preview.length)} characters of ${formatBytes(value.size)} are shown here. Use Load full value to see all of it.`
+                            : cellText(value) ?? 'NULL',
+                          loadFull: isBig(value) ? cellLoader(col, r) : undefined,
+                        })}
+                        onCopied={(msg) => toast(msg || 'Cell copied', 'success', 1500)}
+                        onSelection={setCellStats}
                       />
                       {view.rows.length === 0 && (!editing || view.newRows.length === 0) && !view.loading && (
                         <div className="sticky left-0 py-12 text-center">
@@ -5188,6 +5537,19 @@ function StudioPane({ active: paneActive = true }) {
                   <span className="truncate">{statusLine.text}</span>
                 </div>
               )}
+              {cellStats && hasGrid && resultTab === 'data' && (
+                <div className="flex items-center gap-3 min-w-0 text-[12px] text-[#4a423e] tabular-nums" title="Selected cells. Ctrl+C copies them, Ctrl+Shift+C with the column names.">
+                  <span className="text-[#81766f]">{fmtN(cellStats.rows)} × {fmtN(cellStats.cols)} selected</span>
+                  {cellStats.nums > 0 && (
+                    <>
+                      <span>Sum <b className="font-medium text-[#312c2a]">{fmtStat(cellStats.sum)}</b></span>
+                      <span>Avg <b className="font-medium text-[#312c2a]">{fmtStat(cellStats.sum / cellStats.nums)}</b></span>
+                      <span className="hidden lg:inline">Min <b className="font-medium text-[#312c2a]">{fmtStat(cellStats.min)}</b></span>
+                      <span className="hidden lg:inline">Max <b className="font-medium text-[#312c2a]">{fmtStat(cellStats.max)}</b></span>
+                    </>
+                  )}
+                </div>
+              )}
               {hasGrid && resultTab === 'data' && (
                 <div className="ml-auto flex items-center gap-3">
                   <label className="hidden sm:flex items-center gap-2 text-[12px] text-[#6e6259]">
@@ -5255,6 +5617,7 @@ function StudioPane({ active: paneActive = true }) {
                     <span>·</span>
                     <span>{fmtMs(h.elapsed_ms)}</span>
                     {h.row_count != null && <><span>·</span><span className="truncate">{plural(h.row_count, 'row')}</span></>}
+                    {E.pickDb && h.database && <><span>·</span><span className="truncate" title="Database">{h.database}</span></>}
                     <span className="ml-auto flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <IconButton icon={ExternalLink} label="Open in a new worksheet" size={24} iconSize={13} onClick={() => loadSql(h.sql, null, true, h.database)} />
                     </span>
@@ -5267,7 +5630,7 @@ function StudioPane({ active: paneActive = true }) {
               ))}
               {history.items.length > 0 && (
                 <div className="p-3 text-center">
-                  <Button size="sm" variant="ghost" icon={Trash2} onClick={clearHistory}>Clear history</Button>
+                  <Button size="sm" variant={armed === 'history' ? 'danger' : 'ghost'} icon={Trash2} onClick={() => arm('history', clearHistory)}>{armed === 'history' ? 'Click again to clear all history' : 'Clear history'}</Button>
                 </div>
               )}
             </>
@@ -5291,7 +5654,9 @@ function StudioPane({ active: paneActive = true }) {
                       </div>
                     </button>
                     {s.owned && (
-                      <IconButton icon={Trash2} label="Delete saved query" size={26} iconSize={13} onClick={() => deleteSaved(s.id)} className="md:opacity-0 md:group-hover:opacity-100" />
+                      armed === `saved:${s.id}`
+                        ? <Button size="sm" variant="danger" onClick={() => arm(`saved:${s.id}`, () => deleteSaved(s.id))}>Delete?</Button>
+                        : <IconButton icon={Trash2} label="Delete saved query" size={26} iconSize={13} onClick={() => arm(`saved:${s.id}`, () => deleteSaved(s.id))} className="md:opacity-0 md:group-hover:opacity-100" />
                     )}
                   </div>
                   <div className="mt-1.5 text-[11.5px] leading-[17px] font-mono text-[#6e6259] whitespace-pre-wrap line-clamp-4 break-words"><SqlCode sql={s.sql} /></div>
@@ -5322,6 +5687,8 @@ function StudioPane({ active: paneActive = true }) {
         title={cellDetail?.title}
         subtitle="Cell value"
         body={cellDetail?.body}
+        loadFull={cellDetail?.loadFull}
+        fileName={cellDetail?.title}
         onClose={() => setCellDetail(null)}
       />
       <Modal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} width={440} labelledBy="sf-keys-title">
@@ -5337,7 +5704,7 @@ function StudioPane({ active: paneActive = true }) {
               <span className="flex items-center gap-1 flex-shrink-0">{keys.split(' ').map((k, i) => (k === '/' ? <span key={i} className="text-[#81766f]">/</span> : <Kbd key={i}>{k}</Kbd>))}</span>
             </div>
           ))}
-          <p className="py-3 text-[11.5px] text-[#81766f]">Case changes apply to the selection, or to the word under the cursor when nothing is selected. Ctrl+Z undoes any of them.</p>
+          <p className="py-3 text-[11.5px] text-[#81766f]">Case changes apply to the selection, or to the word under the cursor when nothing is selected. Ctrl+Z undoes any of them. Copied cells paste into Excel as cells, and the status bar shows the count, sum and average of a selection.</p>
         </div>
       </Modal>
       <ShareModal

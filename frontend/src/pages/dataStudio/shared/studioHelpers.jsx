@@ -65,6 +65,8 @@ async function fetchJson(url, opts) {
 // Snowflake worksheet and DBeaver both do.
 function cellText(v) {
   if (v === null || v === undefined) return null;
+  // Too big for the grid: the server sent the start of it and its size.
+  if (typeof v === 'object' && v.$truncated) return `${v.preview}…`;
   if (typeof v === 'object') {
     try { return JSON.stringify(v); } catch { return String(v); }
   }
@@ -321,6 +323,8 @@ function parseTableRefs(sql) {
   let match;
   REF_RE.lastIndex = 0;
   while ((match = REF_RE.exec(sql)) !== null) {
+    // "FROM sales." is a name still being typed, not a table.
+    if (!match[2] && /^\s*\./.test(sql.slice(match.index + match[0].length))) continue;
     const parts = match[1].split('.').map(unquote).filter(Boolean);
     if (!parts.length) continue;
     let alias = match[2] ? unquote(match[2]) : null;
