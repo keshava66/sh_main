@@ -437,7 +437,9 @@ def _connect(database: Optional[str] = None, schema: Optional[str] = None, wareh
         if val:
             kwargs[key] = val
     try:
-        return snowflake.connector.connect(**kwargs)
+        conn = snowflake.connector.connect(**kwargs)
+        conn._sh_profile = profile      # which login, so a cancel can come from the same user
+        return conn
     except HTTPException:
         raise
     except Exception as e:
@@ -470,6 +472,42 @@ def _apply_statement_timeout(conn, cur, seconds: int):
             pass
     except Exception as e:
         logger.info("Could not set STATEMENT_TIMEOUT_IN_SECONDS: %s", e)
+
+
+def _closed(conn) -> bool:
+    try:
+        return bool(conn.is_closed())
+    except Exception:
+        return False
+
+
+def _doom(conn):
+    """A session that was sent a cancel is closed when released, never pooled:
+    a cancel landing late must not stop the next user's query on it."""
+    try:
+        conn._sh_doomed = True
+    except Exception:
+        pass
+
+
+def _cancel_session_queries(conn):
+    """Stop whatever is running on this connection's session. The cursor has no
+    cancel(), and a statement's query id only arrives once it has finished, so
+    SYSTEM$CANCEL_ALL_QUERIES on the session is the one thing that stops it
+    from the first second. It runs on another session of the same login."""
+    session_id = getattr(conn, "session_id", None)
+    if not session_id:
+        return
+    _doom(conn)
+    try:
+        with _pooled(profile=getattr(conn, "_sh_profile", READ_PROFILE)) as side:
+            cur = side.cursor()
+            try:
+                cur.execute("SELECT SYSTEM$CANCEL_ALL_QUERIES(?)", (session_id,))
+            finally:
+                cur.close()
+    except Exception as e:
+        logger.info("Cancelling Snowflake session %s failed: %s", session_id, e)
 
 
 def _quiet_close(conn):
@@ -529,7 +567,8 @@ class _ConnectionPool:
                 if not bucket:
                     break
                 conn, created = bucket.pop()
-            if time.time() - created > self.MAX_AGE:
+            # is_closed() is a local flag, no round trip.
+            if time.time() - created > self.MAX_AGE or _closed(conn):
                 _quiet_close(conn)
                 continue
             return conn, key, created
@@ -538,7 +577,7 @@ class _ConnectionPool:
     def release(self, conn, key, created):
         if conn is None:
             return
-        if time.time() - created > self.MAX_AGE:
+        if time.time() - created > self.MAX_AGE or getattr(conn, "_sh_doomed", False):
             _quiet_close(conn)
             return
         with self._lock:
@@ -1440,7 +1479,12 @@ def _get_job(job_id: str, owner: Optional[str] = None, shared: bool = False) -> 
 # Statements that change the session itself. A connection that ran one is
 # closed instead of going back to the pool, or the next person's query (any
 # user) would run with this one's role, database, settings or open transaction.
-_SESSION_CHANGE = re.compile(r"^\s*(USE|ALTER\s+SESSION|SET|UNSET|BEGIN|START\s+TRANSACTION|CALL|EXECUTE\s+IMMEDIATE|DECLARE)\b", re.IGNORECASE)
+_SESSION_CHANGE = re.compile(
+    r"^\s*(USE|ALTER\s+SESSION|SET|UNSET|BEGIN|START\s+TRANSACTION|CALL|EXECUTE\s+IMMEDIATE|DECLARE"
+    # Temporary tables, stages, file formats... live in the session, so the next
+    # person handed it could read them.
+    r"|CREATE\s+(OR\s+REPLACE\s+)?((LOCAL|GLOBAL)\s+)?(TEMP|TEMPORARY|VOLATILE))\b",
+    re.IGNORECASE)
 
 
 def _close_job(job: Dict[str, Any]):
@@ -1527,6 +1571,45 @@ def _has_duplicate_columns(columns: List[Dict[str, str]]) -> bool:
     return len(names) != len(set(names))
 
 
+def _capture_rows(job: Dict[str, Any], conn, cur):
+    """Columns and row count of the result the cursor just produced."""
+    columns = _describe_columns(cur)
+    job["columns"] = columns
+    row_count = cur.rowcount
+    # SHOW/DESC and anything with duplicate output column names can't
+    # be re-read through RESULT_SCAN by name, so those get materialized
+    # once here and paged from memory instead.
+    needs_inline = (
+        job["lead_keyword"] in ("SHOW", "DESC", "DESCRIBE", "LIST", "LS")
+        or _has_duplicate_columns(columns)
+    )
+    if needs_inline:
+        rows = cur.fetchall()
+        job["inline_rows"] = [[_to_json_safe(v) for v in r] for r in rows]
+        job["columns"] = _dedupe_columns(columns)
+        job["row_count"] = len(job["inline_rows"])
+    else:
+        if row_count is None or row_count < 0:
+            row_count = _result_scan_count(conn, job["query_id"])
+        job["row_count"] = row_count
+    job["rows_affected"] = None
+
+
+def _statement_job(job: Dict[str, Any], st: Dict[str, Any], query_id: str) -> Dict[str, Any]:
+    """A finished job for one statement of a multi-statement run, so its result
+    can be paged, sorted and downloaded like any other. It holds no connection:
+    RESULT_SCAN reads it back from any session of the same login."""
+    part = _new_job(st["cls"], job["database"], job["schema"], job["warehouse"], job["timeout_seconds"], job["owner"])
+    now = time.time()
+    part.update(
+        sql=st["sql"], statements=[st], statement_results=[], profile=job["profile"], shared_ws=job.get("shared_ws"),
+        is_destructive=False, query_id=query_id, status="success", started_at=job["statement_started"], finished_at=now,
+        _history_written=True,    # the run as a whole goes into history, once
+    )
+    part["done"].set()
+    return part
+
+
 def _run_job(job_id: str):
     job = _get_job(job_id)
     try:
@@ -1536,7 +1619,7 @@ def _run_job(job_id: str):
         job["error"] = e.detail if isinstance(e.detail, str) else str(e.detail)
         job["finished_at"] = time.time()
         job["done"].set()
-        _job_slots.release()
+        job["slots"].release()
         return
 
     job["conn"] = conn
@@ -1560,30 +1643,15 @@ def _run_job(job_id: str):
             if job["cancel_requested"]:
                 raise _Cancelled()
             if k < len(planned) - 1:
-                job.setdefault("statement_results", []).append(_statement_result(st, k, started, "success", query_id=cur.sfqid))
-
-        columns = _describe_columns(cur)
-        job["columns"] = columns
+                extra = {"query_id": cur.sfqid}
+                if st.get("cls") is not None and st["cls"].returns_rows:
+                    part = _statement_job(job, st, cur.sfqid)
+                    _capture_rows(part, conn, cur)
+                    extra.update(job_id=part["job_id"], row_count=part["row_count"])
+                job.setdefault("statement_results", []).append(_statement_result(st, k, started, "success", **extra))
 
         if job["returns_rows"]:
-            row_count = cur.rowcount
-            # SHOW/DESC and anything with duplicate output column names can't
-            # be re-read through RESULT_SCAN by name, so those get materialized
-            # once here and paged from memory instead.
-            needs_inline = (
-                job["lead_keyword"] in ("SHOW", "DESC", "DESCRIBE", "LIST", "LS")
-                or _has_duplicate_columns(columns)
-            )
-            if needs_inline:
-                rows = cur.fetchall()
-                job["inline_rows"] = [[_to_json_safe(v) for v in r] for r in rows]
-                job["columns"] = _dedupe_columns(columns)
-                job["row_count"] = len(job["inline_rows"])
-            else:
-                if row_count is None or row_count < 0:
-                    row_count = _result_scan_count(conn, job["query_id"])
-                job["row_count"] = row_count
-            job["rows_affected"] = None
+            _capture_rows(job, conn, cur)
         else:
             # DML/DDL: Snowflake reports what it touched in the result row.
             affected = 0
@@ -1606,7 +1674,8 @@ def _run_job(job_id: str):
         if len(planned) > 1:
             job["statement_results"].append(_statement_result(
                 planned[-1], len(planned) - 1, job["statement_started"],
-                "success", query_id=job["query_id"], row_count=job["row_count"], rows_affected=job["rows_affected"]))
+                "success", query_id=job["query_id"], row_count=job["row_count"], rows_affected=job["rows_affected"],
+                **({"job_id": job["job_id"]} if job["returns_rows"] else {})))
     except _Cancelled:
         job["status"] = "cancelled"
         job["finished_at"] = time.time()
@@ -1633,7 +1702,7 @@ def _run_job(job_id: str):
         if job["status"] != "success" or not job["returns_rows"] or job["inline_rows"] is not None:
             _close_job(job)
         job["done"].set()
-        _job_slots.release()
+        job["slots"].release()
 
 
 def _dedupe_columns(columns: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -1789,6 +1858,44 @@ class RowsRequest(BaseModel):
     page_size: int = 100
     sort: Optional[List[Dict[str, str]]] = None
     filters: Optional[List[ColumnFilter]] = None
+
+
+class ValuesRequest(BaseModel):
+    """The most common values of one column, for the filter menu. The other
+    filters still apply; one on this column itself is left out."""
+    column: str
+    filters: Optional[List[ColumnFilter]] = None
+    limit: int = Field(8, ge=1, le=50)
+    search: Optional[str] = Field(None, max_length=200)   # only values containing this
+
+    def others(self) -> List[ColumnFilter]:
+        out = [f for f in (self.filters or []) if f.col != self.column]
+        if self.search:
+            out.append(ColumnFilter(col=self.column, op="contains", value=self.search))
+        return out
+
+
+def _value_key(v):
+    return v if isinstance(v, (str, int, float, bool)) else json.dumps(v, sort_keys=True, default=str)
+
+
+def inline_values(job: Dict[str, Any], body: "ValuesRequest") -> Dict[str, Any]:
+    """Value counts for a result held in memory (SHOW, duplicate names)."""
+    names = [c["name"] for c in job["columns"]]
+    if body.column not in names:
+        raise HTTPException(status_code=400, detail=f"'{body.column}' is not a column of this result")
+    i = names.index(body.column)
+    rows, _ = _paged_inline(job, RowsRequest(page=1, page_size=max(1, len(job["inline_rows"] or [])), filters=body.others()))
+    counts, first = {}, {}
+    for r in rows:
+        v = r[i]
+        if v is None:
+            continue
+        k = _value_key(v)
+        counts[k] = counts.get(k, 0) + 1
+        first.setdefault(k, v)
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))[:body.limit]
+    return {"column": body.column, "values": [{"value": first[k], "count": n} for k, n in top], "more": len(counts) > body.limit}
 
 
 class CellRequest(RowsRequest):
@@ -2594,7 +2701,8 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
     timeout_seconds = body.timeout_seconds or cfg["statement_timeout_seconds"]
     timeout_seconds = max(1, min(int(timeout_seconds), cfg["max_statement_timeout_seconds"]))
 
-    if not _job_slots.acquire(blocking=False):
+    slots = _job_slots
+    if not slots.acquire(blocking=False):
         raise HTTPException(
             status_code=429,
             detail=f"Too many queries already running (max {cfg['max_concurrent_jobs']} concurrent). Cancel one or wait for it to finish.",
@@ -2608,6 +2716,7 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
         timeout_seconds,
         auth["user"]["email"],
     )
+    job["slots"] = slots
     job["statements"] = planned
     job["statement_results"] = []
     job["profile"] = profile
@@ -2621,7 +2730,7 @@ def start_query(body: SnowflakeQueryRequest, conn_id: Optional[str] = Query(None
     except Exception as e:
         with _jobs_lock:
             _jobs.pop(job["job_id"], None)
-        _job_slots.release()
+        slots.release()
         raise HTTPException(status_code=503, detail=f"Could not schedule the query: {e}")
     if body.shared_ws:
         shared_worksheets.note_run(body.shared_ws, auth, job["job_id"], job["sql"])
@@ -2704,6 +2813,10 @@ def grid_cell(v):
         if len(text) > CELL_MAX_CHARS:
             return {"$truncated": True, "preview": text[:CELL_PREVIEW_CHARS], "size": len(text)}
     return v
+
+
+def _is_truncated(v) -> bool:
+    return isinstance(v, dict) and v.get("$truncated") is True
 
 
 def grid_rows(rows):
@@ -2865,6 +2978,44 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(sf_auth)
     }
 
 
+@snowflake_router.post("/query/{job_id}/values")
+def get_query_values(job_id: str, body: ValuesRequest, auth: dict = Depends(sf_auth)):
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
+    if job["status"] != "success" or not job["returns_rows"]:
+        raise HTTPException(status_code=409, detail="This result has no rows to count")
+    if job["inline_rows"] is not None:
+        return inline_values(job, body)
+    names = [c["name"] for c in job["columns"]]
+    if body.column not in names:
+        raise HTTPException(status_code=400, detail=f"'{body.column}' is not a column of this result")
+    where_sql, where_params = build_where(body.others(), names)
+    col = quote_ident(body.column)
+    where_sql = f"{where_sql} AND {col} IS NOT NULL" if where_sql else f" WHERE {col} IS NOT NULL"
+
+    def scan(conn):
+        cur = conn.cursor()
+        try:
+            base = f"({_result_scan_sql(job['query_id'])})"
+            cur.execute(f"SELECT {col}, COUNT(*) FROM {base}{where_sql} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {body.limit + 1}",
+                        (job["query_id"], *where_params))
+            return [[_to_json_safe(v) for v in r] for r in cur.fetchall()]
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+    with job["job_lock"]:
+        try:
+            rows = scan(_job_connection(job))
+        except Exception as first:
+            if not _looks_stale(first):
+                raise HTTPException(status_code=400, detail=f"Can't count the values of {body.column}: {first}")
+            _drop_job_connection(job)
+            rows = scan(_job_connection(job))
+    return {"column": body.column, "values": [{"value": v, "count": int(n)} for v, n in rows[:body.limit]], "more": len(rows) > body.limit}
+
+
 _PRIVILEGE_MARKERS = ("insufficient privileges", "does not exist or not authorized",
                       "not authorized", "003001", "002003")
 
@@ -2945,25 +3096,20 @@ def cancel_query(job_id: str, auth: dict = Depends(sf_auth)):
     if job["status"] != "running":
         return {"job_id": job_id, "status": job["status"]}
     job["cancel_requested"] = True
-    cur = job.get("cursor")
-    if cur is not None:
-        try:
-            cur.cancel()
-        except Exception as e:
-            logger.info("Snowflake cursor cancel failed for job %s: %s", job_id, e)
-    query_id = job.get("query_id")
-    if query_id:
-        # Belt and braces: the cursor-level cancel can miss if the request is
-        # mid-flight, SYSTEM$CANCEL_QUERY never does.
-        try:
-            with _pooled(job["database"], job["schema"], job["warehouse"], job["profile"]) as side:
-                side_cur = side.cursor()
-                try:
-                    side_cur.execute("SELECT SYSTEM$CANCEL_QUERY(?)", (query_id,))
-                finally:
-                    side_cur.close()
-        except Exception as e:
-            logger.info("SYSTEM$CANCEL_QUERY failed for job %s: %s", job_id, e)
+
+    def stop():
+        # Twice: a statement sent a moment before the first cancel may not have
+        # reached Snowflake yet, so there was nothing to cancel.
+        for wait in (0, 2):
+            conn = job.get("conn")
+            if conn is not None:
+                _doom(conn)
+            if job["done"].wait(wait):
+                return
+            if conn is not None:
+                _cancel_session_queries(conn)
+
+    _executor.submit(stop)
     return {"job_id": job_id, "status": "cancelling"}
 
 
@@ -3283,6 +3429,10 @@ def _where_for_row(original: Dict[str, Any], key_columns: List[str], columns_by_
         if name not in original:
             raise HTTPException(status_code=400, detail=f"The row is missing key column '{name}' - refresh and try again")
         value = original[name]
+        if _is_truncated(value):
+            # The grid only had the start of this value, so it can't be matched.
+            # The other columns still do, and the one-row check guards the rest.
+            continue
         ident = quote_ident(name)
         if not col["comparable"]:
             clauses.append(f"EQUAL_NULL(TO_VARCHAR({ident}), ?)")
@@ -3486,7 +3636,7 @@ def table_mutate(body: MutateRequest, conn_id: Optional[str] = Query(None), role
             try:
                 cur.execute("ROLLBACK")
             except Exception:
-                pass
+                healthy = False     # may still be inside the transaction: never pool it
             raise
         finally:
             cur.close()
@@ -3517,7 +3667,7 @@ def table_mutate(body: MutateRequest, conn_id: Optional[str] = Query(None), role
     except HTTPException:
         raise
     except Exception as e:
-        healthy = not _looks_stale(e)
+        healthy = healthy and not _looks_stale(e)
         raise HTTPException(status_code=500, detail=f"Changes were rolled back: {e}")
     finally:
         if healthy:
@@ -5000,13 +5150,11 @@ def cancel_copy(job_id: str, auth: dict = Depends(sf_auth)):
         return {"job_id": job_id, "status": job["status"]}
     job["cancel_requested"] = True
     with job["lock"]:
-        cursors = list(job["active_cursors"])
-    for cur in cursors:
-        try:
-            cur.cancel()
-        except Exception as e:
-            logger.info("Copy chunk cancel failed for job %s: %s", job_id, e)
-    _copy_log(job, "warn", "Cancel requested - finishing in-flight chunks, no new ones will start")
+        conns = {id(c.connection): c.connection for c in job["active_cursors"] if getattr(c, "connection", None)}
+    for conn in conns.values():
+        _doom(conn)
+        _executor.submit(_cancel_session_queries, conn)
+    _copy_log(job, "warn", "Cancel requested - stopping in-flight chunks, no new ones will start")
     return {"job_id": job_id, "status": "cancelling"}
 
 

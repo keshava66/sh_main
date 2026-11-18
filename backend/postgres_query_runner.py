@@ -233,7 +233,7 @@ _ALWAYS_BLOCKED = [
 _DESTRUCTIVE_LEAD_KEYWORDS = {
     "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "ALTER",
     "CREATE", "GRANT", "REVOKE", "VACUUM", "REINDEX", "CLUSTER", "REFRESH",
-    "DO", "CALL", "COMMENT", "SECURITY", "LOCK", "IMPORT",
+    "DO", "CALL", "COMMENT", "SECURITY", "LOCK", "IMPORT", "REASSIGN",
 }
 
 _DQL_LEAD_KEYWORDS = {"SELECT", "TABLE", "VALUES", "SHOW"}
@@ -495,6 +495,16 @@ def classify_and_validate_sql(sql: str) -> SqlClassification:
     # cursor, so those results get read straight into memory instead.
     cursorable = lead in ("SELECT", "VALUES", "TABLE") or (lead == "WITH" and effective_lead == "SELECT")
 
+    # Two SELECTs that write. WITH d AS (DELETE ... RETURNING *) SELECT ... deletes,
+    # and SELECT ... INTO t creates a table. Postgres won't take either inside a
+    # subquery, so neither can be wrapped for the grid; both need the confirm.
+    label = effective_lead
+    cte_write = re.search(r"\bAS\s*(?:NOT\s+)?(?:MATERIALIZED\s*)?\(\s*(INSERT|UPDATE|DELETE|MERGE)\b", cleaned_full, re.IGNORECASE) if lead == "WITH" else None
+    if cte_write:
+        is_destructive, cursorable, label = True, False, cte_write.group(1).upper()
+    elif effective_lead == "SELECT" and _paren_depth_zero_search(cleaned_full, r"\bINTO\b"):
+        is_destructive, cursorable, returns_rows, label = True, False, False, "SELECT INTO"
+
     warning = None
     if effective_lead in ("INSERT",):
         returns_rows = bool(_paren_depth_zero_search(cleaned_full, r"\bRETURNING\b"))
@@ -511,7 +521,7 @@ def classify_and_validate_sql(sql: str) -> SqlClassification:
 
     return SqlClassification(
         cleaned_sql=cleaned,
-        lead_keyword=effective_lead,
+        lead_keyword=label,
         is_destructive=is_destructive,
         returns_rows=returns_rows,
         cursorable=cursorable,

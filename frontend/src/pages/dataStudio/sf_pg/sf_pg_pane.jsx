@@ -1,15 +1,16 @@
-import React, { createContext, forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, forwardRef, useCallback, useContext, useDeferredValue, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import {
-  AlignLeft, ArrowDown, ArrowUp, CaseSensitive, Keyboard, Ban, Bookmark, Check, ChevronDown, ChevronLeft, ChevronRight,
-  ChevronsLeft, ChevronsRight, CircleCheck, Code2, Columns3, Copy, CopyPlus, Database,
-  Download, ExternalLink, Eye, FileCode2, Filter, History, Info, KeyRound,
+  AlignLeft, ArrowDown, ArrowUp, CaseSensitive, Keyboard, Ban, Bookmark, ChartColumnBig, Check, ChevronDown, ChevronLeft, ChevronRight,
+  ChevronsDown, ChevronsLeft, ChevronsRight, ChevronsUp, CircleCheck, Columns2, Grid3x3, IdCard, Rows2, ScanText, Code2, Columns3, Copy, CopyPlus, Database,
+  ArrowRightToLine, Download, ExternalLink, Eye, FileCode2, Filter, History, Info, KeyRound,
   Layers, Link2, Loader2, LogOut, Maximize2, Minimize2, Moon, PanelLeftClose, PanelLeftOpen, Pencil,
   Play, Plus, RefreshCw, RotateCcw, Save, Search, ShieldCheck, Square, Sun,
   Table2, Trash2, TriangleAlert, Undo2, UserPlus, Users, WifiOff, X,
 } from 'lucide-react';
 import TableCopier from './TableCopier';
+import { ChartView, PivotView, ProfileView, RecordView } from './resultViews';
 import { apiEventSource, apiFetch, downloadFile } from '../../../utils/apiClient';
 import { PeerLayer, SharedSession, usePeers } from './collab';
 import { useInPageLog } from '../useInPageLog';
@@ -20,7 +21,7 @@ import { useDirectoryPhotos } from '../../../hooks/useDirectoryPhotos';
 import {
   caretPixelPos, cellText, clauseAtCaret, DEFAULT_COL_WIDTH, EXPORT_FORMATS, fetchJson,
   FILTER_OPS, formatBytes, formatWhen, leadKeywordHint, MAX_COL_WIDTH, MIN_COL_WIDTH,
-  PAGE_SIZE_OPTIONS, parseTableRefs, rankSuggestions, resolveRef, sqlTokenAtCaret, STATIC_SUGGESTIONS,
+  PAGE_SIZE_OPTIONS, parseTableRefs, PG_SUGGESTIONS, rankSuggestions, resolveRef, sqlTokenAtCaret, STATIC_SUGGESTIONS,
   TOKEN_COLORS, tokenizeSql,
 } from '../shared/studioHelpers';
 import sfIcon from '/icons/snowflake_badge.svg';
@@ -28,9 +29,13 @@ import pgIcon from '/icons/postgres_badge.svg';
 
 // One pane, two engines. Postgres has no cross-database queries, so each
 // worksheet there picks its database (pickDb) and sends it with the query.
+// The engine's colour carries every state (selection, focus, the open picker);
+// red stays for Run, primary buttons, errors and anything destructive.
+const sigVars = (E) => ({ '--sig': E.accent, '--sig-ink': E.ink, '--sig-soft': E.soft, '--sig-mid': E.mid, '--sig-ring': `${E.accent}55` });
+
 const ENGINES = {
-  snowflake: { id: 'snowflake', label: 'Snowflake', api: '/api/snowflake', icon: sfIcon, store: 'snowflake', log: 'sf', configKey: 'snowflake_query_runner', copier: true, pickDb: false, upperIdents: true, sample: '"MY_DB"."PUBLIC"."MY_TABLE"' },
-  postgres: { id: 'postgres', label: 'Postgres', api: '/api/pgstudio', icon: pgIcon, store: 'pgstudio', log: 'pg', configKey: 'postgres_query_runner', copier: false, pickDb: true, upperIdents: false, sample: '"public"."my_table"' },
+  snowflake: { id: 'snowflake', label: 'Snowflake', api: '/api/snowflake', icon: sfIcon, store: 'snowflake', log: 'sf', configKey: 'snowflake_query_runner', accent: '#29b5e8', ink: '#0b6f94', soft: '#e6f6fc', mid: '#bfe7f7', copier: true, pickDb: false, upperIdents: true, sample: '"MY_DB"."PUBLIC"."MY_TABLE"' },
+  postgres: { id: 'postgres', label: 'Postgres', api: '/api/pgstudio', icon: pgIcon, store: 'pgstudio', log: 'pg', configKey: 'postgres_query_runner', accent: '#336791', ink: '#24496b', soft: '#e9eff6', mid: '#c4d5e7', copier: false, pickDb: true, upperIdents: false, sample: '"public"."my_table"' },
 };
 const EngineCtx = createContext(ENGINES.snowflake);
 
@@ -45,7 +50,7 @@ const T = {
   ink: '#312c2a',
   text: '#4a423e',
   muted: '#6e6259',
-  faint: '#81766f',
+  faint: '#766a63',
   line: '#e8e6e3',
   lineStrong: '#d5cfc9',
   panel: '#f1efed',
@@ -54,7 +59,7 @@ const T = {
   hover: '#f4f2f0',
   red: '#eb1700',
   redHover: '#c51300',
-  redSoft: '#fdeeec',
+  redSoft: 'var(--sig-soft)',
   redTint: 'rgba(235,23,0,0.08)',
   maroon: '#9e0000',
   green: '#328714',
@@ -73,8 +78,11 @@ const fmtMs = (ms) => {
   return `${m}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
 };
 
-const fmtN = (n) => (n ?? 0).toLocaleString();
-const fmtStat = (n) => (Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 4 }));
+// One formatter each: toLocaleString builds a new one per call, which adds up across a grid.
+const NF = new Intl.NumberFormat();
+const NF4 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
+const fmtN = (n) => (typeof n === 'number' || typeof n === 'bigint' ? NF.format(n) : (n ?? 0).toLocaleString());
+const fmtStat = (n) => (Number.isInteger(n) ? NF.format(n) : NF4.format(n));
 
 const plural = (n, word) => `${fmtN(n)} ${word}${n === 1 ? '' : 's'}`;
 
@@ -92,6 +100,18 @@ function useMediaQuery(query) {
     return () => mq.removeEventListener('change', on);
   }, [query]);
   return match;
+}
+
+// Width of an element as it resizes (0 until it's on screen).
+function useWidth(el) {
+  const [w, setW] = useState(0);
+  useLayoutEffect(() => {
+    if (!el) return undefined;
+    const ro = new ResizeObserver(([e]) => setW(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+  return w;
 }
 
 // Ticks while a query runs so the status bar shows live elapsed time.
@@ -160,18 +180,26 @@ const ALIASES = {
   TEXT: 'VARCHAR', STRING: 'VARCHAR', CHARACTER: 'CHAR', VARBINARY: 'BINARY', DATETIME: 'TIMESTAMP_NTZ',
 };
 
+// Postgres spells some types out in full; show the names people write.
+const PG_SHORT = [[/^character varying/i, 'varchar'], [/^timestamp without time zone/i, 'timestamp'], [/^timestamp with time zone/i, 'timestamptz'],
+  [/^time without time zone/i, 'time'], [/^double precision/i, 'float8'], [/^character\b/i, 'char']];
+const shortType = (t) => PG_SHORT.reduce((x, [re, to]) => x.replace(re, to), t);
+
+// Snowflake's defaults for "no limit" (VARCHAR 16 MB, BINARY 8 MB, and the 128 MB ceiling).
+const MAX_LEN = new Set([16777216, 8388608, 134217728, 67108864]);
+
 function displayType(col) {
   if (!col) return '';
   if (typeof col === 'string') col = { type: col };
-  if (col.display_type) return col.display_type;
-  const raw = String(col.data_type || col.type || '').trim().toUpperCase();
+  if (col.display_type) return shortType(col.display_type).replace(/^(VARCHAR|TEXT|STRING|BINARY)\((16777216|8388608|134217728|67108864)\)$/i, '$1');
+  const raw = shortType(String(col.data_type || col.type || '').trim()).toUpperCase();
   if (!raw || raw.includes('(')) return raw;
   const base = ALIASES[raw] || raw;
   const p = col.precision ?? col.numeric_precision;
   const sc = col.scale ?? col.numeric_scale;
   const len = col.char_length ?? col.internal_size;
   if (base === 'NUMBER') return p != null ? `NUMBER(${p},${sc ?? 0})` : 'NUMBER';
-  if (base === 'VARCHAR' || base === 'CHAR' || base === 'BINARY') return len ? `${base}(${len})` : base;
+  if (base === 'VARCHAR' || base === 'CHAR' || base === 'BINARY') return len && !MAX_LEN.has(Number(len)) ? `${base}(${len})` : base;
   if (TIME_TYPES.has(base) && sc != null && col.type && !col.data_type) return `${base}(${sc})`;
   return base;
 }
@@ -205,20 +233,20 @@ const BTN = {
 
 function Button({ variant = 'secondary', size = 'md', icon, children, className = '', ...rest }) {
   const IconCmp = icon;
-  const h = size === 'sm' ? 'h-7 px-2.5 text-[12px] gap-1.5' : 'h-8 px-3 text-[12.5px] gap-2';
+  const h = size === 'sm' ? 'h-6 px-2 text-[11.5px] gap-1' : 'h-7 px-2.5 text-[12px] gap-1.5';
   return (
     <button
       type="button"
       {...rest}
-      className={`inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#eb1700]/40 disabled:opacity-45 disabled:cursor-not-allowed ${h} ${BTN[variant]} ${className}`}
+      className={`inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sig-ring)] disabled:opacity-45 disabled:cursor-not-allowed ${h} ${BTN[variant]} ${className}`}
     >
-      {IconCmp && <IconCmp size={size === 'sm' ? 13 : 14} strokeWidth={2} className="flex-shrink-0" />}
+      {IconCmp && <IconCmp size={size === 'sm' ? 12 : 13} strokeWidth={2} className="flex-shrink-0" />}
       {children}
     </button>
   );
 }
 
-function IconButton({ icon, label, active, size = 28, className = '', iconSize = 15, ...rest }) {
+function IconButton({ icon, label, active, size = 26, className = '', iconSize = 14, ...rest }) {
   const IconCmp = icon;
   return (
     <button
@@ -227,11 +255,240 @@ function IconButton({ icon, label, active, size = 28, className = '', iconSize =
       aria-label={label}
       {...rest}
       style={{ width: size, height: size }}
-      className={`inline-flex items-center justify-center flex-shrink-0 rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#eb1700]/40 disabled:opacity-40 ${
-        active ? 'bg-[#fdeeec] text-[#eb1700]' : 'text-[#6e6259] hover:bg-[#f1efed] hover:text-[#312c2a]'
+      className={`inline-flex items-center justify-center flex-shrink-0 rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sig-ring)] disabled:opacity-40 ${
+        active ? 'bg-[var(--sig-soft)] text-[var(--sig-ink)]' : 'text-[#6e6259] hover:bg-[#f1efed] hover:text-[#312c2a]'
       } ${className}`}
     >
       <IconCmp size={iconSize} strokeWidth={1.9} />
+    </button>
+  );
+}
+
+// Small icon button for the editor's own toolbar, dark or light to match it.
+function EdTool({ dark, icon, label, className = '', ...rest }) {
+  const IconCmp = icon;
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      {...rest}
+      className={`inline-flex items-center justify-center w-[26px] h-[24px] rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sig-ring)] disabled:opacity-35 disabled:cursor-not-allowed ${
+        dark ? 'text-[#a39992] hover:bg-[#352f2c] hover:text-white' : 'text-[#6e6259] hover:bg-[#f1efed] hover:text-[#312c2a]'} ${className}`}
+    >
+      <IconCmp size={14} strokeWidth={1.9} />
+    </button>
+  );
+}
+
+// Foot of the editor: run it, see it going, see how long it took.
+// Statements whose "rows affected" means something; for the rest it's just "Done".
+const CHANGES_ROWS = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE', 'COPY', 'TRUNCATE']);
+
+// One chip per statement of a multi-statement run. Statements that returned
+// rows open their result; the rest say what they did.
+function StatementStrip({ parts, shown, accent, onPick }) {
+  const stripRef = useRef(null);
+  // Which edges have chips scrolled out of sight, for the fade.
+  const [cut, setCut] = useState({ l: false, r: false });
+  const measure = () => {
+    const el = stripRef.current;
+    if (el) setCut({ l: el.scrollLeft > 1, r: el.scrollLeft + el.clientWidth < el.scrollWidth - 1 });
+  };
+  useEffect(() => {
+    stripRef.current?.querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    measure();
+  }, [shown, parts.length]);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return undefined;
+    // The scrollbar is hidden, so an ordinary mouse wheel scrolls sideways here.
+    const wheel = (e) => {
+      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener('wheel', wheel, { passive: false });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => { el.removeEventListener('wheel', wheel); ro.disconnect(); };
+  }, []);
+  const fade = cut.l || cut.r
+    ? `linear-gradient(90deg, ${cut.l ? 'transparent, #000 28px' : '#000'}, ${cut.r ? '#000 calc(100% - 28px), transparent' : '#000'})`
+    : undefined;
+  return (
+    <div
+      ref={stripRef}
+      role="tablist"
+      aria-label="Statements in this run"
+      onScroll={measure}
+      style={fade ? { maskImage: fade, WebkitMaskImage: fade } : undefined}
+      className="flex-shrink-0 flex items-end gap-1 px-2 pt-1.5 overflow-x-auto ds-noscroll border-b border-[#efedea]"
+    >
+      {parts.map(p => {
+        const on = p.job_id && p.job_id === shown;
+        const opens = Boolean(p.job_id);
+        const kind = p.statement_type || (p.text.match(/^\s*([A-Za-z]+)/)?.[1] || '').toUpperCase() || 'Statement';
+        const what = p.status === 'failed' ? 'Failed'
+          : p.status === 'skipped' ? 'Not run'
+          : opens ? plural(p.row_count ?? 0, 'row')
+          : CHANGES_ROWS.has(kind) && p.rows_affected != null ? `${fmtN(p.rows_affected)} affected` : 'Done';
+        return (
+          <button
+            key={p.index}
+            type="button"
+            role="tab"
+            aria-selected={Boolean(on)}
+            disabled={!opens}
+            onClick={() => onPick(p)}
+            title={`${p.text}${p.status === 'failed' ? '\n\nThis statement failed. Open it to see the error' : p.status === 'skipped' ? '\n\nNot run, an earlier statement failed' : opens ? '' : '\n\nNo rows to show'}`}
+            className={`relative top-px flex-shrink-0 flex items-center gap-1.5 h-[26px] pl-1.5 pr-2.5 rounded-t-[7px] border border-b-0 text-[12px] whitespace-nowrap transition-colors ${on
+              ? 'bg-white border-[#e8e6e3] text-[#312c2a] font-medium'
+              : opens ? 'border-transparent text-[#6e6259] hover:bg-[#f8f7f5] hover:text-[#312c2a]' : 'border-transparent text-[#a39992] cursor-default'}`}
+          >
+            <span
+              className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10.5px] font-semibold tabular-nums"
+              style={on ? { background: accent, color: '#fff' } : { background: '#f1efed', color: p.status === 'failed' ? '#9e0000' : '#6e6259' }}
+            >
+              {p.index}
+            </span>
+            <span>{kind}</span>
+            <span className={`tabular-nums ${p.status === 'failed' ? 'text-[#9e0000]' : on ? 'text-[#6e6259]' : ''}`}>{what}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function RunBar({ dark, accent, busy, othersBusy, status, meta, elapsed, statementCount, leadHint, canRun, lockedReason, onRun, onRunAll, onCancel }) {
+  const going = busy || othersBusy;
+  const ms = going ? elapsed : meta?.elapsed_ms;
+  const label = going ? (othersBusy ? 'Someone else is running this worksheet' : 'Running')
+    : status === 'success' ? (meta?.statement_count > 1 ? `Done, ${meta.statement_count} statements` : 'Done')
+    : status === 'failed' ? 'Failed'
+    : status === 'cancelled' ? 'Cancelled'
+    : statementCount > 1 ? `${statementCount} statements` : 'Ready';
+  const dim = dark ? '#a39992' : '#766a63';
+  const track = dark ? '#433b37' : '#efedea';
+  // A quick query reads "28 ms", a slow one "4.2 s", a very slow one "2m 05s".
+  const [num, unit] = ms == null ? ['0.0', 's'] : ms < 1000 && !going ? [String(Math.round(ms)), 'ms'] : ms < 60000 ? [(ms / 1000).toFixed(1), 's'] : [null, null];
+  return (
+    <div className="flex-shrink-0 flex items-center gap-1.5 min-w-0 px-2 py-1.5 border-t" style={{ borderColor: track }}>
+      {busy ? (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-2 rounded-[9px] bg-white text-[#312c2a] text-[13px] font-semibold shadow-[0_0_0_1px_#e8e6e3] hover:bg-[#f8f7f5] flex-shrink-0"
+        >
+          <Square size={12} fill="currentColor" />Cancel
+          <span className="hidden md:inline-flex items-center h-[18px] px-1.5 rounded bg-[#f1efed] text-[10px] font-medium text-[#6e6259]">{MOD} Enter</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={!canRun}
+          title={lockedReason || (statementCount > 1 ? `${MOD} + Enter runs the selection, or the statement at the cursor` : `${MOD} + Enter runs the selection, or the whole worksheet`)}
+          className={`inline-flex items-center gap-1.5 h-7 pl-2.5 pr-2 rounded-[9px] text-[12.5px] font-semibold flex-shrink-0 transition-transform enabled:active:scale-[.97] disabled:cursor-not-allowed ${!canRun
+            ? (dark ? 'bg-[#3a3330] text-[#8f847c]' : 'bg-[#f1efed] text-[#a39992]')
+            : `text-white ${leadHint ? 'bg-[#9e0000] hover:bg-[#7f0000]' : 'bg-[#eb1700] hover:bg-[#c51300]'}`}`}
+        >
+          <Play size={13} fill="currentColor" />
+          {leadHint ? `Run ${leadHint}` : statementCount > 1 ? 'Run statement' : 'Run'}
+          <span className={`hidden md:inline-flex items-center h-[18px] px-1.5 rounded text-[10px] font-medium ${canRun ? 'bg-white/20' : dark ? 'bg-white/5' : 'bg-white'}`}>{MOD} Enter</span>
+        </button>
+      )}
+      {!going && statementCount > 1 && (
+        <button
+          type="button"
+          onClick={onRunAll}
+          disabled={!canRun}
+          title={`${MOD} + Shift + Enter runs every statement in order and shows the last result`}
+          className={`inline-flex items-center gap-1.5 h-7 px-2 rounded-[9px] text-[12px] font-medium flex-shrink-0 disabled:opacity-45 ${dark ? 'text-[#d9d1ca] hover:bg-[#352f2c] hover:text-white' : 'text-[#4a423e] hover:bg-[#f1efed]'}`}
+        >
+          <ChevronsRight size={15} />Run all {statementCount}
+        </button>
+      )}
+      <div className="flex-1 min-w-0 flex items-center gap-2.5 ml-1.5">
+        {/* Only while something runs; once done, the words and the timer say it. */}
+        {going && (
+          <div className="relative flex-1 max-w-[340px] min-w-[40px] h-[5px] flex" aria-hidden="true">
+            <span className="relative flex-1 rounded-full overflow-hidden" style={{ background: track }}>
+              <span className="ds-run absolute inset-y-0 left-0 w-2/5 rounded-full" style={{ background: accent }} />
+            </span>
+          </div>
+        )}
+        <span className="min-w-0 truncate text-[12px]" style={{ color: status === 'failed' && !going ? (dark ? '#ff8a70' : '#9e0000') : dim }} aria-live="polite">{label}</span>
+      </div>
+      <div className={`flex-shrink-0 min-w-[56px] text-right font-johnson-display tabular-nums ${ms == null ? (dark ? 'text-[#6e6259]' : 'text-[#cbc4bc]') : dark ? 'text-white' : 'text-[#312c2a]'}`}>
+        {num != null ? <><span className="text-[19px] font-medium">{num}</span><span className="ml-0.5 text-[11px]" style={{ color: dim }}>{unit}</span></> : <span className="text-[15px] font-medium">{fmtMs(ms)}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Top of the explorer: which engine, which account, and as whom.
+function ConnCard({ E, state, info, conn, connections, connId, onConn, role, roleOptions, roleKey, onRole, roleLabel, writesOk }) {
+  // The user it signs in as. The server address and Snowflake account aren't much use here.
+  const where = conn?.user || info?.user;
+  const look = state === 'ready' ? ['#286d10', 'Connected', true] : state === 'checking' ? ['#a14a00', 'Connecting', false] : ['#9e0000', state === 'unconfigured' ? 'Not set up' : 'Offline', false];
+  const chip = (k, v, warn) => (
+    <span className={`inline-flex items-center gap-1.5 max-w-full h-[24px] px-2.5 rounded-full border text-[11.5px] ${warn ? 'bg-[#fff3ea] border-[#f6dfcc] text-[#a14a00]' : 'bg-white border-black/[.06] text-[#312c2a]'}`}>
+      {k && <span className="text-[#766a63]">{k}</span>}<span className="truncate">{v}</span>
+    </span>
+  );
+  return (
+    <div className="flex-shrink-0 mx-3 mt-3 mb-1 px-3.5 py-3 rounded-[12px] transition-colors" style={{ background: E.soft }}>
+      <div className="flex items-start gap-2.5">
+        <img src={E.icon} alt="" className="w-[22px] h-[22px] mt-[2px] flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="font-johnson-display font-bold text-[16px] leading-tight text-[#312c2a]">{E.label}</div>
+          <div className="truncate text-[11.5px] text-[#6e6259]" title={where || ''}>{where || (state === 'checking' ? 'Reaching the server...' : state === 'unconfigured' ? 'Not configured' : 'Server not reachable')}</div>
+        </div>
+        <span className="flex-shrink-0 inline-flex items-center gap-1.5 mt-[3px] text-[11px] font-medium" style={{ color: look[0] }}>
+          <span className={`w-[7px] h-[7px] rounded-full ${look[2] ? 'ds-live' : ''}`} style={{ background: look[0] }} />{look[1]}
+        </span>
+      </div>
+      {(!E.pickDb || (connections.length > 1 && onConn) || !writesOk) && (
+      <div className="flex flex-wrap items-center gap-1.5 mt-2.5 min-w-0">
+        {E.pickDb ? (
+          connections.length > 1 && onConn ? (
+            <Picker size="sm" variant="chip" prefix="Connection" value={connId || ''} onChange={e => onConn(e.target.value)} title="Connection this worksheet runs on" aria-label="Login" className="max-w-full">
+              {connections.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </Picker>
+          ) : null
+        ) : (
+          roleOptions.length > 0 && onRole ? (
+            <Picker size="sm" variant="chip" prefix="Role" value={roleKey} onChange={e => onRole(e.target.value)} title={role ? `Role: ${role}` : 'Role this worksheet runs as'} aria-label="Role" className="max-w-full">
+              {roleOptions.map(o => <option key={`${o.conn}|${o.role}`} value={`${o.conn}|${o.role}`}>{roleLabel(o)}</option>)}
+            </Picker>
+          ) : chip('Role', role || 'default')
+        )}
+        {!E.pickDb && chip('Warehouse', conn?.warehouse || info?.warehouse || 'default')}
+        {!writesOk && chip(null, 'Read only', true)}
+      </div>
+      )}
+    </div>
+  );
+}
+
+// A view in the results bar: one segment of a pill switcher.
+function ViewTab({ active, onClick, icon, children, title, accent, compact }) {
+  const IconCmp = icon;
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      aria-label={typeof children === 'string' ? children : undefined}
+      title={compact ? `${children}: ${title}` : title}
+      onClick={onClick}
+      className={`flex-shrink-0 inline-flex items-center gap-1.5 h-[24px] px-2 rounded-[7px] text-[12px] font-medium whitespace-nowrap transition-[color,background-color,box-shadow] ${
+        active ? 'bg-white text-[#312c2a] shadow-[0_1px_2px_rgba(49,44,42,.12)]' : 'text-[#6e6259] hover:text-[#312c2a]'}`}
+    >
+      <IconCmp size={13} strokeWidth={2} style={active ? { color: accent } : undefined} />
+      <span className={compact ? 'hidden' : ''}>{children}</span>
     </button>
   );
 }
@@ -247,6 +504,34 @@ const PICKER_CSS = `
   .sf-pick-list { scrollbar-width: thin; scrollbar-color: #d5cfc9 transparent; }
 }
 `;
+// Motion for the pane: results arriving, a run in progress, the live dot.
+const DS_CSS = `
+@keyframes ds-scan { 0% { transform: translateY(-100%); opacity: .9 } 85% { opacity: .5 } 100% { transform: translateY(var(--ds-h, 600px)); opacity: 0 } }
+@keyframes ds-run { 0% { transform: translateX(-100%) } 100% { transform: translateX(250%) } }
+@keyframes ds-pulse { 0% { transform: scale(1); opacity: .45 } 70%, 100% { transform: scale(3); opacity: 0 } }
+@keyframes ds-in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+@keyframes ds-count { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+.ds-scan { position: absolute; left: 0; right: 0; top: 0; height: 70px; pointer-events: none; z-index: 15; will-change: transform, opacity; animation: ds-scan 1s cubic-bezier(.2,.8,.2,1) forwards }
+.ds-in { animation: ds-in .45s cubic-bezier(.2,.8,.2,1) both }
+.ds-count { animation: ds-count .35s cubic-bezier(.2,.8,.2,1) both }
+/* Transform and opacity only: a box-shadow pulse repaints every frame, which a cloud PC without a GPU feels. */
+.ds-live { position: relative }
+.ds-live::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; animation: ds-pulse 2.4s ease-out infinite; will-change: transform, opacity }
+.ds-run { animation: ds-run 1.2s ease-in-out infinite }
+.ds-noscroll { scrollbar-width: none } .ds-noscroll::-webkit-scrollbar { display: none }
+/* Thin, warm scrollbars across Data Studio (popups included), darker on hover */
+.ds-root, .ds-root *, .ds-pop, .ds-pop * { scrollbar-width: thin; scrollbar-color: #d5cfc9 transparent }
+.ds-root *:hover, .ds-pop *:hover { scrollbar-color: #a39992 transparent }
+.ds-root .ds-dark, .ds-root .ds-dark * { scrollbar-color: #4a423e transparent }
+.ds-root .ds-dark:hover, .ds-root .ds-dark *:hover { scrollbar-color: #6e6259 transparent }
+@media (prefers-reduced-motion: reduce) { .ds-scan { display: none } .ds-in, .ds-count, .ds-live::after, .ds-sfbar { animation: none } .ds-run { animation: none; width: 100%; opacity: .55 } }
+`;
+if (typeof document !== 'undefined' && !document.getElementById('ds-css')) {
+  const el = document.createElement('style');
+  el.id = 'ds-css';
+  el.textContent = DS_CSS;
+  document.head.appendChild(el);
+}
 if (typeof document !== 'undefined' && !document.getElementById('sf-pick-css')) {
   const el = document.createElement('style');
   el.id = 'sf-pick-css';
@@ -254,8 +539,14 @@ if (typeof document !== 'undefined' && !document.getElementById('sf-pick-css')) 
   document.head.appendChild(el);
 }
 
-function Picker({ icon: Icon, size = 'md', className = '', children, value, onChange, disabled, title, 'aria-label': label }) {
+function Picker({ icon: Icon, size = 'md', tone = 'light', variant, prefix, className = '', children, value, onChange, disabled, title, 'aria-label': label }) {
+  const dark = tone === 'dark';
   const sm = size === 'sm';
+  const eng = useEngine();     // the list opens outside the pane, so it brings the colours along
+  // 'crumb': a flat name chip, like the database > schema path over the editor.
+  const crumb = variant === 'crumb';
+  // 'chip': a white pill with a label in front ("Role ..."), like the chips beside it.
+  const pill = variant === 'chip';
   const options = React.Children.toArray(children)
     .filter(c => c?.type === 'option')
     .map(c => ({ value: String(c.props.value ?? ''), label: String(c.props.children ?? c.props.value ?? '') }));
@@ -323,7 +614,7 @@ function Picker({ icon: Icon, size = 'md', className = '', children, value, onCh
   };
 
   return (
-    <span className={`group relative inline-flex items-center self-center min-w-[56px] sm:min-w-[72px] flex-shrink ${className}`}>
+    <span className={`group relative inline-flex items-center self-center ${crumb ? 'min-w-[48px]' : 'min-w-[56px] sm:min-w-[72px]'} flex-shrink ${className}`}>
       <button
         ref={btnRef}
         type="button"
@@ -334,19 +625,27 @@ function Picker({ icon: Icon, size = 'md', className = '', children, value, onCh
         aria-expanded={open}
         onClick={() => (open ? close() : openList())}
         onKeyDown={e => { if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key) && !open) { e.preventDefault(); openList(); } }}
-        className={`w-full min-w-0 flex items-center gap-1.5 text-left cursor-pointer rounded-md border bg-white text-[#312c2a] font-medium shadow-[0_1px_0_rgba(49,44,42,0.04)] transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-          open ? 'border-[#eb1700] ring-2 ring-[#eb1700]/15' : 'border-[#d5cfc9] hover:border-[#a39992] hover:bg-[#fbfaf9] focus-visible:border-[#eb1700] focus-visible:ring-2 focus-visible:ring-[#eb1700]/15'} ${
+        className={pill
+          ? `w-full min-w-0 flex items-center gap-1.5 h-[24px] pl-2.5 pr-1.5 rounded-full border bg-white text-left text-[11.5px] text-[#312c2a] cursor-pointer transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${open ? 'border-[var(--sig)] ring-2 ring-[var(--sig-ring)]' : 'border-black/[.06] hover:border-[#cbc4bc] focus-visible:border-[var(--sig)]'}`
+          : crumb
+          ? `w-full min-w-0 flex items-center h-[24px] px-2 rounded-[6px] text-left text-[12px] font-medium cursor-pointer transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${dark
+            ? `${open ? 'bg-[#433b37] text-white' : 'bg-[#352f2c] text-[#d9d1ca] hover:bg-[#433b37] hover:text-white'} focus-visible:ring-1 focus-visible:ring-[#a39992]`
+            : `${open ? 'bg-[#e8e6e3] text-[#312c2a]' : 'bg-[#f1efed] text-[#4a423e] hover:bg-[#e8e6e3] hover:text-[#312c2a]'} focus-visible:ring-2 focus-visible:ring-[var(--sig-ring)]`}`
+          : `w-full min-w-0 flex items-center gap-1.5 text-left cursor-pointer rounded-md border font-medium transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${dark
+          ? `bg-[#352f2c] text-[#efe9e4] ${open ? 'border-[#6e6259]' : 'border-transparent hover:bg-[#433b37] focus-visible:border-[#a39992]'}`
+          : `bg-white text-[#312c2a] shadow-[0_1px_0_rgba(49,44,42,0.04)] ${open ? 'border-[var(--sig)] ring-2 ring-[var(--sig-ring)]' : 'border-[#d5cfc9] hover:border-[#a39992] hover:bg-[#fbfaf9] focus-visible:border-[var(--sig)] focus-visible:ring-2 focus-visible:ring-[var(--sig-ring)]'}`} ${
           sm ? 'h-[22px] px-1.5 text-[11.5px]' : 'h-[28px] px-2 text-[12.5px]'}`}
       >
-        {Icon && <Icon size={sm ? 12 : 13} className={`hidden sm:block flex-shrink-0 ${open ? 'text-[#eb1700]' : 'text-[#81766f]'}`} />}
-        <span className={`flex-1 min-w-0 truncate ${current?.value ? '' : 'text-[#81766f] font-normal'}`}>{current?.label || label}</span>
-        <ChevronDown size={sm ? 12 : 14} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180 text-[#eb1700]' : 'text-[#81766f]'}`} />
+        {prefix && <span className="flex-shrink-0 text-[#766a63]">{prefix}</span>}
+        {Icon && !crumb && !pill && <Icon size={sm ? 12 : 13} className={`hidden sm:block flex-shrink-0 ${open ? 'text-[var(--sig-ink)]' : dark ? 'text-[#a39992]' : 'text-[#766a63]'}`} />}
+        <span className={`flex-1 min-w-0 truncate ${current?.value ? '' : `${dark ? 'text-[#a39992]' : 'text-[#766a63]'} font-normal`}`}>{current?.label || label}</span>
+        {!crumb && <ChevronDown size={pill ? 12 : sm ? 12 : 14} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180 text-[var(--sig-ink)]' : dark ? 'text-[#a39992]' : 'text-[#766a63]'}`} />}
       </button>
       {open && pos && createPortal(
         <div
           ref={popRef}
-          style={{ position: 'fixed', ...pos, width: 'max-content', zIndex: 1000 }}
-          className="flex flex-col rounded-lg border border-[#e8e6e3] bg-white shadow-[0_10px_28px_rgba(49,44,42,0.14),0_2px_6px_rgba(49,44,42,0.06)] overflow-hidden"
+          style={{ ...sigVars(eng), position: 'fixed', ...pos, width: 'max-content', zIndex: 1000 }}
+          className="ds-pop flex flex-col rounded-lg border border-[#e8e6e3] bg-white shadow-[0_10px_28px_rgba(49,44,42,0.14),0_2px_6px_rgba(49,44,42,0.06)] overflow-hidden"
         >
           <div className="relative p-1.5 border-b border-[#efedea]">
             <Search size={13} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#a39992]" />
@@ -357,16 +656,16 @@ function Picker({ icon: Icon, size = 'md', className = '', children, value, onCh
               onKeyDown={onKey}
               placeholder={`Search ${(label || '').toLowerCase()}s`}
               aria-label={`Search ${label || ''}`}
-              className="w-full h-[28px] pl-7 pr-7 rounded-md border border-[#e8e6e3] bg-[#fbfaf9] text-[12.5px] text-[#312c2a] placeholder:text-[#a39992] focus:outline-none focus:border-[#eb1700] focus:bg-white"
+              className="w-full h-[28px] pl-7 pr-7 rounded-md border border-[#e8e6e3] bg-[#fbfaf9] text-[12.5px] text-[#312c2a] placeholder:text-[#a39992] focus:outline-none focus:border-[var(--sig)] focus:bg-white"
             />
             {q && (
-              <button type="button" onClick={() => { setQ(''); setHi(0); }} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded text-[#81766f] hover:text-[#312c2a]">
+              <button type="button" onClick={() => { setQ(''); setHi(0); }} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded text-[#766a63] hover:text-[#312c2a]">
                 <X size={12} />
               </button>
             )}
           </div>
           <div ref={listRef} role="listbox" aria-label={label} className="sf-pick-list max-h-[280px] overflow-y-auto p-1">
-            {shown.length === 0 && <div className="px-2.5 py-3 text-center text-[12px] text-[#81766f]">No matches</div>}
+            {shown.length === 0 && <div className="px-2.5 py-3 text-center text-[12px] text-[#766a63]">No matches</div>}
             {shown.map((o, i) => {
               const on = o.value === current?.value;
               return (
@@ -380,7 +679,7 @@ function Picker({ icon: Icon, size = 'md', className = '', children, value, onCh
                   onClick={() => pick(o)}
                   title={o.label}
                   className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer text-[12.5px] ${
-                    on ? 'text-[#eb1700] font-semibold' : 'text-[#312c2a]'} ${i === hi ? (on ? 'bg-[#fde6e2]' : 'bg-[#f4f2f0]') : (on ? 'bg-[#fdf0ee]' : '')}`}
+                    on ? 'text-[var(--sig-ink)] font-semibold' : 'text-[#312c2a]'} ${i === hi ? (on ? 'bg-[var(--sig-mid)]' : 'bg-[#f4f2f0]') : (on ? 'bg-[#fdf0ee]' : '')}`}
                 >
                   <Check size={13} className={`flex-shrink-0 ${on ? '' : 'invisible'}`} />
                   <span className="min-w-0 truncate"><Highlight text={o.label} q={q} /></span>
@@ -402,7 +701,7 @@ const Kbd = ({ children }) => (
 );
 
 const Spinner = ({ size = 14, className = '' }) => (
-  <Loader2 size={size} className={`animate-spin text-[#eb1700] ${className}`} aria-label="Loading" />
+  <Loader2 size={size} className={`animate-spin text-[var(--sig-ink)] ${className}`} aria-label="Loading" />
 );
 
 const StatusDot = ({ color, pulse }) => (
@@ -414,9 +713,9 @@ const StatusDot = ({ color, pulse }) => (
 
 // Thin indeterminate bar, the same cue Snowflake shows above a running grid.
 const ProgressBar = () => (
-  <div className="relative h-[2px] w-full overflow-hidden bg-[#fdeeec]">
-    <style>{'@keyframes sfbar{0%{left:-35%;width:35%}60%{left:100%;width:35%}100%{left:100%;width:35%}}'}</style>
-    <div className="absolute top-0 h-full bg-[#eb1700]" style={{ animation: 'sfbar 1.3s ease-in-out infinite' }} />
+  <div className="relative h-[2px] w-full overflow-hidden bg-[var(--sig-soft)]">
+    <style>{'@keyframes sfbar{0%{transform:translateX(-100%)}60%,100%{transform:translateX(286%)}}'}</style>
+    <div className="ds-sfbar absolute top-0 left-0 h-full w-[35%] bg-[var(--sig)]" style={{ animation: 'sfbar 1.3s ease-in-out infinite', willChange: 'transform' }} />
   </div>
 );
 
@@ -453,7 +752,7 @@ function GridSkeleton({ cols = 6, rows = 12 }) {
 function EmptyState({ icon, title, children, action }) {
   const IconCmp = icon;
   return (
-    <div className="h-full min-h-[220px] flex items-center justify-center px-6 py-10">
+    <div className="min-h-full flex items-center justify-center px-6 py-8">
       <div className="max-w-[420px] text-center">
         {IconCmp && (
           <div className="mx-auto mb-3.5 w-11 h-11 rounded-xl bg-[#f1efed] flex items-center justify-center text-[#6e6259]">
@@ -533,7 +832,7 @@ function Toasts({ toasts, onDismiss }) {
           >
             <s.Icon size={16} className="flex-shrink-0 mt-[1px]" style={{ color: s.color }} />
             <div className="flex-1 min-w-0 break-words leading-snug">{t.message}</div>
-            <button onClick={() => onDismiss(t.id)} className="p-0.5 rounded text-[#81766f] hover:bg-[#f1efed]" aria-label="Dismiss">
+            <button onClick={() => onDismiss(t.id)} className="p-0.5 rounded text-[#766a63] hover:bg-[#f1efed]" aria-label="Dismiss">
               <X size={14} />
             </button>
           </div>
@@ -569,7 +868,7 @@ function Pager({ page, totalPages, loading, onGo }) {
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); e.target.blur(); } }}
           aria-label="Go to page"
-          className="w-[52px] h-[26px] rounded-md border border-[#d5cfc9] bg-white px-1.5 text-center text-[12px] text-[#312c2a] tabular-nums focus:outline-none focus:border-[#eb1700] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          className="w-[52px] h-[26px] rounded-md border border-[#d5cfc9] bg-white px-1.5 text-center text-[12px] text-[#312c2a] tabular-nums focus:outline-none focus:border-[var(--sig)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
         />
         of {fmtN(last)}
       </span>
@@ -611,7 +910,7 @@ function ConfirmDestructiveModal({ info, onCancel, onConfirm, confirming }) {
       {info && (
         <>
           <div className="flex items-start gap-3.5 px-5 pt-5">
-            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-[#fdeeec] flex items-center justify-center text-[#9e0000]">
+            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-[var(--sig-soft)] flex items-center justify-center text-[#9e0000]">
               <TriangleAlert size={19} />
             </div>
             <div className="min-w-0">
@@ -738,10 +1037,10 @@ function SavePromptModal({ open, initialName, onCancel, onSave }) {
           onChange={e => setName(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSave(name.trim(), shared); }}
           placeholder="e.g. Daily order counts"
-          className="mt-1 w-full h-9 rounded-md border border-[#d5cfc9] px-3 text-[13px] text-[#312c2a] focus:outline-none focus:border-[#eb1700] focus:ring-2 focus:ring-[#eb1700]/15"
+          className="mt-1 w-full h-9 rounded-md border border-[#d5cfc9] px-3 text-[13px] text-[#312c2a] focus:outline-none focus:border-[var(--sig)] focus:ring-2 focus:ring-[var(--sig-ring)]"
         />
         <label className="mt-3 flex items-center gap-2 text-[12.5px] text-[#4a423e] cursor-pointer select-none">
-          <input type="checkbox" checked={shared} onChange={e => setShared(e.target.checked)} className="accent-[#eb1700]" />
+          <input type="checkbox" checked={shared} onChange={e => setShared(e.target.checked)} className="accent-[var(--sig)]" />
           Share with everyone who can use Data Studio
         </label>
       </div>
@@ -806,7 +1105,7 @@ function PeerBar({ session, meta, colorOf, onFollow }) {
   return (
     <div className="flex items-center mr-2" aria-label="People in this worksheet">
       {people.map(p => (
-        <button key={p.email} type="button" onClick={() => p.at !== null && onFollow(p.at)} className="-ml-1.5 first:ml-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#eb1700]/40" title={`${p.name} · click to jump to their cursor`}>
+        <button key={p.email} type="button" onClick={() => p.at !== null && onFollow(p.at)} className="-ml-1.5 first:ml-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sig-ring)]" title={`${p.name} · click to jump to their cursor`}>
           <PeerAvatar person={{ ...p, photo: photoFor(p) }} />
         </button>
       ))}
@@ -843,12 +1142,12 @@ function PeerAvatar({ person, size = 24 }) {
       style={{ width: size, height: size, background: person.color, opacity: person.online === false ? 0.4 : 1, boxShadow: person.photo ? `0 0 0 2px ${person.color}` : undefined }}
     >
       {person.photo ? <img src={person.photo} alt="" className="w-full h-full rounded-full object-cover" /> : initials(person.name)}
-      {(person.running || person.typing) && <span className="absolute -right-0.5 -bottom-0.5 w-2 h-2 rounded-full bg-[#eb1700] ring-1 ring-white animate-pulse" />}
+      {(person.running || person.typing) && <span className="absolute -right-0.5 -bottom-0.5 w-2 h-2 rounded-full bg-[var(--sig)] ring-1 ring-white animate-pulse" />}
     </span>
   );
 }
 
-const ROLE_SELECT = 'h-8 rounded-md border border-[#d5cfc9] bg-white px-2 text-[12.5px] text-[#312c2a] focus:outline-none focus:border-[#eb1700] disabled:opacity-50';
+const ROLE_SELECT = 'h-8 rounded-md border border-[#d5cfc9] bg-white px-2 text-[12.5px] text-[#312c2a] focus:outline-none focus:border-[var(--sig)] disabled:opacity-50';
 
 // Who is in a shared worksheet and what they may do. Before the worksheet is
 // shared it is the one place that says what sharing means.
@@ -917,8 +1216,8 @@ function ShareModal({ open, onClose, tab, meta, session, engineLabel, colorOf, o
     <div key={m.email} className="flex items-center gap-2.5 py-1.5">
       <PeerAvatar person={{ name: m.name || m.email, color: colorOf(m.email), photo: photoFor(m), online: m.email === meta.you || here.has(m.email) }} size={28} />
       <div className="flex-1 min-w-0">
-        <div className="truncate text-[13px] text-[#312c2a]">{m.name || m.email}{m.email === meta.you && <span className="text-[#81766f]"> (you)</span>}</div>
-        {m.name && <div className="truncate text-[11.5px] text-[#81766f]">{m.email}</div>}
+        <div className="truncate text-[13px] text-[#312c2a]">{m.name || m.email}{m.email === meta.you && <span className="text-[#766a63]"> (you)</span>}</div>
+        {m.name && <div className="truncate text-[11.5px] text-[#766a63]">{m.email}</div>}
       </div>
       {role === 'owner' && <span className="text-[12px] text-[#6e6259]">Owner</span>}
       {role !== 'owner' && owner && (
@@ -980,7 +1279,7 @@ function ShareModal({ open, onClose, tab, meta, session, engineLabel, colorOf, o
                     aria-expanded={hits.length > 0}
                     aria-controls="sf-share-hits"
                     aria-activedescendant={hits.length ? `sf-share-hit-${pick}` : undefined}
-                    className="flex-1 min-w-0 h-8 rounded-md border border-[#d5cfc9] px-2.5 text-[13px] text-[#312c2a] focus:outline-none focus:border-[#eb1700] focus:ring-2 focus:ring-[#eb1700]/15"
+                    className="flex-1 min-w-0 h-8 rounded-md border border-[#d5cfc9] px-2.5 text-[13px] text-[#312c2a] focus:outline-none focus:border-[var(--sig)] focus:ring-2 focus:ring-[var(--sig-ring)]"
                   />
                   <select value={canEdit ? 'edit' : 'view'} onChange={e => setCanEdit(e.target.value === 'edit')} aria-label="Access" className={ROLE_SELECT}>
                     <option value="edit">Can edit</option>
@@ -999,22 +1298,22 @@ function ShareModal({ open, onClose, tab, meta, session, engineLabel, colorOf, o
                         aria-selected={i === pick}
                         onMouseDown={e => { e.preventDefault(); invite(h); }}
                         onMouseEnter={() => setPick(i)}
-                        className={`flex items-center gap-2.5 mx-1 px-2 py-1.5 rounded-md cursor-pointer ${i === pick ? 'bg-[#fdeeec]' : ''}`}
+                        className={`flex items-center gap-2.5 mx-1 px-2 py-1.5 rounded-md cursor-pointer ${i === pick ? 'bg-[var(--sig-soft)]' : ''}`}
                       >
-                        <PeerAvatar person={{ name: h.name || h.email, color: '#81766f', photo: photoFor(h) }} size={28} />
+                        <PeerAvatar person={{ name: h.name || h.email, color: '#766a63', photo: photoFor(h) }} size={28} />
                         <span className="flex-1 min-w-0">
                           <span className="block truncate text-[13px] text-[#312c2a]">{h.name || h.email}</span>
-                          <span className="block truncate text-[11.5px] text-[#81766f]">{h.email}{h.title ? ` · ${h.title}` : ''}</span>
+                          <span className="block truncate text-[11.5px] text-[#766a63]">{h.email}{h.title ? ` · ${h.title}` : ''}</span>
                         </span>
                       </div>
                     ))}
                   </div>
                 )}
-                <p className="mt-1.5 text-[11.5px] text-[#81766f]">They need access to the {engineLabel} pane. Send them the link once they are added.</p>
+                <p className="mt-1.5 text-[11.5px] text-[#766a63]">They need access to the {engineLabel} pane. Send them the link once they are added.</p>
               </div>
             )}
             {owner && full && <p className="mt-3 pt-3 border-t border-[#e8e6e3] text-[12px] text-[#6e6259]">This worksheet is full: three people. Remove someone to invite another.</p>}
-            <p className="mt-3 text-[11.5px] leading-relaxed text-[#81766f]">
+            <p className="mt-3 text-[11.5px] leading-relaxed text-[#766a63]">
               Results of queries run here are shown to everyone in the worksheet, whatever their own {engineLabel} role.
             </p>
           </>
@@ -1081,7 +1380,7 @@ const KIND_STYLE = {
 };
 
 const showVal = (v) => (v === null || v === undefined || v === ''
-  ? <span className="inline-block px-1.5 rounded bg-[#f1efed] text-[10.5px] font-medium text-[#81766f]">NULL</span>
+  ? <span className="inline-block px-1.5 rounded bg-[#f1efed] text-[10.5px] font-medium text-[#766a63]">NULL</span>
   : <span className="break-all">{cellText(v)}</span>);
 
 function ChangeCard({ change, index, statement, showSql, keys }) {
@@ -1092,7 +1391,7 @@ function ChangeCard({ change, index, statement, showSql, keys }) {
     <div className="rounded-lg border border-[#e8e6e3] bg-white overflow-hidden">
       <div className="flex items-center gap-2.5 px-3.5 py-2 border-b border-[#f1efed] bg-[#fbfaf9]">
         <span className="text-[11px] font-bold uppercase tracking-[.06em] px-2 py-0.5 rounded" style={{ color: st.color, background: st.bg }}>{st.label}</span>
-        <span className="text-[12px] text-[#81766f] tabular-nums">#{index + 1}</span>
+        <span className="text-[12px] text-[#766a63] tabular-nums">#{index + 1}</span>
         {change.kind !== 'insert' && keyPreview && (
           <span className="min-w-0 truncate text-[11.5px] font-mono text-[#6e6259]" title={keyCols.map(k => `${k} = ${cellText(change.original[k]) ?? 'NULL'}`).join('\n')}>
             {keyPreview}{keyCols.length > 3 ? ` +${keyCols.length - 3} more` : ''}
@@ -1102,7 +1401,7 @@ function ChangeCard({ change, index, statement, showSql, keys }) {
       {change.kind === 'update' && (
         <table className="w-full text-[12.5px]">
           <thead>
-            <tr className="text-left text-[10.5px] font-bold uppercase tracking-[.06em] text-[#81766f]">
+            <tr className="text-left text-[10.5px] font-bold uppercase tracking-[.06em] text-[#766a63]">
               <th className="px-3.5 py-1.5 w-[32%] font-bold">Column</th>
               <th className="px-3.5 py-1.5 w-[34%] font-bold">Before</th>
               <th className="px-3.5 py-1.5 font-bold">After</th>
@@ -1112,7 +1411,7 @@ function ChangeCard({ change, index, statement, showSql, keys }) {
             {Object.entries(change.values).map(([col, v]) => (
               <tr key={col} className="border-t border-[#f1efed] align-top">
                 <td className="px-3.5 py-2 font-medium text-[#312c2a] break-all">{col}</td>
-                <td className="px-3.5 py-2 text-[#81766f] line-through decoration-[#cbc4bc]">{showVal(change.original?.[col])}</td>
+                <td className="px-3.5 py-2 text-[#766a63] line-through decoration-[#cbc4bc]">{showVal(change.original?.[col])}</td>
                 <td className="px-3.5 py-2 text-[#312c2a] bg-[#fffaf5]">{showVal(v)}</td>
               </tr>
             ))}
@@ -1153,7 +1452,7 @@ function ApplyChangesModal({ preview, table, saving, onCancel, onApply }) {
       {preview && (
         <>
           <div className="flex-shrink-0 px-5 pt-4 pb-3.5 border-b border-[#e8e6e3]">
-            <div className="text-[11.5px] text-[#81766f] font-mono truncate" title={table ? `${table.database}.${table.schema}` : ''}>
+            <div className="text-[11.5px] text-[#766a63] font-mono truncate" title={table ? `${table.database}.${table.schema}` : ''}>
               {table ? `${table.database}.${table.schema}` : ''}
             </div>
             <h3 id="sf-apply-title" className="mt-0.5 font-johnson-display font-bold text-[16px] leading-snug text-[#312c2a] break-all">
@@ -1199,10 +1498,10 @@ function ApplyChangesModal({ preview, table, saving, onCancel, onApply }) {
 
           <div className="flex-shrink-0 flex flex-wrap items-center gap-3 px-5 py-3.5 border-t border-[#e8e6e3] bg-white">
             <label className="flex items-center gap-2 text-[12.5px] text-[#4a423e] cursor-pointer select-none">
-              <input type="checkbox" checked={showSql} onChange={e => setShowSql(e.target.checked)} className="accent-[#eb1700]" />
+              <input type="checkbox" checked={showSql} onChange={e => setShowSql(e.target.checked)} className="accent-[var(--sig)]" />
               Show SQL
             </label>
-            <span className="hidden md:inline text-[11.5px] text-[#81766f]">Runs in one transaction. If any row doesn't match exactly once, nothing is changed.</span>
+            <span className="hidden md:inline text-[11.5px] text-[#766a63]">Runs in one transaction. If any row doesn't match exactly once, nothing is changed.</span>
             <div className="ml-auto flex items-center gap-2">
               <Button onClick={onCancel}>Cancel</Button>
               <Button variant="danger" onClick={onApply} disabled={saving}>{saving ? 'Applying...' : 'Apply changes'}</Button>
@@ -1235,7 +1534,7 @@ function Highlight({ text, q }) {
   return (
     <>
       {text.slice(0, i)}
-      <mark className="bg-[#fde6e2] text-inherit rounded-[2px] px-[1px]">{text.slice(i, i + q.length)}</mark>
+      <mark className="bg-[var(--sig-mid)] text-inherit rounded-[2px] px-[1px]">{text.slice(i, i + q.length)}</mark>
       {text.slice(i + q.length)}
     </>
   );
@@ -1262,7 +1561,7 @@ function NodeNote({ depth, children, tone = 'muted', onRetry }) {
     >
       <span className="min-w-0 truncate" title={typeof children === 'string' ? children : undefined}>{children}</span>
       {onRetry && (
-        <button onClick={onRetry} className="flex-shrink-0 inline-flex items-center gap-1 text-[#312c2a] underline underline-offset-2 hover:text-[#eb1700]">
+        <button onClick={onRetry} className="flex-shrink-0 inline-flex items-center gap-1 text-[#312c2a] underline underline-offset-2 hover:text-[var(--sig-ink)]">
           <RotateCcw size={11} /> Retry
         </button>
       )}
@@ -1279,13 +1578,13 @@ function NodeError({ error, depth, onRetry }) {
 // trees stay readable.
 function Row({
   depth, open, onToggle, icon, iconColor, label, q, meta, title,
-  selected, onClick, onDoubleClick, bold, leaf, fq,
+  selected, onClick, onDoubleClick, bold, leaf, fq, actions,
 }) {
   const IconCmp = icon;
   return (
     <div
       className={`group relative flex items-center h-[28px] pr-2.5 cursor-pointer select-none rounded-md mx-1.5 ${
-        selected ? 'bg-[#fdeeec]' : 'hover:bg-[#f4f2f0]'
+        selected ? 'bg-[var(--sig-soft)]' : 'hover:bg-[#f4f2f0]'
       }`}
       style={{ paddingLeft: 6 + depth * 16 }}
       onClick={onClick}
@@ -1296,14 +1595,14 @@ function Row({
       aria-expanded={leaf ? undefined : open}
       aria-selected={selected}
     >
-      {selected && <span className="absolute left-0 top-[5px] bottom-[5px] w-[3px] rounded-full bg-[#eb1700]" />}
+      {selected && <span className="absolute left-0 top-[5px] bottom-[5px] w-[3px] rounded-full bg-[var(--sig)]" />}
       {leaf ? (
         <span className="w-[18px] flex-shrink-0" />
       ) : (
         <button
           type="button"
           onClick={e => { e.stopPropagation(); onToggle(); }}
-          className="w-[18px] h-[18px] flex-shrink-0 flex items-center justify-center rounded text-[#81766f] hover:text-[#312c2a]"
+          className="w-[18px] h-[18px] flex-shrink-0 flex items-center justify-center rounded text-[#766a63] hover:text-[#312c2a]"
           aria-label={open ? 'Collapse' : 'Expand'}
           tabIndex={-1}
         >
@@ -1315,16 +1614,132 @@ function Row({
         <Highlight text={label} q={q} />
       </span>
       {meta && (
-        <span className="flex-shrink-0 pl-2 text-[11px] tabular-nums text-[#81766f]">{meta}</span>
+        <span className={`flex-shrink-0 pl-2 text-[11px] tabular-nums text-[#766a63] ${actions ? 'group-hover:invisible group-focus-within:invisible' : ''}`}>{meta}</span>
+      )}
+      {actions && (
+        // Quick actions on hover, over the row count so the name keeps its room.
+        <span className={`absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex group-focus-within:flex items-center gap-px pl-3 ${selected ? 'bg-[linear-gradient(90deg,transparent,var(--sig-soft)_12px)]' : 'bg-[linear-gradient(90deg,transparent,#f4f2f0_12px)]'}`}>
+          {actions.map(([Ico, label, run]) => (
+            <button
+              key={label}
+              type="button"
+              title={label}
+              aria-label={label}
+              onClick={e => { e.stopPropagation(); run(); }}
+              onDoubleClick={e => e.stopPropagation()}
+              className="w-[22px] h-[22px] inline-flex items-center justify-center rounded-md text-[#6e6259] hover:bg-white hover:text-[#312c2a]"
+            >
+              <Ico size={13} strokeWidth={2} />
+            </button>
+          ))}
+        </span>
       )}
     </div>
+  );
+}
+
+// A table's details, beside the work: size, its columns and its definition.
+function TableDetails({ info, cq, onClose, onPreview, onInsert, onToast }) {
+  const E = useEngine();
+  const [cols, setCols] = useState(null);
+  const [ddl, setDdl] = useState(null);
+  const key = info ? `${info.database}.${info.schema}.${info.table}` : '';
+  useEffect(() => {
+    if (!info) return undefined;
+    let live = true;
+    const q = (k) => encodeURIComponent(k);
+    setCols(null);
+    setDdl(null);
+    fetchJson(withQs(`${E.api}/columns?database=${q(info.database)}&schema=${q(info.schema)}&table=${q(info.table)}`, cq))
+      .then(d => { if (live) setCols(d.columns || []); })
+      .catch(err => { if (live) setCols(err); });
+    fetchJson(withQs(`${E.api}/ddl?database=${q(info.database)}&schema=${q(info.schema)}&name=${q(info.table)}&kind=${info.kind}`, cq))
+      .then(d => { if (live) setDdl(d.ddl || ''); })
+      .catch(err => { if (live) setDdl(err); });
+    return () => { live = false; };
+  }, [key, cq]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fq = info ? `"${info.database}"."${info.schema}"."${info.table}"` : '';
+  const copy = (text, what) => navigator.clipboard?.writeText(text).then(() => onToast(`${what} copied`, 'success', 2000)).catch(() => {});
+  const fig = (value, label) => (
+    <div className="min-w-0 px-3 py-2.5 rounded-[10px] bg-[#f3f1ef]">
+      <b className="block truncate font-johnson-display text-[20px] leading-tight tabular-nums text-[#312c2a]">{value}</b>
+      <span className="text-[12px] text-[#6e6259]">{label}</span>
+    </div>
+  );
+  return (
+    <>
+      {info && <div className="absolute inset-0 z-[47] bg-[#312c2a]/20" onClick={onClose} aria-hidden="true" />}
+      <aside
+        className={`absolute inset-y-0 right-0 z-[48] w-[380px] max-w-[calc(100%-24px)] flex flex-col bg-white border-l border-[#e8e6e3] transition-transform duration-200 ${info ? 'translate-x-0 shadow-[-8px_0_32px_rgba(49,44,42,.16)]' : 'translate-x-full invisible'}`}
+        aria-hidden={!info}
+        aria-label="Table details"
+      >
+        {info && (
+          <>
+            <div className="flex-shrink-0 flex items-start gap-2 pl-4 pr-2 pt-3.5">
+              <div className="flex-1 min-w-0">
+                <h2 className="m-0 truncate font-johnson-display font-bold text-[17px] text-[#312c2a]">{info.table}</h2>
+                <div className="truncate text-[12px] text-[#766a63]">{info.kind === 'VIEW' ? 'View' : 'Table'} in {info.database}.{info.schema}</div>
+              </div>
+              <IconButton icon={X} label="Close details" onClick={onClose} />
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4">
+              <div className="grid grid-cols-2 gap-2">
+                {fig(info.rows != null ? fmtN(info.rows) : '-', info.kind === 'VIEW' ? 'rows (not counted for views)' : 'rows')}
+                {fig(info.bytes != null ? formatBytes(info.bytes) : '-', 'on disk')}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 mt-3">
+                <Button variant="primary" icon={Play} onClick={() => onPreview(info.database, info.schema, info.table)}>Preview rows</Button>
+                <Button icon={ArrowRightToLine} onClick={() => onInsert(fq)}>Insert name</Button>
+                <IconButton icon={Copy} label="Copy the full name" onClick={() => copy(fq, 'Table name')} />
+              </div>
+
+              <h3 className="mt-5 mb-2 text-[12.5px] font-semibold text-[#6e6259]">
+                {Array.isArray(cols) ? plural(cols.length, 'column') : 'Columns'}
+              </h3>
+              {cols === null && <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => <Skel key={i} h={14} w={`${55 + ((i * 23) % 40)}%`} />)}</div>}
+              {cols instanceof Error && <div className="text-[12px] text-[#9e0000]">{cols.message || 'Could not read the columns'}</div>}
+              {Array.isArray(cols) && (
+                <div className="rounded-[10px] border border-[#efedea] divide-y divide-[#f3f1ef]">
+                  {cols.map(c => (
+                    <button
+                      key={c.name}
+                      type="button"
+                      onClick={() => onInsert(c.name)}
+                      title={`${c.name}\n${displayType(c)}${c.nullable === false ? ' · NOT NULL' : ''}${c.comment ? `\n${c.comment}` : ''}\nClick to insert into the editor`}
+                      className="w-full flex items-center gap-2 min-w-0 h-[30px] px-2.5 text-left hover:bg-[#f7f6f4]"
+                    >
+                      <span className="min-w-0 truncate text-[12.5px] font-medium text-[#312c2a]">{c.name}</span>
+                      {c.is_primary_key && <span className="flex-shrink-0 px-1.5 rounded bg-[var(--sig-soft)] text-[10.5px] text-[var(--sig-ink)]">key</span>}
+                      <code className="ml-auto flex-shrink-0 max-w-[45%] truncate text-[11px] text-[#766a63]">{displayType(c)}</code>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <h3 className="mt-5 mb-2 flex items-center text-[12.5px] font-semibold text-[#6e6259]">
+                Definition
+                {typeof ddl === 'string' && ddl && <IconButton icon={Copy} label="Copy the definition" size={22} iconSize={12} className="ml-auto" onClick={() => copy(ddl, 'Definition')} />}
+              </h3>
+              {ddl === null && <Skel h={80} className="rounded-[10px]" />}
+              {ddl instanceof Error && <div className="text-[12px] text-[#9e0000]">{ddl.message || 'Could not read the definition'}</div>}
+              {typeof ddl === 'string' && (
+                <pre className="m-0 max-h-[320px] overflow-auto px-3 py-2.5 rounded-[10px] bg-[#f8f7f5] text-[11.5px] leading-[1.6] font-mono text-[#312c2a] whitespace-pre">
+                  {ddl ? <SqlCode sql={ddl} format={false} /> : '(no definition returned)'}
+                </pre>
+              )}
+            </div>
+          </>
+        )}
+      </aside>
+    </>
   );
 }
 
 // Shown under the selected table so its name stays fully readable.
 function ActionStrip({ depth, children }) {
   return (
-    <div className="flex flex-wrap items-center gap-1 mx-1.5 mb-1 py-1 pr-2 rounded-b-md bg-[#fdeeec]/60" style={{ paddingLeft: 6 + depth * 16 + 18 }}>
+    <div className="flex flex-wrap items-center gap-1 mx-1.5 mb-1 py-1 pr-2 rounded-b-md bg-[var(--sig-soft)]" style={{ paddingLeft: 6 + depth * 16 + 18 }}>
       {children}
     </div>
   );
@@ -1336,7 +1751,7 @@ const Act = ({ icon, label, onClick }) => {
     <button
       type="button"
       onClick={e => { e.stopPropagation(); onClick(); }}
-      className="inline-flex items-center gap-1 h-6 px-2 rounded-md bg-white border border-[#e8e6e3] text-[11.5px] text-[#312c2a] hover:border-[#eb1700] hover:text-[#eb1700] transition-colors"
+      className="inline-flex items-center gap-1 h-6 px-2 rounded-md bg-white border border-[#e8e6e3] text-[11.5px] text-[#312c2a] hover:border-[var(--sig)] hover:text-[var(--sig-ink)] transition-colors"
     >
       <IconCmp size={12} strokeWidth={2} />
       {label}
@@ -1348,7 +1763,7 @@ const Act = ({ icon, label, onClick }) => {
 
 function SfExplorer({
   onInsert, onPreview, onEditData, onShowDdl, onCollapse, onSelect, selected,
-  reveal, logInPage, canEdit = true, onToast, cq = '',
+  reveal, logInPage, canEdit = true, onToast, cq = '', onDetails,
 }) {
   const E = useEngine();
   const [databases, setDatabases] = useState(null);
@@ -1552,7 +1967,7 @@ function SfExplorer({
   return (
     <div className="flex flex-col h-full min-h-0 bg-white">
       <div className="flex-shrink-0 flex items-center gap-2 h-[44px] pl-4 pr-2 border-b border-[#e8e6e3]">
-        <Database size={15} strokeWidth={2} className="text-[#eb1700] flex-shrink-0" />
+        <Database size={15} strokeWidth={2} className="text-[var(--sig-ink)] flex-shrink-0" />
         <span className="text-[13px] font-bold text-[#312c2a] truncate">Databases</span>
         <div className="ml-auto flex items-center gap-0.5">
           <IconButton icon={RefreshCw} label="Refresh objects" onClick={() => loadDatabases(true)} />
@@ -1561,8 +1976,8 @@ function SfExplorer({
       </div>
 
       <div className="flex-shrink-0 px-3 py-2.5">
-        <div className="flex items-center gap-2 h-8 px-2.5 rounded-md border border-[#d5cfc9] bg-white focus-within:border-[#eb1700] focus-within:ring-2 focus-within:ring-[#eb1700]/15 transition">
-          <Search size={14} className="flex-shrink-0 text-[#81766f]" />
+        <div className="flex items-center gap-2 h-8 px-2.5 rounded-md border border-[#d5cfc9] bg-white focus-within:border-[var(--sig)] focus-within:ring-2 focus-within:ring-[var(--sig-ring)] transition">
+          <Search size={14} className="flex-shrink-0 text-[#766a63]" />
           <input
             ref={searchRef}
             value={search}
@@ -1570,15 +1985,15 @@ function SfExplorer({
             onKeyDown={e => { if (e.key === 'Escape') setSearch(''); }}
             placeholder="Filter databases, schemas, tables"
             aria-label="Filter objects"
-            className="flex-1 min-w-0 bg-transparent text-[12.5px] text-[#312c2a] placeholder-[#81766f] focus:outline-none"
+            className="flex-1 min-w-0 bg-transparent text-[12.5px] text-[#312c2a] placeholder-[#766a63] focus:outline-none"
           />
           {search && (
-            <button onClick={() => { setSearch(''); searchRef.current?.focus(); }} className="p-0.5 rounded text-[#81766f] hover:text-[#312c2a]" aria-label="Clear filter">
+            <button onClick={() => { setSearch(''); searchRef.current?.focus(); }} className="p-0.5 rounded text-[#766a63] hover:text-[#312c2a]" aria-label="Clear filter">
               <X size={13} />
             </button>
           )}
         </div>
-        {q && !canFind && <div className="mt-1.5 px-0.5 text-[11px] text-[#81766f]">Filters objects already loaded. Expand a schema to search its tables.</div>}
+        {q && !canFind && <div className="mt-1.5 px-0.5 text-[11px] text-[#766a63]">Filters objects already loaded. Expand a schema to search its tables.</div>}
       </div>
 
       {canFind && q.length >= 2 && !findOn && (
@@ -1587,7 +2002,7 @@ function SfExplorer({
             onClick={() => setAskedFind(q.toLowerCase())}
             className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] text-[#312c2a] hover:bg-[#f4f2f0]"
           >
-            <Search size={12} className="flex-shrink-0 text-[#81766f]" />
+            <Search size={12} className="flex-shrink-0 text-[#766a63]" />
             <span className="truncate">Search all databases for "{q}"</span>
           </button>
         </div>
@@ -1595,7 +2010,7 @@ function SfExplorer({
 
       {findOn && (
         <div className="flex-shrink-0 max-h-[45%] overflow-y-auto border-b border-[#e8e6e3] pb-2">
-          <div className="flex items-center gap-1.5 px-4 pb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#81766f]">
+          <div className="flex items-center gap-1.5 px-4 pb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#766a63]">
             <span>All databases</span>
             {findBusy && <Loader2 size={11} className="animate-spin" />}
             {found && !findBusy && <span className="ml-auto normal-case tracking-normal font-normal">{found.total} match{found.total === 1 ? '' : 'es'}</span>}
@@ -1614,17 +2029,17 @@ function SfExplorer({
                 title={`${fq}\nClick to open in the tree, double-click to preview`}
                 className="flex items-center gap-2 mx-1.5 px-2.5 py-1 rounded-md cursor-pointer hover:bg-[#f4f2f0]"
               >
-                <IconCmp size={13} className="flex-shrink-0" style={{ color: isView ? T.blue : T.red }} />
+                <IconCmp size={13} className="flex-shrink-0" style={{ color: isView ? T.blue : 'var(--sig-ink)' }} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[12.5px] text-[#312c2a]">{r.name}</div>
-                  <div className="truncate text-[10.5px] font-mono text-[#81766f]">{r.database}.{r.schema}</div>
+                  <div className="truncate text-[10.5px] font-mono text-[#766a63]">{r.database}.{r.schema}</div>
                 </div>
-                {r.est_rows != null && <span className="flex-shrink-0 text-[10.5px] text-[#81766f]">{compact(r.est_rows)}</span>}
+                {r.est_rows != null && <span className="flex-shrink-0 text-[10.5px] text-[#766a63]">{compact(r.est_rows)}</span>}
               </div>
             );
           })}
           {found && found.total > found.results.length && (
-            <div className="px-4 pt-1 text-[11px] text-[#81766f]">Showing top {found.results.length}. Type more to narrow it down.</div>
+            <div className="px-4 pt-1 text-[11px] text-[#766a63]">Showing top {found.results.length}. Type more to narrow it down.</div>
           )}
         </div>
       )}
@@ -1696,6 +2111,7 @@ function SfExplorer({
                               const size = t.size_bytes != null ? ` · ${formatBytes(t.size_bytes)}` : '';
                               const rows = t.est_rows != null ? ` · ~${t.est_rows.toLocaleString()} rows` : '';
                               const select = () => onSelect?.({ kind: isView ? 'view' : 'table', fq: tFq, database: db, schema, table: t.name });
+                              const details = () => { select(); onDetails?.({ database: db, schema, table: t.name, kind: isView ? 'VIEW' : 'TABLE', rows: t.est_rows ?? t.row_count ?? null, bytes: t.size_bytes ?? null }); };
                               return (
                                 <div key={t.name}>
                                   <Row
@@ -1705,18 +2121,24 @@ function SfExplorer({
                                     onClick={select}
                                     onDoubleClick={() => onPreview(db, schema, t.name)}
                                     icon={isView ? Eye : Table2}
-                                    iconColor={isView ? T.blue : T.red}
+                                    iconColor={isView ? T.blue : 'var(--sig-ink)'}
                                     label={t.name}
                                     q={q}
                                     title={`${tFq}\n${isView ? 'View' : 'Table'}${rows}${size}\nClick to select, double-click to preview`}
                                     selected={isSel(isView ? 'view' : 'table', tFq)}
                                     meta={compact(t.est_rows)}
                                     fq={tFq}
+                                    actions={[
+                                      [Eye, 'Preview the first rows', () => onPreview(db, schema, t.name)],
+                                      [ArrowRightToLine, 'Insert the full name into the editor', () => onInsert(`"${db}"."${schema}"."${t.name}"`)],
+                                      [Info, 'Details', details],
+                                    ]}
                                   />
                                   {isSel(isView ? 'view' : 'table', tFq) && (
                                     <ActionStrip depth={2}>
                                       <Act icon={Play} label="Preview" onClick={() => onPreview(db, schema, t.name)} />
                                       {!isView && canEdit && <Act icon={Pencil} label="Edit data" onClick={() => onEditData(db, schema, t.name)} />}
+                                      <Act icon={Info} label="Details" onClick={details} />
                                       <Act icon={Code2} label="DDL" onClick={() => onShowDdl(db, schema, t.name, isView ? 'VIEW' : 'TABLE')} />
                                       <Act icon={Copy} label="Copy name" onClick={() => copyName(`"${db}"."${schema}"."${t.name}"`)} />
                                     </ActionStrip>
@@ -1735,9 +2157,9 @@ function SfExplorer({
                                         >
                                           {col.is_primary_key
                                             ? <KeyRound size={12} className="flex-shrink-0 text-[#a14a00]" />
-                                            : <span className="w-[12px] flex-shrink-0 text-center text-[10px] font-mono text-[#81766f]">{colGlyph(displayType(col))}</span>}
+                                            : <span className="w-[12px] flex-shrink-0 text-center text-[10px] font-mono text-[#766a63]">{colGlyph(displayType(col))}</span>}
                                           <span className="min-w-0 flex-1 truncate text-[12px] text-[#4a423e]">{col.name}</span>
-                                          <span className="flex-shrink-0 max-w-[50%] truncate text-[10.5px] font-mono text-[#81766f]" title={displayType(col)}>{displayType(col)}</span>
+                                          <span className="flex-shrink-0 max-w-[50%] truncate text-[10.5px] font-mono text-[#766a63]" title={displayType(col)}>{displayType(col)}</span>
                                         </div>
                                       ))}
                                     </div>
@@ -1758,7 +2180,7 @@ function SfExplorer({
       </div>
 
       {databases && databases.length > 0 && (
-        <div className="flex-shrink-0 px-4 py-2 border-t border-[#e8e6e3] bg-[#f8f7f5] text-[11px] text-[#81766f]">
+        <div className="flex-shrink-0 px-4 py-2 border-t border-[#e8e6e3] bg-[#f8f7f5] text-[11px] text-[#766a63]">
           {selected?.fq ? (
             <>
               <div className="uppercase tracking-[.08em] font-bold text-[10px]">{selected.kind}</div>
@@ -1777,7 +2199,56 @@ function SfExplorer({
 // header, type under each column name, right aligned numbers, NULL shown as
 // a quiet badge, click to select a cell and Ctrl/Cmd+C to copy it.
 
-const ROW_H = 30;
+const ROW_H = 28;
+const HEAD_H = 66;   // name, type and a small chart of the values
+const HEAD_H_SLIM = 46;   // name and type only
+
+// What the header chart draws for one column of the rows on screen.
+function sparkOf(rows, i, family) {
+  if (!rows.length) return null;
+  if (family === 'num' || family === 'time') {
+    const vals = [];
+    for (const r of rows) {
+      const v = r[i];
+      if (v == null || typeof v === 'object') continue;
+      if (family === 'num') { const n = Number(v); if (Number.isFinite(n)) vals.push(n); }
+      else { const m = /^(\d{4})-(\d{2})/.exec(String(v)); if (m) vals.push(+m[1] * 12 + +m[2]); }
+    }
+    if (vals.length < 2) return null;
+    let lo = Infinity, hi = -Infinity;
+    vals.forEach(v => { if (v < lo) lo = v; if (v > hi) hi = v; });
+    // One value all the way down: a flat bar says that better than one spike.
+    if (lo === hi) return { kind: 'many' };
+    const bins = Array(16).fill(0);
+    vals.forEach(v => { bins[Math.min(15, Math.floor((v - lo) / ((hi - lo) || 1) * 16))]++; });
+    return { kind: 'bins', bins };
+  }
+  if (family === 'text' || family === 'bool') {
+    const counts = new Map();
+    for (const r of rows) { const v = r[i]; const k = v == null ? '\u0000' : typeof v === 'object' ? '\u0001' : String(v); counts.set(k, (counts.get(k) || 0) + 1); }
+    if (counts.size > 30) return { kind: 'many' };
+    return { kind: 'shares', shares: [...counts.values()].sort((a, b) => b - a).slice(0, 6).map(n => n / rows.length) };
+  }
+  return null;
+}
+
+function MiniSpark({ data, accent }) {
+  if (!data) return <span className="block h-[14px]" />;
+  if (data.kind === 'many') return <span className="block h-[14px] pt-[8px]"><span className="block h-[4px] rounded-full" style={{ background: accent, opacity: 0.22 }} /></span>;
+  if (data.kind === 'shares') {
+    return (
+      <span className="flex h-[14px] items-end gap-[2px]" aria-hidden="true">
+        {data.shares.map((f, k) => <span key={k} className="h-[6px] rounded-[2px]" style={{ width: `${f * 100}%`, background: accent, opacity: 0.9 - k * 0.13 }} />)}
+      </span>
+    );
+  }
+  const mx = Math.max(...data.bins);
+  return (
+    <span className="flex h-[14px] items-end gap-[1.5px]" aria-hidden="true">
+      {data.bins.map((n, k) => <span key={k} className="flex-1 rounded-t-[1.5px]" style={{ height: `${Math.max(8, n / mx * 100)}%`, background: accent, opacity: n ? 0.6 : 0.15 }} />)}
+    </span>
+  );
+}
 const FONT = '12.5px JohnsonText, Arial, sans-serif';
 
 let measureCtx = null;
@@ -1794,7 +2265,7 @@ const textWidth = (s, font = FONT) => {
 // First guess at a column width from its header and the first rows, so names
 // and values are readable without dragging every column open.
 function fitWidth(name, type, rows, colIndex, cap = 380, pad = 28) {
-  let w = Math.max(textWidth(name, `600 ${FONT}`) + 62, textWidth(type || '', '10.5px monospace') + 40);
+  let w = Math.max(textWidth(name, `600 ${FONT}`) + 62, textWidth(type || '', '10.5px monospace') + 72);
   const sample = Math.min(rows.length, 60);
   for (let r = 0; r < sample; r += 1) {
     const v = rows[r]?.[colIndex];
@@ -1805,7 +2276,57 @@ function fitWidth(name, type, rows, colIndex, cap = 380, pad = 28) {
   return Math.round(Math.max(96, Math.min(cap, w)));
 }
 
-function FilterPopover({ column, current, onApply, onClear, onClose, alignRight }) {
+// A popup that can't be cut off: it renders on <body>, fixed next to the
+// element it opens from (the parent of where it's placed), opens upward when
+// there's more room above, and never gets taller than the room it has.
+function Floating({ align = 'left', className = '', style, boxRef, children, ...rest }) {
+  const E = useEngine();
+  const spot = useRef(null);
+  const box = useRef(null);
+  const [pos, setPos] = useState(null);
+  const setBox = useCallback((el) => { box.current = el; if (boxRef) boxRef.current = el; }, [boxRef]);
+  const place = useCallback(() => {
+    const a = spot.current?.parentElement?.getBoundingClientRect();
+    const b = box.current;
+    if (!a || !b) return;
+    const vw = window.innerWidth, vh = window.innerHeight, gap = 4, edge = 8;
+    const w = b.offsetWidth;
+    const below = vh - a.bottom - gap - edge, above = a.top - gap - edge;
+    const up = b.scrollHeight > below && above > below;
+    const left = Math.round(Math.max(edge, Math.min(align === 'right' ? a.right - w : a.left, vw - edge - w)));
+    const next = up
+      ? { left, top: 'auto', bottom: Math.round(vh - a.top + gap), maxHeight: Math.floor(above) }
+      : { left, top: Math.round(a.bottom + gap), bottom: 'auto', maxHeight: Math.floor(below) };
+    setPos(p => (p && p.left === next.left && p.top === next.top && p.bottom === next.bottom && p.maxHeight === next.maxHeight ? p : next));
+  }, [align]);
+  // Content can change size (values arriving), so check after every render; it only sets state when something moved.
+  useLayoutEffect(() => { place(); });
+  useEffect(() => {
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [place]);
+  return (
+    <>
+      <span ref={spot} hidden />
+      {createPortal(
+        <div
+          ref={setBox}
+          {...rest}
+          style={{ ...sigVars(E), position: 'fixed', zIndex: 1000, overflowY: 'auto', ...(pos || { left: 0, top: 0, visibility: 'hidden' }), ...style }}
+          className={`ds-pop ${className}`}
+        >
+          {children}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function FilterPopover({ column: fixedColumn, columns, current, onApply, onClear, onClose, alignRight }) {
+  // Opened from the filter bar it starts with a column to pick; from a header it knows its column.
+  const [column, setColumn] = useState(fixedColumn || columns?.[0] || '');
   const [op, setOp] = useState(current?.op || 'contains');
   const [value, setValue] = useState(current?.values ? current.values.join('\n') : (current?.value ?? ''));
   const spec = FILTER_OPS.find(f => f.id === op);
@@ -1821,19 +2342,25 @@ function FilterPopover({ column, current, onApply, onClear, onClose, alignRight 
     onApply({ col: column, op, value });
   };
 
-  const field = 'w-full rounded-md border border-[#d5cfc9] bg-white px-2.5 text-[12.5px] text-[#312c2a] focus:outline-none focus:border-[#eb1700] focus:ring-2 focus:ring-[#eb1700]/15';
+  const field = 'w-full rounded-md border border-[#d5cfc9] bg-white px-2.5 text-[12.5px] text-[#312c2a] focus:outline-none focus:border-[var(--sig)] focus:ring-2 focus:ring-[var(--sig-ring)]';
 
   return (
-    <div
-      className={`absolute z-40 top-full mt-1 w-[260px] bg-white border border-[#e8e6e3] rounded-lg shadow-[0_12px_32px_rgba(49,44,42,.18)] p-3 font-johnson-text ${alignRight ? 'right-0' : 'left-0'}`}
+    <Floating
+      align={alignRight ? 'right' : 'left'}
+      className="w-[260px] bg-white border border-[#e8e6e3] rounded-lg shadow-[0_12px_32px_rgba(49,44,42,.18)] p-3 font-johnson-text text-[#312c2a]"
       onClick={e => e.stopPropagation()}
       onMouseDown={e => e.stopPropagation()}
     >
       <div className="flex items-center gap-2 mb-2">
-        <Filter size={13} className="text-[#eb1700]" />
-        <div className="text-[12px] font-bold text-[#312c2a] truncate flex-1" title={column}>{column}</div>
-        <button onClick={onClose} className="p-0.5 rounded text-[#81766f] hover:bg-[#f1efed]" aria-label="Close"><X size={13} /></button>
+        <Filter size={13} className="text-[var(--sig-ink)]" />
+        <div className="text-[12px] font-bold text-[#312c2a] truncate flex-1" title={column}>{columns ? 'Add a filter' : column}</div>
+        <button onClick={onClose} className="p-0.5 rounded text-[#766a63] hover:bg-[#f1efed]" aria-label="Close"><X size={13} /></button>
       </div>
+      {columns && (
+        <select value={column} onChange={e => setColumn(e.target.value)} aria-label="Column" title={column} className={`${field} h-8 mb-2 truncate`}>
+          {columns.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      )}
       <select value={op} onChange={e => setOp(e.target.value)} className={`${field} h-8 mb-2`}>
         {FILTER_OPS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
       </select>
@@ -1853,6 +2380,162 @@ function FilterPopover({ column, current, onApply, onClear, onClose, alignRight 
         <button onClick={onClear} disabled={!current} className="text-[12px] text-[#6e6259] hover:text-[#9e0000] disabled:opacity-40">Remove filter</button>
         <Button size="sm" variant="primary" onClick={apply}>Apply</Button>
       </div>
+    </Floating>
+  );
+}
+
+// + Filter: pick a column, then one of its most common values, or empty /
+// not empty, or any other condition.
+function FilterMenu({ columns, fetchValues, onAdd, onClose }) {
+  const [col, setCol] = useState(null);
+  const [q, setQ] = useState('');
+  const [vals, setVals] = useState(null);      // null loading | Error | { values, more, scope }
+  const [advanced, setAdvanced] = useState(false);
+  const boxRef = useRef(null);
+  useEffect(() => {
+    const away = (e) => { if (!boxRef.current?.contains(e.target)) onClose(); };
+    const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc, true);
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc, true); };
+  }, [onClose]);
+  const [vq, setVq] = useState('');
+  useEffect(() => { setVq(''); }, [col]);
+  useEffect(() => {
+    if (!col) return undefined;
+    let live = true;
+    setVals(null);
+    // Typing waits a beat before asking the server again.
+    const t = setTimeout(() => {
+      fetchValues(col, vq.trim()).then(d => { if (live) setVals(d); }).catch(err => { if (live) setVals(err instanceof Error ? err : new Error(String(err))); });
+    }, vq ? 250 : 0);
+    return () => { live = false; clearTimeout(t); };
+  }, [col, vq]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A key column: every value shows up once, so counts don't help, search does.
+  const unique = Boolean(vals && !(vals instanceof Error) && vals.values.length > 1 && vals.values.every(v => v.count === 1));
+  const pick = (f) => { onAdd(f); onClose(); };
+  const label = (v) => (typeof v === 'string' ? v.replace(ISO_STAMP, '$1 $2') : typeof v === 'object' ? JSON.stringify(v) : String(v));
+  const shown = columns.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()));
+  const item = 'w-full flex items-center gap-2 min-w-0 h-[30px] px-2.5 rounded-[7px] text-left text-[12.5px] text-[#312c2a] hover:bg-[#f3f1ef]';
+
+  if (advanced) {
+    return (
+      <FilterPopover column={col} onApply={pick} onClear={onClose} onClose={onClose} alignRight />
+    );
+  }
+  return (
+    <Floating boxRef={boxRef} align="right" className="flex flex-col [&>*]:flex-shrink-0 w-[260px] rounded-[12px] border border-[#e8e6e3] bg-white p-1.5 shadow-[0_12px_32px_rgba(49,44,42,.16)] font-johnson-text">
+      {!col ? (
+        <>
+          <input
+            autoFocus
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && shown[0]) setCol(shown[0].name); }}
+            placeholder="Filter on a column"
+            aria-label="Find a column"
+            className="w-full h-[28px] mb-1 px-2.5 rounded-[7px] border border-[#e8e6e3] bg-[#fbfaf9] text-[12.5px] focus:outline-none focus:border-[var(--sig)] focus:bg-white"
+          />
+          {/* Lists shrink first on a short screen, so the choices under them stay in view. */}
+          <div className="!flex-shrink min-h-[64px] max-h-[300px] overflow-y-auto">
+            {shown.map(c => (
+              <button key={c.name} type="button" onClick={() => setCol(c.name)} className={item}>
+                <span className="w-[14px] flex-shrink-0 text-center text-[10.5px] font-mono text-[#a39992]">{colGlyph(c.type)}</span>
+                <span className="min-w-0 truncate">{c.name}</span>
+              </button>
+            ))}
+            {!shown.length && <div className="px-2.5 py-2 text-[12px] text-[#a39992]">No column matches</div>}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex items-center gap-1 min-w-0 px-1 pt-0.5 pb-1">
+            <button type="button" onClick={() => setCol(null)} aria-label="Pick another column" title="Pick another column" className="flex-shrink-0 w-[22px] h-[22px] inline-flex items-center justify-center rounded-md text-[#766a63] hover:bg-[#f3f1ef]">
+              <ChevronLeft size={13} />
+            </button>
+            <span className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-wide text-[#a39992]">{col} is</span>
+          </div>
+          <input
+            autoFocus
+            value={vq}
+            onChange={e => setVq(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && vq.trim()) pick({ col, op: 'contains', value: vq.trim() }); }}
+            placeholder="Search values"
+            aria-label={`Search the values of ${col}`}
+            className="w-full h-[28px] mb-1 px-2.5 rounded-[7px] border border-[#e8e6e3] bg-[#fbfaf9] text-[12.5px] focus:outline-none focus:border-[var(--sig)] focus:bg-white"
+          />
+          <div className="!flex-shrink min-h-[64px] max-h-[240px] overflow-y-auto">
+            {vq.trim() && (
+              <button type="button" onClick={() => pick({ col, op: 'contains', value: vq.trim() })} className={`${item} text-[var(--sig-ink)]`}>
+                <span className="min-w-0 truncate">Contains "{vq.trim()}"</span>
+              </button>
+            )}
+            {vals === null && <div className="space-y-1.5 px-2.5 py-1.5">{Array.from({ length: 5 }).map((_, i) => <Skel key={i} h={14} w={`${50 + ((i * 17) % 40)}%`} />)}</div>}
+            {vals instanceof Error && <div className="px-2.5 py-1.5 text-[12px] text-[#766a63]">{vals.message || "Can't list this column's values"}</div>}
+            {vals && !(vals instanceof Error) && vals.values.map(({ value, count }) => (
+              <button key={label(value)} type="button" onClick={() => pick({ col, op: 'eq', value: String(value) })} className={`${item} justify-between`}>
+                <span className="min-w-0 truncate">{label(value)}</span>
+                <span className="flex-shrink-0 tabular-nums text-[12px] text-[#a39992]">{fmtN(count)}</span>
+              </button>
+            ))}
+            {vals && !(vals instanceof Error) && !vals.values.length && <div className="px-2.5 py-1.5 text-[12px] text-[#a39992]">{vq.trim() ? 'No value contains that' : 'Only empty values here'}</div>}
+          </div>
+          {vals && !(vals instanceof Error) && vals.values.length > 0 && (vals.more || vals.scope === 'page') && (
+            <div className="px-2.5 pt-0.5 text-[11px] text-[#a39992]">
+              {unique ? 'Every value is different here. Search to find one.' : vals.scope === 'page' ? 'Counted on the rows on screen' : vq.trim() ? `The ${vals.values.length} most common matches` : `The ${vals.values.length} most common`}
+            </div>
+          )}
+          <div className="my-1.5 h-px bg-[#efedea]" />
+          <button type="button" onClick={() => pick({ col, op: 'is_null' })} className={item}>Is empty</button>
+          <button type="button" onClick={() => pick({ col, op: 'is_not_null' })} className={item}>Is not empty</button>
+          <button type="button" onClick={() => setAdvanced(true)} className={`${item} text-[var(--sig-ink)]`}>More conditions...</button>
+        </>
+      )}
+    </Floating>
+  );
+}
+
+// The header's Filter button and its menu.
+function FilterButton({ columns, fetchValues, onAdd, count, compact }) {
+  const [adding, setAdding] = useState(false);
+  const closeAdding = useCallback(() => setAdding(false), []);
+  return (
+    <span className="relative">
+      <Button
+        size="sm"
+        icon={Filter}
+        onMouseDown={e => { if (adding) e.stopPropagation(); }}
+        onClick={() => setAdding(a => !a)}
+        aria-expanded={adding}
+        aria-label="Filter"
+        title="Filter the rows"
+        className={adding || count ? '!border-[var(--sig)] !text-[var(--sig-ink)]' : ''}
+      >
+        <span className={compact ? 'hidden' : 'hidden sm:inline'}>Filter</span>
+        {count > 0 && <span className="min-w-[15px] h-[15px] px-1 rounded-full bg-[var(--sig)] text-white text-[10px] leading-[15px] tabular-nums">{count}</span>}
+      </Button>
+      {adding && <FilterMenu columns={columns} fetchValues={fetchValues} onAdd={onAdd} onClose={closeAdding} />}
+    </span>
+  );
+}
+
+// Active filters as chips, shown only once there are some.
+function FilterBar({ filters, onRemove, onClear }) {
+  const opLabel = (id) => FILTER_OPS.find(f => f.id === id)?.label || id;
+  const shown = (f) => (f.values ? f.values.join(', ') : f.value);
+  return (
+    <div className="relative z-[25] flex-shrink-0 flex flex-wrap items-center gap-1.5 min-w-0 px-2 py-1.5 border-b border-[#efedea]">
+      {filters.map(f => (
+        <span key={f.col} className="flex-shrink-0 inline-flex items-center gap-1.5 max-w-[320px] h-[24px] pl-2.5 pr-1 rounded-[7px] bg-[var(--sig-soft)] text-[12px] text-[var(--sig-ink)]">
+          <span className="truncate">
+            {f.col} {opLabel(f.op)}{shown(f) != null && shown(f) !== '' && <> <b className="font-semibold">{shown(f)}</b></>}
+          </span>
+          <button type="button" onClick={() => onRemove(f.col)} aria-label={`Remove the filter on ${f.col}`} title="Remove this filter" className="flex-shrink-0 w-[18px] h-[18px] inline-flex items-center justify-center rounded-[5px] hover:bg-black/[.08]">
+            <X size={11} />
+          </button>
+        </span>
+      ))}
+      <button type="button" onClick={onClear} className="flex-shrink-0 h-[24px] px-2.5 rounded-[7px] border border-[#e8e6e3] text-[12px] text-[#6e6259] hover:text-[#312c2a] hover:border-[#cbc4bc]">Clear all</button>
     </div>
   );
 }
@@ -1873,10 +2556,10 @@ function CellValue({ value, numeric }) {
     );
   }
   if (value === null || value === undefined) {
-    return <span className="inline-block px-1.5 rounded bg-[#f1efed] text-[10.5px] font-medium tracking-wide text-[#81766f]">NULL</span>;
+    return <span className="inline-block px-1.5 rounded bg-[#f1efed] text-[10.5px] font-medium tracking-wide text-[#766a63]">NULL</span>;
   }
   if (typeof value === 'boolean') {
-    return <span className={value ? 'text-[#328714] font-medium' : 'text-[#9e0000] font-medium'}>{String(value).toUpperCase()}</span>;
+    return <span className={value ? 'text-[#328714] font-medium' : 'text-[#766a63]'}>{String(value).toUpperCase()}</span>;
   }
   if (typeof value === 'object') {
     return <span className="font-mono text-[12px] text-[#4a423e]">{cellText(value)}</span>;
@@ -1898,6 +2581,99 @@ function SfGrid(props) {
   return <SfGridView {...props} {...fns} />;
 }
 
+// Which cell an event in the grid body landed on, from its data-cell="r:c".
+const cellAt = (e) => {
+  const td = e.target.closest?.('td[data-cell]');
+  if (!td) return null;
+  const [r, c] = td.dataset.cell.split(':').map(Number);
+  return { r, c };
+};
+const NO_EDITS = {};
+const CELL_BASE = 'border-b border-r border-[#efedea]';
+
+// One grid row. Memoized so moving the cell cursor or dragging a block only
+// re-renders the rows it touches, not every cell on the page. The mouse
+// handlers live on <tbody> for the same reason.
+const GridRow = React.memo(function GridRow({
+  row, r, columns, colTypes, rowEdits, isDeleted, picked, dupMsg, editable, columnMeta, rowOffset,
+  selC, block, onRowSelect, onCopyRow, onToggleDelete, onEditCell,
+}) {
+  const zebra = r % 2 === 1;
+  const rowBg = isDeleted ? '#fdf3f1' : picked ? '#fff6f4' : zebra ? '#fbfaf9' : '#ffffff';
+  const [b1, b2] = block ? block.split(':').map(Number) : [-1, -2];
+  return (
+    <tr className="group/row">
+      <td
+        className={`${CELL_BASE} sticky left-0 z-[10] text-right pr-3 text-[11px] tabular-nums text-[#766a63] ${editable ? 'cursor-pointer' : ''}`}
+        style={{ height: ROW_H, background: picked ? 'var(--sig-mid)' : selC >= 0 ? 'var(--sig-soft)' : '#f8f7f5', boxShadow: picked ? 'inset 3px 0 0 var(--sig)' : undefined }}
+        onClick={e => editable && onRowSelect?.(r, e)}
+        title={editable ? 'Click to select, Ctrl or Shift click for more rows' : undefined}
+      >
+        {editable ? (
+          <span className="inline-flex items-center justify-end gap-0.5 w-full">
+            {dupMsg && <span title={dupMsg} className="mr-auto pl-1 text-[9.5px] font-bold text-[#9e0000]">DUP</span>}
+            <button
+              onClick={e => { e.stopPropagation(); onCopyRow?.([r]); }}
+              title="Copy this row as a new row"
+              aria-label="Copy row"
+              className="p-0.5 rounded text-[#766a63] opacity-0 group-hover/row:opacity-100 hover:bg-[#e8e6e3] hover:text-[#312c2a]"
+            >
+              <CopyPlus size={12} />
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); onToggleDelete(r); }}
+              title={isDeleted ? 'Keep this row' : 'Mark row for deletion'}
+              aria-label={isDeleted ? 'Keep row' : 'Delete row'}
+              className={`p-0.5 rounded ${isDeleted ? 'text-[#9e0000]' : 'text-[#766a63] opacity-0 group-hover/row:opacity-100'} hover:bg-[#e8e6e3]`}
+            >
+              {isDeleted ? <Undo2 size={12} /> : <Trash2 size={12} />}
+            </button>
+            <span className="min-w-[22px] text-right">{rowOffset + r + 1}</span>
+          </span>
+        ) : rowOffset + r + 1}
+      </td>
+      {columns.map((col, c) => {
+        const name = col.name;
+        const dirty = Object.prototype.hasOwnProperty.call(rowEdits, name);
+        const value = dirty ? rowEdits[name] : row[c];
+        const meta = columnMeta[name];
+        const numeric = typeFamily(colTypes[c]) === 'num' || typeof row[c] === 'number';
+        const cellEditable = editable && !isDeleted && (meta ? meta.editable : true) && !isBig(row[c]);
+        const isSel = selC === c;
+        const inBlock = c >= b1 && c <= b2;
+        const text = value === null || value === undefined ? 'NULL' : cellText(value);
+        return (
+          <td
+            key={name}
+            data-cell={`${r}:${c}`}
+            title={text && text.length > 24 ? text.slice(0, 600) : undefined}
+            className={`${CELL_BASE} px-3 ${inBlock ? '' : 'group-hover/row:!bg-[#f4f2f0]'} focus-within:!bg-white focus-within:!shadow-[inset_0_0_0_2px_var(--sig)] ${numeric ? 'text-right' : ''} ${isDeleted ? 'line-through text-[#766a63]' : ''}`}
+            style={{
+              height: ROW_H,
+              background: inBlock ? 'var(--sig-soft)' : dirty ? '#fff3ea' : rowBg,
+              boxShadow: isSel ? 'inset 0 0 0 2px var(--sig)' : dirty && dupMsg ? 'inset 3px 0 0 #9e0000' : dirty ? 'inset 3px 0 0 #ff6017' : undefined,
+            }}
+          >
+            {cellEditable ? (
+              <input
+                value={value === null || value === undefined ? '' : cellText(value)}
+                onChange={e => onEditCell(r, name, e.target.value)}
+                placeholder={value === null ? 'NULL' : ''}
+                className={`truncate w-full h-[24px] bg-transparent text-[12.5px] text-[#312c2a] placeholder-[#a39992] px-1 -mx-1 focus:outline-none ${numeric ? 'text-right tabular-nums' : ''}`}
+              />
+            ) : (
+              <div className="truncate leading-[18px]">
+                <CellValue value={value} numeric={numeric} />
+              </div>
+            )}
+          </td>
+        );
+      })}
+      <td aria-hidden="true" className="border-b border-[#efedea]" style={{ height: ROW_H, background: isDeleted ? '#fdf3f1' : rowBg }} />
+    </tr>
+  );
+});
+
 const SfGridView = React.memo(function SfGridView({
   columns, rows, widths, setWidths,
   sort, onSort, filters, onFilter,
@@ -1905,8 +2681,13 @@ const SfGridView = React.memo(function SfGridView({
   editable = false, columnMeta = {}, edits = {}, deleted = [], newRows = [],
   onEditCell, onToggleDelete, onEditNewCell, onRemoveNewRow, onOpenCell, onCopied,
   selectedRows = [], onRowSelect, onCopyRow, dupNew = {}, dupRows = {}, onSelection,
+  stats = false, onToggleStats,
 }) {
   const [openFilter, setOpenFilter] = useState(null);
+  const headH = stats ? HEAD_H : HEAD_H_SLIM;
+  const E = useEngine();
+  // Header charts follow the rows on screen.
+  const sparks = useMemo(() => (stats ? columns.map((c, i) => sparkOf(rows, i, typeFamily(c.type || c.display_type))) : []), [columns, rows, stats]);
   const rowSelSet = useMemo(() => new Set(selectedRows), [selectedRows]);
   // A block of cells, spreadsheet style: sel is the cell with the cursor,
   // anchor the corner the block was started from (Shift+click / Shift+arrows / drag).
@@ -1934,10 +2715,10 @@ const SfGridView = React.memo(function SfGridView({
     r1: Math.min(sel.r, (anchor || sel).r), r2: Math.max(sel.r, (anchor || sel).r),
     c1: Math.min(sel.c, (anchor || sel).c), c2: Math.max(sel.c, (anchor || sel).c),
   } : null;
-  const inBox = (r, c) => box && r >= box.r1 && r <= box.r2 && c >= box.c1 && c <= box.c2;
   const multi = box && (box.r2 > box.r1 || box.c2 > box.c1);
 
   const typeOf = useCallback((col) => displayType(columnMeta[col.name]) || displayType(col), [columnMeta]);
+  const colTypes = useMemo(() => columns.map(typeOf), [columns, typeOf]);
 
   // Fill in widths for columns nobody has sized yet, before the first paint.
   useLayoutEffect(() => {
@@ -2063,6 +2844,14 @@ const SfGridView = React.memo(function SfGridView({
       e.preventDefault();
       onOpenCell?.(columns[sel.c].name, valueAt(sel.r, sel.c), sel.r);
     }
+    // F keeps rows like the selected cell, Shift F hides them.
+    if (!mod && !e.altKey && e.code === 'KeyF' && !editable && onFilter) {
+      const v = valueAt(sel.r, sel.c);
+      if (v !== null && v !== undefined && typeof v === 'object') return;   // a cut-short big value
+      e.preventDefault();
+      const col = columns[sel.c].name;
+      onFilter(v == null ? { col, op: e.shiftKey ? 'is_not_null' : 'is_null' } : { col, op: e.shiftKey ? 'neq' : 'eq', value: String(v) });
+    }
     if (e.key === 'Escape') { setSel(null); setAnchor(null); }
   };
 
@@ -2071,7 +2860,7 @@ const SfGridView = React.memo(function SfGridView({
 
   const gutterW = Math.max(52, String(rowOffset + rows.length + newRows.length).length * 8 + 30) + (editable ? 44 : 0);
   const cellBase = 'border-b border-r border-[#efedea]';
-  const headBase = 'border-b border-r border-[#e8e6e3] bg-[#f8f7f5]';
+  const headBase = 'border-b border-r border-[#efedea] bg-white';
 
   return (
     <div
@@ -2095,10 +2884,22 @@ const SfGridView = React.memo(function SfGridView({
         <thead>
           <tr>
             <th
-              className={`${headBase} sticky top-0 left-0 z-[22] text-right pr-3 text-[10.5px] font-medium text-[#81766f]`}
-              style={{ height: 46 }}
+              className={`${headBase} sticky top-0 left-0 z-[22] p-0 text-[10.5px] font-medium text-[#766a63]`}
+              style={{ height: headH }}
             >
-              #
+              {onToggleStats ? (
+                <button
+                  type="button"
+                  onClick={onToggleStats}
+                  aria-pressed={stats}
+                  title={stats ? 'Hide column summaries' : 'Show a summary of each column'}
+                  className={`w-full h-full flex items-center justify-center ${stats ? '' : 'hover:bg-[#faf9f8]'}`}
+                >
+                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md ${stats ? 'text-white' : 'text-[#766a63] hover:text-[#312c2a]'}`} style={stats ? { background: E.accent } : undefined}>
+                    <ChartColumnBig size={13} />
+                  </span>
+                </button>
+              ) : <span className="block text-right pr-3">#</span>}
             </th>
             {columns.map((col, i) => {
               const name = col.name;
@@ -2111,35 +2912,36 @@ const SfGridView = React.memo(function SfGridView({
                 <th
                   key={name}
                   className={`${headBase} group/th sticky top-0 z-[20] p-0 text-left font-normal align-middle`}
-                  style={{ height: 46 }}
+                  style={{ height: headH }}
                 >
                   <div className="relative h-full flex items-center">
                     <button
                       onClick={e => onSort(name, e.shiftKey)}
                       title={`${name}\n${type}${meta?.nullable === false ? ' · NOT NULL' : ''}\nClick to sort, Shift+click to add to the sort`}
-                      className="flex-1 min-w-0 h-full pl-3 pr-1 flex flex-col justify-center text-left hover:bg-[#f1efed]"
+                      className="flex-1 min-w-0 h-full pl-3 pr-1 flex flex-col justify-center text-left hover:bg-[#faf9f8]"
                     >
                       <span className="flex items-center gap-1.5 min-w-0">
                         {meta?.is_primary_key && <KeyRound size={11} className="flex-shrink-0 text-[#a14a00]" aria-label="Primary key" />}
                         <span className="truncate text-[12.5px] font-bold text-[#312c2a]">{name}</span>
                         {activeSort && (
-                          <span className="flex-shrink-0 inline-flex items-center text-[#eb1700]">
+                          <span className="flex-shrink-0 inline-flex items-center text-[var(--sig-ink)]">
                             {activeSort.dir === 'asc' ? <ArrowUp size={12} strokeWidth={2.4} /> : <ArrowDown size={12} strokeWidth={2.4} />}
                             {sortIdx && <span className="text-[9.5px] font-bold">{sortIdx}</span>}
                           </span>
                         )}
                       </span>
-                      <span className="mt-[2px] flex items-center gap-1 min-w-0 text-[10.5px] font-mono text-[#81766f]">
+                      <span className="mt-[2px] flex items-center gap-1 min-w-0 text-[10.5px] font-mono text-[#766a63]">
                         <span className="flex-shrink-0">{colGlyph(type)}</span>
                         <span className="truncate">{type}</span>
                       </span>
+                      {stats && <span className="block mt-[5px] mr-1"><MiniSpark data={sparks[i]} accent={E.accent} /></span>}
                     </button>
                     <button
                       onClick={e => { e.stopPropagation(); setOpenFilter(openFilter === name ? null : name); }}
                       title={activeFilter ? 'Edit filter' : 'Filter this column'}
                       aria-label={`Filter ${name}`}
                       className={`flex-shrink-0 mr-2 w-6 h-6 flex items-center justify-center rounded-md transition ${
-                        activeFilter ? 'bg-[#fdeeec] text-[#eb1700]' : 'text-[#81766f] opacity-0 group-hover/th:opacity-100 focus:opacity-100 hover:bg-[#e8e6e3]'
+                        activeFilter ? 'bg-[var(--sig-soft)] text-[var(--sig-ink)]' : 'text-[#766a63] opacity-0 group-hover/th:opacity-100 focus:opacity-100 hover:bg-[#e8e6e3]'
                       }`}
                     >
                       <Filter size={12} strokeWidth={2.2} />
@@ -2159,102 +2961,61 @@ const SfGridView = React.memo(function SfGridView({
                       onDoubleClick={e => autoFit(e, col, i)}
                       onClick={e => e.stopPropagation()}
                       title="Drag to resize, double-click to fit"
-                      className="absolute top-0 -right-[3px] z-[5] h-full w-[7px] cursor-col-resize after:absolute after:left-[3px] after:top-2 after:bottom-2 after:w-[1px] hover:after:bg-[#eb1700]"
+                      className="absolute top-0 -right-[3px] z-[5] h-full w-[7px] cursor-col-resize after:absolute after:left-[3px] after:top-2 after:bottom-2 after:w-[1px] hover:after:bg-[var(--sig)]"
                     />
                   </div>
                 </th>
               );
             })}
-            <th aria-hidden="true" className="sticky top-0 z-[20] p-0 border-b border-[#e8e6e3] bg-[#f8f7f5]" style={{ height: 46 }} />
+            <th aria-hidden="true" className="sticky top-0 z-[20] p-0 border-b border-[#efedea] bg-white" style={{ height: headH }} />
           </tr>
         </thead>
-        <tbody>
+        <tbody
+          onMouseDown={e => {
+            const at = cellAt(e);
+            if (!at || e.button !== 0) return;
+            pick(at.r, at.c, e.shiftKey);
+            // Drag across cells to select a block (not while editing a cell).
+            if (!e.shiftKey && e.target.tagName !== 'INPUT') { dragRef.current = true; setAnchor({ r: at.r, c: at.c }); }
+          }}
+          onMouseOver={e => {
+            if (!dragRef.current) return;
+            const at = cellAt(e);
+            if (at) setSel(s => (s && s.r === at.r && s.c === at.c ? s : at));
+          }}
+          onDoubleClick={e => {
+            const at = cellAt(e);
+            if (!at) return;
+            const name = columns[at.c].name;
+            const raw = rows[at.r]?.[at.c];
+            const meta = columnMeta[name];
+            const cellEditable = editable && !deletedSet.has(at.r) && (meta ? meta.editable : true) && !isBig(raw);
+            if (!cellEditable) onOpenCell?.(name, raw, at.r);
+          }}
+        >
           {rows.map((row, r) => {
-            const rowEdits = edits[r] || {};
-            const isDeleted = deletedSet.has(r);
-            const zebra = r % 2 === 1;
-            const picked = rowSelSet.has(r);
-            const dupMsg = dupRows[r];
-            const rowBg = isDeleted ? '#fdf3f1' : picked ? '#fff6f4' : zebra ? '#fbfaf9' : '#ffffff';
+            const selC = sel && sel.r === r ? sel.c : -1;
             return (
-              <tr key={r} className="group/row">
-                <td
-                  className={`${cellBase} sticky left-0 z-[10] text-right pr-3 text-[11px] tabular-nums text-[#81766f] ${editable ? 'cursor-pointer' : ''}`}
-                  style={{ height: ROW_H, background: picked ? '#fbdcd7' : sel?.r === r ? '#fdeeec' : '#f8f7f5', boxShadow: picked ? 'inset 3px 0 0 #eb1700' : undefined }}
-                  onClick={e => editable && onRowSelect?.(r, e)}
-                  title={editable ? 'Click to select, Ctrl or Shift click for more rows' : undefined}
-                >
-                  {editable ? (
-                    <span className="inline-flex items-center justify-end gap-0.5 w-full">
-                      {dupMsg && <span title={dupMsg} className="mr-auto pl-1 text-[9.5px] font-bold text-[#9e0000]">DUP</span>}
-                      <button
-                        onClick={e => { e.stopPropagation(); onCopyRow?.([r]); }}
-                        title="Copy this row as a new row"
-                        aria-label="Copy row"
-                        className="p-0.5 rounded text-[#81766f] opacity-0 group-hover/row:opacity-100 hover:bg-[#e8e6e3] hover:text-[#312c2a]"
-                      >
-                        <CopyPlus size={12} />
-                      </button>
-                      <button
-                        onClick={e => { e.stopPropagation(); onToggleDelete(r); }}
-                        title={isDeleted ? 'Keep this row' : 'Mark row for deletion'}
-                        aria-label={isDeleted ? 'Keep row' : 'Delete row'}
-                        className={`p-0.5 rounded ${isDeleted ? 'text-[#9e0000]' : 'text-[#81766f] opacity-0 group-hover/row:opacity-100'} hover:bg-[#e8e6e3]`}
-                      >
-                        {isDeleted ? <Undo2 size={12} /> : <Trash2 size={12} />}
-                      </button>
-                      <span className="min-w-[22px] text-right">{rowOffset + r + 1}</span>
-                    </span>
-                  ) : rowOffset + r + 1}
-                </td>
-                {columns.map((col, c) => {
-                  const name = col.name;
-                  const dirty = Object.prototype.hasOwnProperty.call(rowEdits, name);
-                  const value = dirty ? rowEdits[name] : row[c];
-                  const meta = columnMeta[name];
-                  const type = typeOf(col);
-                  const numeric = typeFamily(type) === 'num' || typeof row[c] === 'number';
-                  const cellEditable = editable && !isDeleted && (meta ? meta.editable : true) && !isBig(row[c]);
-                  const isSel = sel && sel.r === r && sel.c === c;
-                  const inBlock = multi && inBox(r, c);
-                  const text = value === null || value === undefined ? 'NULL' : cellText(value);
-                  return (
-                    <td
-                      key={name}
-                      data-cell={`${r}:${c}`}
-                      onMouseDown={e => {
-                        if (e.button !== 0) return;
-                        pick(r, c, e.shiftKey);
-                        // Drag across cells to select a block (not while editing a cell).
-                        if (!e.shiftKey && !(e.target.tagName === 'INPUT')) { dragRef.current = true; setAnchor({ r, c }); }
-                      }}
-                      onMouseEnter={() => { if (dragRef.current) setSel({ r, c }); }}
-                      onDoubleClick={() => !cellEditable && onOpenCell?.(name, row[c], r)}
-                      title={text && text.length > 24 ? text.slice(0, 600) : undefined}
-                      className={`${cellBase} px-3 ${inBlock ? '' : 'group-hover/row:!bg-[#f4f2f0]'} focus-within:!bg-white focus-within:!shadow-[inset_0_0_0_2px_#eb1700] ${numeric ? 'text-right' : ''} ${isDeleted ? 'line-through text-[#81766f]' : ''}`}
-                      style={{
-                        height: ROW_H,
-                        background: inBlock ? '#fde3df' : dirty ? '#fff3ea' : rowBg,
-                        boxShadow: isSel ? 'inset 0 0 0 2px #eb1700' : dirty && dupMsg ? 'inset 3px 0 0 #9e0000' : dirty ? 'inset 3px 0 0 #ff6017' : undefined,
-                      }}
-                    >
-                      {cellEditable ? (
-                        <input
-                          value={value === null || value === undefined ? '' : cellText(value)}
-                          onChange={e => onEditCell(r, name, e.target.value)}
-                          placeholder={value === null ? 'NULL' : ''}
-                          className={`w-full h-[24px] bg-transparent text-[12.5px] text-[#312c2a] placeholder-[#a39992] px-1 -mx-1 focus:outline-none ${numeric ? 'text-right tabular-nums' : ''}`}
-                        />
-                      ) : (
-                        <div className="truncate leading-[18px]">
-                          <CellValue value={value} numeric={numeric} />
-                        </div>
-                      )}
-                    </td>
-                  );
-                })}
-                <td aria-hidden="true" className="border-b border-[#efedea]" style={{ height: ROW_H, background: isDeleted ? '#fdf3f1' : rowBg }} />
-              </tr>
+              <GridRow
+                key={r}
+                row={row}
+                r={r}
+                columns={columns}
+                colTypes={colTypes}
+                rowEdits={edits[r] || NO_EDITS}
+                isDeleted={deletedSet.has(r)}
+                picked={rowSelSet.has(r)}
+                dupMsg={dupRows[r]}
+                editable={editable}
+                columnMeta={columnMeta}
+                rowOffset={rowOffset}
+                selC={selC}
+                block={multi && r >= box.r1 && r <= box.r2 ? `${box.c1}:${box.c2}` : ''}
+                onRowSelect={onRowSelect}
+                onCopyRow={onCopyRow}
+                onToggleDelete={onToggleDelete}
+                onEditCell={onEditCell}
+              />
             );
           })}
 
@@ -2263,7 +3024,7 @@ const SfGridView = React.memo(function SfGridView({
             const bg = dup ? '#fdf3f1' : '#f6fbf3';
             return (
             <tr key={`new-${i}`} data-newrow={i}>
-              <td className={`${cellBase} sticky left-0 z-[10] text-right pr-2`} style={{ height: ROW_H, background: dup ? '#fbdcd7' : '#eef6ea' }} title={dup || 'New row'}>
+              <td className={`${cellBase} sticky left-0 z-[10] text-right pr-2`} style={{ height: ROW_H, background: dup ? 'var(--sig-mid)' : '#eef6ea' }} title={dup || 'New row'}>
                 <span className={`inline-flex items-center gap-1 text-[10.5px] font-bold ${dup ? 'text-[#9e0000]' : 'text-[#328714]'}`}>
                   <button onClick={() => onRemoveNewRow(i)} title="Discard this new row" className="p-0.5 rounded text-[#6e6259] hover:bg-[#dcebd5]">
                     <X size={12} />
@@ -2274,9 +3035,9 @@ const SfGridView = React.memo(function SfGridView({
               {columns.map(col => {
                 const meta = columnMeta[col.name];
                 return (
-                  <td key={col.name} className={`${cellBase} px-3 focus-within:!bg-white focus-within:!shadow-[inset_0_0_0_2px_#eb1700]`} style={{ height: ROW_H, background: bg }}>
+                  <td key={col.name} className={`${cellBase} px-3 focus-within:!bg-white focus-within:!shadow-[inset_0_0_0_2px_var(--sig)]`} style={{ height: ROW_H, background: bg }}>
                     {meta && !meta.editable ? (
-                      <span className="text-[11px] italic text-[#81766f]">not editable</span>
+                      <span className="text-[11px] italic text-[#766a63]">not editable</span>
                     ) : (
                       <input
                         value={draft[col.name] ?? ''}
@@ -2641,6 +3402,7 @@ const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator
 const SHORTCUTS = [
   ['Run selection, or the statement at the cursor', `${MOD} Enter`],
   ['Run all statements', `${MOD} Shift Enter`],
+  ['Undo / redo', `${MOD} Z / ${MOD} Y`],
   ['Format SQL', `${MOD} Shift F`],
   ['UPPER CASE', `${MOD} Shift U`],
   ['lower case', `${MOD} Shift L`],
@@ -2654,6 +3416,8 @@ const SHORTCUTS = [
   ['Indent / outdent', 'Tab / Shift Tab'],
   ['Show suggestions', `${MOD} Space`],
   ['Save query', `${MOD} S`],
+  ['Results: keep rows like the selected cell', 'F'],
+  ['Results: hide rows like the selected cell', 'Shift F'],
   ['Results: select cells', 'Drag / Shift click'],
   ['Results: grow the selection', 'Shift ←↑↓→'],
   ['Results: jump to the edge', `${MOD} ←↑↓→`],
@@ -2669,8 +3433,8 @@ const LINE_H = 21;
 const FONT_SIZE = 13;
 
 const THEMES = {
-  light: { bg: '#ffffff', gutter: '#f8f7f5', gutterLine: '#efedea', num: '#a39992', caret: '#eb1700', sel: 'rgba(235,23,0,0.16)', placeholder: '#a39992' },
-  dark: { bg: '#1f1b1a', gutter: '#262120', gutterLine: '#332d2b', num: '#6e6259', caret: '#ff6a52', sel: 'rgba(255,106,82,0.28)', placeholder: '#6e6259' },
+  light: { bg: '#ffffff', gutter: '#f8f7f5', gutterLine: '#efedea', num: '#a39992', numOn: '#312c2a', caret: '#eb1700', sel: 'rgba(235,23,0,0.16)', placeholder: '#a39992' },
+  dark: { bg: '#2b2624', gutter: '#2b2624', gutterLine: '#2b2624', num: '#93877f', numOn: '#ffffff', caret: '#ffffff', sel: 'rgba(105,208,255,0.24)', placeholder: '#9a8f87' },
 };
 
 function splitLines(tokens) {
@@ -2687,7 +3451,7 @@ function splitLines(tokens) {
 
 const SUGGEST_BADGE = {
   column: ['C', T.green], function: ['f', '#8c3bbb'], schema: ['S', '#8c3bbb'],
-  database: ['D', T.ink], view: ['V', T.blue], table: ['T', T.red], keyword: ['K', T.muted],
+  database: ['D', T.ink], view: ['V', T.blue], table: ['T', 'var(--sig-ink)'], keyword: ['K', T.muted],
 };
 
 // Where the suggestion list goes on screen. It is drawn on the page itself
@@ -2709,7 +3473,15 @@ function suggestBox(ta, suggest, padLeft) {
   };
 }
 
-const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll, onSave, theme = 'light', defaultDb, defaultSchema, placeholder, cq = '', readOnly = false, session = null, peerColor, onSelect }, ref) {
+// Undo and redo for the editor. The browser's own history is wiped by every
+// edit made in code (a picked suggestion, a name inserted from the explorer,
+// a loaded query) and lost when the worksheet is switched, so the editor keeps
+// its own, per worksheet, for as long as the page is open.
+// ponytail: whole-text snapshots, capped at 300 steps; fine for worksheets, switch to diffs if huge scripts get slow.
+const HISTORIES = new Map();
+const HISTORY_MAX = 300;
+
+const SfEditor = forwardRef(function SfEditor({ value, onChange: setValue, historyKey, onRun, onRunAll, onSave, theme = 'light', defaultDb, defaultSchema, placeholder, cq = '', readOnly = false, session = null, peerColor, onSelect }, ref) {
   const E = useEngine();
   const taRef = useRef(null);
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
@@ -2730,12 +3502,115 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
   }, [suggestOpen]);
   const objectCache = useRef({});
   const updateRef = useRef(() => {});
-  const th = THEMES[theme] || THEMES.light;
+  // Names that arrive later only open the list if you're still typing there.
+  const typingRef = useRef(false);
+  const base = THEMES[theme] || THEMES.light;
+  // The light editor's caret and selection take the engine's colour.
+  const th = theme === 'dark' ? base : { ...base, caret: E.ink, sel: `${E.accent}2e` };
+
+  const hist = useMemo(() => {
+    let h = historyKey ? HISTORIES.get(historyKey) : null;
+    if (!h) {
+      h = { undo: [], redo: [], at: 0, kind: null };
+      if (historyKey) HISTORIES.set(historyKey, h);
+    }
+    return h;
+  }, [historyKey]);
+  const shownRef = useRef(value);      // the text as the history last saw it
+  const nextKind = useRef(null);       // set by code edits, so they are a step of their own
+  const remember = (before, kind) => {
+    const now = Date.now();
+    // Letters typed in a row are one step, until a pause or a space.
+    const joins = kind === 'type' && hist.kind === 'type' && now - hist.at < 1000 && hist.undo.length;
+    if (!joins) {
+      hist.undo.push(before);
+      if (hist.undo.length > HISTORY_MAX) hist.undo.shift();
+    }
+    hist.redo = [];
+    hist.at = now;
+    hist.kind = kind;
+  };
+  const onChange = (next, kind = 'edit') => {
+    const before = shownRef.current ?? '';
+    if (next !== before) remember(before, kind);
+    shownRef.current = next;
+    setValue(next);
+  };
+  // Changes from outside (a query loaded from history, a worksheet restored)
+  // are a step too. Someone else's typing in a shared worksheet is not ours to undo.
+  useEffect(() => {
+    if (value === shownRef.current) return;
+    if (!session && shownRef.current != null) remember(shownRef.current, 'edit');
+    shownRef.current = value;
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  const travel = (from, to) => {
+    const ta = taRef.current;
+    const back = from.pop();
+    if (back == null || readOnly) return;
+    const now = value || '';
+    to.push(now);
+    hist.kind = null;
+    shownRef.current = back;
+    setValue(back);
+    // The caret goes to the end of what changed.
+    let a = 0;
+    while (a < back.length && a < now.length && back[a] === now[a]) a += 1;
+    let z = 0;
+    while (z < back.length - a && z < now.length - a && back[back.length - 1 - z] === now[now.length - 1 - z]) z += 1;
+    const at = Math.max(a, back.length - z);
+    requestAnimationFrame(() => { if (ta) { ta.focus(); ta.setSelectionRange(at, at); } });
+  };
+  const undo = () => travel(hist.undo, hist.redo);
+  const redo = () => travel(hist.redo, hist.undo);
+  // The browser's Edit menu (and the touch bar) send undo as an input event.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return undefined;
+    const before = (e) => {
+      if (e.inputType === 'historyUndo') { e.preventDefault(); undoRef.current(); }
+      if (e.inputType === 'historyRedo') { e.preventDefault(); redoRef.current(); }
+    };
+    ta.addEventListener('beforeinput', before);
+    return () => ta.removeEventListener('beforeinput', before);
+  }, []);
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  const redoRef = useRef(redo);
+  redoRef.current = redo;
   const palette = TOKEN_COLORS[theme] || TOKEN_COLORS.light;
 
   const lineCount = Math.max(1, (value || '').split('\n').length);
-  const gutterW = Math.max(46, String(lineCount).length * 8 + 30);
+  const gutterW = Math.max(52, String(lineCount).length * 8 + 36);
   const padLeft = gutterW + 14;
+
+  // The statement the cursor is in gets a bar down its lines and a run arrow
+  // on its first line, so you can see what Run will send.
+  const [caret, setCaret] = useState(0);
+  const trackCaret = () => { const ta = taRef.current; if (ta) setCaret(ta.selectionStart); };
+  const spans = useMemo(() => statementSpans(value || '', E.upperIdents), [value, E.upperIdents]);
+  const lineOf = useCallback((pos) => (value || '').slice(0, pos).split('\n').length - 1, [value]);
+  const current = useMemo(() => {
+    if (!spans.length) return null;
+    let pick = spans[0];
+    spans.forEach(sp => { if (sp.start <= caret) pick = sp; });
+    const body = (value || '').slice(pick.start, pick.end).replace(/\s+$/, '');
+    // Comments above the statement aren't part of what you'd point at.
+    const lead = /^(?:\s+|--[^\n]*|\/\*[\s\S]*?\*\/)*/.exec(body)[0].length;
+    const code = pick.start + lead;
+    return { ...pick, code, from: lineOf(code), to: lineOf(pick.start + body.length) };
+  }, [spans, caret, value, lineOf]);
+  const caretLine = lineOf(caret);
+  const lineEls = useRef([]);
+  const [arrowTop, setArrowTop] = useState(null);
+  const runHere = (e) => {
+    e.preventDefault();
+    const ta = taRef.current;
+    if (!ta || !current) return;
+    ta.focus();
+    ta.setSelectionRange(current.code, current.code);
+    setCaret(current.code);
+    onRun?.();
+  };
 
   const lines = useMemo(() => splitLines(tokenizeSql(value || '')), [value]);
   // Shared worksheets: tell the others where this cursor is.
@@ -2760,6 +3635,11 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
   // The painted layer has to wrap at exactly the textarea's inner width, which
   // shrinks when its scrollbar shows up.
   const [innerW, setInnerW] = useState(null);
+  // Lines wrap, so the arrow goes where the statement's first line really is.
+  useLayoutEffect(() => {
+    const el = current && lineEls.current[current.from];
+    setArrowTop(el ? el.offsetTop : null);
+  }, [current, value, innerW]);
   useEffect(() => {
     const ta = taRef.current;
     if (!ta || typeof ResizeObserver === 'undefined') return undefined;
@@ -2804,7 +3684,7 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
     const key = context.join('.');
     if (cache[key] !== undefined) return;
     cache[key] = 'loading';
-    const settle = (items) => { cache[key] = items; updateRef.current(taRef.current); };
+    const settle = (items) => { cache[key] = items; if (typingRef.current) updateRef.current(taRef.current); };
     const e = encodeURIComponent;
     let req;
     if (context.length === 0) {
@@ -2827,8 +3707,16 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
   const columnsInScope = useCallback((refs) => {
     const out = [];
     refs.forEach(r => {
-      const parts = refKey(r);
-      if (!parts) return;
+      const named = refKey(r);
+      if (!named) return;
+      // Only ask for columns of a table that exists. Without this every
+      // keystroke of "FROM pu", "pub", "publ"... asked the server for a table
+      // by that name. The schema's table list is one cached request.
+      const tables = objectCache.current[named.slice(0, 2).join('.')];
+      if (tables === undefined) { ensureObjects(named.slice(0, 2)); return; }
+      const real = Array.isArray(tables) && tables.find(t => t.text.toLowerCase() === String(named[2]).toLowerCase());
+      if (!real) return;
+      const parts = [named[0], named[1], real.text];
       const cached = objectCache.current[parts.join('.')];
       if (cached === undefined) { ensureObjects(parts); return; }
       if (!Array.isArray(cached)) return;
@@ -2862,12 +3750,12 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
         if (got === undefined) ensureObjects(k);
         return Array.isArray(got) ? got : [];
       });
-      items = rankSuggestions([...columnsInScope(refs), ...STATIC_SUGGESTIONS, ...named], word, clause).slice(0, 12);
+      items = rankSuggestions([...columnsInScope(refs), ...(pg ? PG_SUGGESTIONS : STATIC_SUGGESTIONS), ...named], word, clause).slice(0, 12);
     }
     if (!items?.length) { setSuggest(null); return; }
     const pos = caretPixelPos(ta, caret);
     setSuggest({ items, index: 0, left: pos.left, top: pos.top, lineHeight: pos.lineHeight, boxHeight: ta.clientHeight });
-  }, [ensureObjects, columnsInScope, refKey, lookupFor, topLevel]);
+  }, [ensureObjects, columnsInScope, refKey, lookupFor, topLevel, pg]);
 
   useEffect(() => { updateRef.current = updateSuggest; }, [updateSuggest]);
 
@@ -2876,7 +3764,8 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
     if (!ta || !item) return;
     const caret = ta.selectionStart;
     const { start } = sqlTokenAtCaret(ta.value, caret);
-    const chains = ['database', 'schema', 'table', 'view'].includes(item.kind);
+    // A database or schema name has more after it; a table's name is the end of it.
+    const chains = ['database', 'schema'].includes(item.kind);
     const suffix = chains ? '.' : (item.kind === 'function' || /[ (]$/.test(item.text) ? '' : ' ');
     const insert = item.text + suffix;
     onChange(ta.value.slice(0, start) + insert + ta.value.slice(caret));
@@ -2891,15 +3780,17 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
 
   /* ------------------------------ public api ------------------------------ */
   /* ---------------------------- editing commands --------------------------- */
-  // execCommand keeps the browser's undo stack, so Ctrl+Z still works after
-  // a format or a case change. Falls back to a plain value swap.
+  // Replaces a range as if typed, through execCommand, falling back to a
+  // plain value swap. Either way it is one undo step.
   const replaceRange = (start, end, text, selA, selB) => {
     const ta = taRef.current;
     if (!ta) return;
     ta.focus();
     ta.setSelectionRange(start, end);
+    nextKind.current = 'edit';
     let ok;
     try { ok = document.execCommand('insertText', false, text); } catch { ok = false; }
+    nextKind.current = null;
     if (!ok) onChange(ta.value.slice(0, start) + text + ta.value.slice(end));
     const a = selA ?? start + text.length;
     const b = selB ?? a;
@@ -3037,13 +3928,19 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
           style={{ ...textStyle, width: innerW || '100%', boxSizing: 'border-box', transform: `translate(${-scroll.left}px, ${-scroll.top}px)` }}
         >
           {lines.map((line, i) => (
-            <div key={i} className="relative" style={{ minHeight: LINE_H }}>
+            <div key={i} ref={el => { lineEls.current[i] = el; }} className="relative" style={{ minHeight: LINE_H }}>
               <span
                 className="absolute text-right select-none tabular-nums"
-                style={{ right: `calc(100% + ${padLeft - gutterW + 10}px)`, width: gutterW - 14, color: th.num, fontSize: 11.5 }}
+                style={{ right: `calc(100% + ${padLeft - gutterW + 10}px)`, width: gutterW - 24, color: i === caretLine ? th.numOn : th.num, fontSize: 11.5, fontWeight: i === caretLine ? 600 : 400 }}
               >
                 {i + 1}
               </span>
+              {current && i >= current.from && i <= current.to && (
+                <span
+                  className={`absolute inset-y-0 w-[3px] ${i === current.from ? 'rounded-t-full' : ''} ${i === current.to ? 'rounded-b-full' : ''}`}
+                  style={{ left: gutterW - 6 - padLeft, background: E.accent }}
+                />
+              )}
               {line.length ? line.map((tok, j) => (
                 <span key={j} style={{ color: palette[tok.kind] || palette.plain, fontStyle: tok.kind === 'comment' ? 'italic' : undefined }}>{tok.text}</span>
               )) : '\u200b'}
@@ -3052,20 +3949,50 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
         </pre>
       </div>
 
+      {onRun && current && arrowTop != null && (
+        <button
+          type="button"
+          tabIndex={-1}
+          onMouseDown={runHere}
+          title={`Run this statement (${MOD} Enter)`}
+          aria-label="Run this statement"
+          className="absolute z-10 left-[6px] flex items-center justify-center w-[18px] rounded hover:bg-black/10"
+          style={{ top: arrowTop - scroll.top, height: LINE_H, color: E.accent }}
+        >
+          <Play size={11} fill="currentColor" strokeWidth={0} />
+        </button>
+      )}
+
       <textarea
         ref={taRef}
         value={value}
-        onChange={e => { onChange(e.target.value); updateSuggest(e.target); }}
+        onChange={e => {
+          typingRef.current = true;
+          const next = e.target.value;
+          const prev = shownRef.current ?? '';
+          const added = next.length - prev.length;
+          const ch = added === 1 ? next[e.target.selectionStart - 1] : '';
+          const kind = nextKind.current || ((added === 1 && ch && !/\s/.test(ch)) || added === -1 ? 'type' : 'edit');
+          onChange(next, kind);
+          updateSuggest(e.target);
+          trackCaret();
+        }}
         readOnly={readOnly}
         onFocus={() => { topLevel().forEach(ensureObjects); onSelect?.(readSel()); }}
-        onSelect={() => onSelect?.(readSel())}
-        onClick={() => setSuggest(null)}
-        onBlur={() => { setTimeout(() => setSuggest(null), 150); onSelect?.(null); }}
+        onSelect={() => { trackCaret(); onSelect?.(readSel()); }}
+        onClick={() => { typingRef.current = false; setSuggest(null); }}
+        onBlur={() => { typingRef.current = false; setTimeout(() => setSuggest(null), 150); onSelect?.(null); }}
         onScroll={e => { setSuggest(null); setScroll({ top: e.target.scrollTop, left: e.target.scrollLeft }); }}
         onKeyDown={e => {
           const mod = e.ctrlKey || e.metaKey;
-          if (mod && e.key === 'Enter') { e.preventDefault(); setSuggest(null); (e.shiftKey ? onRunAll : onRun)?.(); return; }
+          if (mod && e.key === 'Enter') { e.preventDefault(); typingRef.current = false; setSuggest(null); (e.shiftKey ? onRunAll : onRun)?.(); return; }
           if (readOnly) return;
+          if (mod && !e.altKey && (e.code === 'KeyZ' || e.code === 'KeyY')) {
+            e.preventDefault();
+            setSuggest(null);
+            if (e.code === 'KeyY' || e.shiftKey) redo(); else undo();
+            return;
+          }
           const combo = [mod && 'mod', e.altKey && 'alt', e.shiftKey && 'shift', e.code].filter(Boolean).join('+');
           const cmd = {
             'mod+shift+KeyF': 'format',
@@ -3117,8 +4044,8 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
       {suggest && taRef.current && createPortal(
         <div
           ref={suggestRef}
-          className="fixed z-[1000] min-w-[240px] max-w-[540px] w-max overflow-y-auto rounded-lg border border-[#e8e6e3] bg-white py-1 shadow-[0_12px_32px_rgba(49,44,42,.18)] text-[12.5px] font-mono"
-          style={suggestBox(taRef.current, suggest, padLeft)}
+          className="ds-pop fixed z-[1000] min-w-[240px] max-w-[540px] w-max overflow-y-auto rounded-lg border border-[#e8e6e3] bg-white py-1 shadow-[0_12px_32px_rgba(49,44,42,.18)] text-[12.5px] font-mono"
+          style={{ ...sigVars(E), ...suggestBox(taRef.current, suggest, padLeft) }}
           role="listbox"
         >
           {suggest.items.map((item, i) => {
@@ -3131,13 +4058,13 @@ const SfEditor = forwardRef(function SfEditor({ value, onChange, onRun, onRunAll
                 aria-selected={on}
                 onMouseDown={e => { e.preventDefault(); accept(item); }}
                 onMouseEnter={() => setSuggest(s => ({ ...s, index: i }))}
-                className={`flex items-center gap-2.5 mx-1 px-2 h-[28px] rounded-md cursor-pointer ${on ? 'bg-[#fdeeec] text-[#312c2a]' : 'text-[#4a423e]'}`}
+                className={`flex items-center gap-2.5 mx-1 px-2 h-[28px] rounded-md cursor-pointer ${on ? 'bg-[var(--sig-soft)] text-[#312c2a]' : 'text-[#4a423e]'}`}
               >
                 <span className="w-[16px] h-[16px] flex-shrink-0 rounded-[4px] flex items-center justify-center text-[9.5px] font-bold text-white" style={{ background: color }}>{badge}</span>
                 <span className="whitespace-nowrap">{item.text}</span>
                 {item.pk && <span className="flex-shrink-0 text-[9px] font-bold text-[#a14a00]">PK</span>}
                 {(item.detail || item.source) && (
-                  <span className="ml-auto pl-4 flex-shrink-0 text-[10.5px] whitespace-nowrap text-[#81766f] font-johnson-text">
+                  <span className="ml-auto pl-4 flex-shrink-0 text-[10.5px] whitespace-nowrap text-[#766a63] font-johnson-text">
                     {item.source ? `${item.source}${item.detail ? ` · ${item.detail}` : ''}` : item.detail}
                   </span>
                 )}
@@ -3173,6 +4100,9 @@ const lsKeys = (p) => ({
   explorer: `${p}.explorerCollapsed`,
   explorerW: `${p}.explorerWidth`,
   editorH: `${p}.editorHeight`,
+  layout: `${p}.layout`,
+  editorW: `${p}.editorWidth`,
+  colStats: `${p}.columnStats`,
 });
 
 const readLocal = (key, fallback = null) => {
@@ -3207,11 +4137,15 @@ const EMPTY_VIEW = {
   editTarget: null, // { database, schema, table } when a query result is being edited
   ranBy: null,      // shared worksheet: who started this run, when it wasn't us
   stuckJob: null,   // Postgres: an earlier run still holding this worksheet, offered to cancel
+  run: null,        // a multi-statement run: { jobId, meta, sql }; jobId/meta above are the statement on screen
 };
 
 const newQueryTab = (n) => ({ id: `q${Date.now().toString(36)}${n}`, kind: 'query', name: `Worksheet ${n}`, sql: '' });
 const newCopierTab = () => ({ id: `copier${Date.now().toString(36)}`, kind: 'copier', name: 'Table Copier' });
 const sameTable = (t, db, schema, table) => t.kind === 'data' && t.table.database === db && t.table.schema === schema && t.table.table === table;
+
+// Result views that read the loaded rows, beside the grid itself.
+const LOOK_VIEWS = new Set(['record', 'profile', 'chart', 'pivot']);
 
 const EXPLORER_MIN = 220;
 const EXPLORER_MAX = 520;
@@ -3229,35 +4163,39 @@ function Menu({ open, onClose, children, align = 'right' }) {
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div
-      className={`absolute top-full mt-1 z-50 min-w-[170px] py-1 bg-white border border-[#e8e6e3] rounded-lg shadow-[0_12px_32px_rgba(49,44,42,.16)] ${align === 'right' ? 'right-0' : 'left-0'}`}
+    <Floating
+      align={align}
+      className="min-w-[170px] py-1 bg-white border border-[#e8e6e3] rounded-lg shadow-[0_12px_32px_rgba(49,44,42,.16)] font-johnson-text"
       onClick={e => e.stopPropagation()}
     >
       {children}
-    </div>
+    </Floating>
   );
 }
 
 const MenuItem = ({ children, onClick, hint }) => (
   <button onClick={onClick} className="w-full flex items-center gap-3 px-3 h-8 text-left text-[12.5px] text-[#312c2a] hover:bg-[#f4f2f0]">
     <span className="flex-1">{children}</span>
-    {hint && <span className="text-[11px] text-[#81766f]">{hint}</span>}
+    {hint && <span className="text-[11px] text-[#766a63]">{hint}</span>}
   </button>
 );
 
-function SubTab({ active, onClick, icon, children, count }) {
+function SubTab({ active, onClick, icon, children, count, title }) {
   const IconCmp = icon;
   return (
     <button
       onClick={onClick}
+      title={title}
+      role="tab"
+      aria-selected={active}
       className={`relative h-full flex items-center gap-1.5 px-1 text-[12.5px] whitespace-nowrap transition-colors ${
         active ? 'text-[#312c2a] font-bold' : 'text-[#6e6259] hover:text-[#312c2a]'
       }`}
     >
-      <IconCmp size={14} strokeWidth={2} className={active ? 'text-[#eb1700]' : ''} />
+      <IconCmp size={14} strokeWidth={2} className={active ? 'text-[var(--sig-ink)]' : ''} />
       {children}
       {count != null && <span className="ml-0.5 px-1.5 rounded-full bg-[#f1efed] text-[10.5px] font-medium text-[#6e6259] tabular-nums">{count}</span>}
-      {active && <span className="absolute left-0 right-0 bottom-0 h-[2px] rounded-full bg-[#eb1700]" />}
+      {active && <span className="absolute left-0 right-0 bottom-0 h-[2px] rounded-full bg-[var(--sig)]" />}
     </button>
   );
 }
@@ -3280,8 +4218,10 @@ function DetailRow({ label, children, mono }) {
 // Only tip when it adds something: the text is cut off, or there is no text
 // at all (icon-only buttons). Fully visible labels and values get nothing.
 const tipNeeded = (el) => {
-  const nodes = [el, ...el.querySelectorAll('.truncate, input')];
-  if (nodes.some(n => n.scrollWidth > n.clientWidth + 1)) return true;
+  // A dropdown's own text doesn't report overflow, so its title always shows.
+  if (el.tagName === 'SELECT') return true;
+  const nodes = [el, ...el.querySelectorAll('.truncate, input, [class*="line-clamp"]')];
+  if (nodes.some(n => n.scrollWidth > n.clientWidth + 1 || n.scrollHeight > n.clientHeight + 1)) return true;
   if (el.hasAttribute('data-cell')) return false;
   return !(el.innerText || el.value || '').trim();
 };
@@ -3293,6 +4233,9 @@ function TipLayer({ children }) {
   const at = useRef({ x: 0, y: 0 });
   const size = useRef({ w: 0, h: 0 });
   const frame = useRef(0);
+  // The tip keeps its words while it fades out, instead of an empty box.
+  const lastText = useRef('');
+  if (text) lastText.current = text;
 
   // size is measured once per new text, moves are batched to one per frame
   const place = useCallback(() => {
@@ -3308,23 +4251,35 @@ function TipLayer({ children }) {
   }, []);
 
   useLayoutEffect(() => {
+    if (!text) return;
     if (boxRef.current) size.current = { w: boxRef.current.offsetWidth, h: boxRef.current.offsetHeight };
     place();
   }, [text, place]);
 
   const hide = useCallback(() => { elRef.current = null; setText(null); }, []);
+  // Once you click something its tip has done its job; it stays away until
+  // the pointer leaves that element.
+  const pressed = useRef(null);
 
   const onOver = (e) => {
-    const el = e.target.closest?.('[title], [data-tip]');
+    let el = e.target.closest?.('[title], [data-tip]');
     if (el && el.hasAttribute('title')) {
       const t = el.getAttribute('title');
       el.removeAttribute('title');
       if (t) el.setAttribute('data-tip', t);
     }
-    if (el === elRef.current) return;
-    elRef.current = el;
     let tip = el?.getAttribute('data-tip') || null;
     if (tip && !tipNeeded(el)) tip = null;
+    // Cut-off text with no title of its own shows itself in full.
+    const cut = !tip && e.target.closest?.('.truncate, [class*="line-clamp"]');
+    if (cut && (cut.scrollWidth > cut.clientWidth + 1 || cut.scrollHeight > cut.clientHeight + 1)) {
+      el = cut;
+      const full = (cut.value ?? cut.textContent).trim();
+      tip = full ? (full.length > 900 ? `${full.slice(0, 900)}...` : full) : null;
+    }
+    if (el === elRef.current) return;
+    if (el && pressed.current && pressed.current.contains(el)) return;
+    elRef.current = el;
     if (tip && tip.length > 300) tip = `${tip.slice(0, 300)}…`;
     at.current = { x: e.clientX, y: e.clientY };
     setText(tip);
@@ -3337,8 +4292,10 @@ function TipLayer({ children }) {
   };
 
   const onOut = (e) => {
+    if (pressed.current && !pressed.current.contains(e.relatedTarget)) pressed.current = null;
     if (elRef.current && !elRef.current.contains(e.relatedTarget)) hide();
   };
+  const onDown = () => { pressed.current = elRef.current; hide(); };
 
   useEffect(() => {
     if (!text) return undefined;
@@ -3355,7 +4312,7 @@ function TipLayer({ children }) {
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   return (
-    <div className="contents" onPointerOver={onOver} onPointerMove={onMove} onPointerOut={onOut}>
+    <div className="contents" onPointerOver={onOver} onPointerMove={onMove} onPointerOut={onOut} onPointerDownCapture={onDown}>
       {children}
       {createPortal(
         <div
@@ -3365,7 +4322,7 @@ function TipLayer({ children }) {
           style={{ position: 'fixed', left: 0, top: 0, zIndex: 10000, opacity: text ? 1 : 0, boxShadow: '0 18px 40px -16px rgba(49,44,42,.35)' }}
           className="pointer-events-none max-w-[290px] px-3 py-2.5 rounded-xl border border-jj-gray-08 bg-jj-gray-08 text-white text-[12.5px] leading-[1.45] font-johnson-text whitespace-pre-line [overflow-wrap:anywhere] transition-opacity duration-100"
         >
-          {text}
+          {text || lastText.current}
         </div>,
         document.body
       )}
@@ -3377,7 +4334,9 @@ export default function SnowflakePane({ engine = 'snowflake', ...props }) {
   return (
     <EngineCtx.Provider value={ENGINES[engine]}>
       <TipLayer>
-        <StudioPane {...props} />
+        <div className="contents" style={sigVars(ENGINES[engine])}>
+          <StudioPane {...props} />
+        </div>
       </TipLayer>
     </EngineCtx.Provider>
   );
@@ -3399,7 +4358,6 @@ function StudioPane({ active: paneActive = true }) {
   const { toasts, push: toast, dismiss } = useToasts();
   const [params, setParams] = useSearchParams();
   const isWide = useMediaQuery('(min-width: 1024px)');
-  const isMd = useMediaQuery('(min-width: 768px)');
 
   /* ------------------------------ connection ------------------------------ */
   const [connState, setConnState] = useState('checking'); // checking | ready | unconfigured | error
@@ -3413,7 +4371,7 @@ function StudioPane({ active: paneActive = true }) {
       .then(data => { setServerInfo(data); setConnState('ready'); })
       .catch(err => {
         setConnError(err.message);
-        setConnState(err.status === 503 ? 'unconfigured' : 'error');
+        setConnState(err.status === 503 && err.body?.detail ? 'unconfigured' : 'error');
       });
   }, []);
   useEffect(() => { checkConnection(); }, [checkConnection]);
@@ -3721,7 +4679,7 @@ function StudioPane({ active: paneActive = true }) {
     document.addEventListener('mouseup', onUp);
   };
 
-  const [editorTheme, setEditorTheme] = useState(() => (readLocal(LS.theme) === 'dark' ? 'dark' : 'light'));
+  const [editorTheme, setEditorTheme] = useState(() => (readLocal(LS.theme) === 'light' ? 'light' : 'dark'));
   const toggleEditorTheme = () => setEditorTheme(t => {
     const next = t === 'dark' ? 'light' : 'dark';
     writeLocal(LS.theme, next);
@@ -3733,17 +4691,49 @@ function StudioPane({ active: paneActive = true }) {
   // Until someone drags the divider, the editor takes a share of the window
   // (about 40%) instead of a fixed height, so a tall screen isn't left with a
   // ten line editor.
-  const [, setWorkH] = useState(0);    // re-render once the work area has a height, and when it changes
+  const [workH, setWorkH] = useState(0);    // re-render once the work area has a height, and when it changes
   const [editorH, setEditorH] = useState(() => {
     const n = parseInt(readLocal(LS.editorH, ''), 10);
     return Number.isFinite(n) ? n : null;
   });
-  const clampEditor = useCallback((h) => {
-    const whole = workRef.current?.clientHeight || 700;
-    return Math.max(110, Math.min(Math.max(110, whole - 190), h ?? Math.round(Math.max(220, whole * 0.4))));
+  const clampEditor = useCallback((h, known) => {
+    const whole = known || workRef.current?.clientHeight || 700;
+    return Math.max(180, Math.min(Math.max(180, whole - 220), h ?? Math.round(Math.max(whole < 640 ? 220 : 300, whole * 0.44))));
   }, []);
   // Editor over the whole work area, results tucked away. A run brings them back.
   const [editorMax, setEditorMax] = useState(false);
+  // The other way round: results over the whole work area, editor tucked away.
+  const [resultsMax, setResultsMax] = useState(false);
+  const [colStats, setColStats] = useState(() => readLocal(LS.colStats) === '1');
+  const toggleColStats = useCallback(() => setColStats(v => { writeLocal(LS.colStats, v ? '0' : '1'); return !v; }), [LS.colStats]);
+  // Editor above the results, or beside them on a wide screen.
+  const [layout, setLayout] = useState(() => (readLocal(LS.layout) === 'side' ? 'side' : 'stacked'));
+  const sideBySide = layout === 'side' && isWide;
+  const pickLayout = (next) => setLayout(l => {
+    if (l === next) return l;
+    writeLocal(LS.layout, next);
+    logInPage(`${E.log}_layout`, next === 'side' ? 'Put the editor beside the results' : 'Put the editor above the results');
+    return next;
+  });
+  const [editorW, setEditorW] = useState(() => {
+    const n = parseInt(readLocal(LS.editorW, ''), 10);
+    return Number.isFinite(n) ? n : 560;
+  });
+  const startEditorWidthResize = (e) => {
+    e.preventDefault();
+    const startX = e.clientX, startW = editorW, whole = workRef.current?.clientWidth || 1200;
+    let last = startW;
+    const onMove = (ev) => { last = Math.max(340, Math.min(whole - 380, startW + ev.clientX - startX)); setEditorW(last); };
+    const onUp = () => {
+      document.body.style.cursor = '';
+      writeLocal(LS.editorW, String(last));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.body.style.cursor = 'col-resize';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
   const startEditorResize = (e) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -3761,15 +4751,41 @@ function StudioPane({ active: paneActive = true }) {
     document.addEventListener('mouseup', onUp);
   };
   // Keep the editor from swallowing the results on short windows.
+  // Watched with a ResizeObserver so render never has to read the height itself.
+  const [workEl, setWorkEl] = useState(null);
+  const workRefCb = useCallback((el) => { workRef.current = el; setWorkEl(el); }, []);
   useEffect(() => {
+    if (!workEl) return undefined;
     // A height nobody picked stays unset, so it keeps following the window.
-    const fix = () => { setWorkH(workRef.current?.clientHeight || 0); setEditorH(h => (h === null ? h : clampEditor(h))); };
-    fix();
-    window.addEventListener('resize', fix);
-    return () => window.removeEventListener('resize', fix);
-  }, [clampEditor]);
+    const ro = new ResizeObserver(([e]) => {
+      const h = Math.round(e.contentRect.height);
+      setWorkH(h);
+      setEditorH(v => (v === null ? v : clampEditor(v, h)));
+    });
+    ro.observe(workEl);
+    return () => ro.disconnect();
+  }, [workEl, clampEditor]);
 
   const resultsRef = useRef(null);
+  // Worksheet tabs: fade the edge only when some are scrolled out of sight,
+  // and keep the active one in view.
+  const [tabStrip, setTabStrip] = useState(null);
+  const stripW = useWidth(tabStrip);
+  // Measured after layout, not during render: reading scrollWidth in render
+  // forces a full layout on every keystroke.
+  const [tabsCut, setTabsCut] = useState(false);
+  useLayoutEffect(() => {
+    if (tabStrip) setTabsCut(tabStrip.scrollWidth > stripW + 1);
+  }, [tabStrip, stripW, tabs.length]);
+  useEffect(() => {
+    tabStrip?.querySelector('[role=tab][aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [tabStrip, active.id, tabs.length]);
+  const [resultsEl, setResultsEl] = useState(null);
+  const resultsW = useWidth(resultsEl);
+  // Icons only when the labels would not fit beside the count and actions.
+  const compactViews = sideBySide || (resultsW > 0 && resultsW < 1000);
+  // A narrow results panel (side by side on a small screen): buttons go icon-only.
+  const narrowResults = resultsW > 0 && resultsW < 640;
   const [isFullscreen, setIsFullscreen] = useState(false);
   useEffect(() => {
     const onChange = () => setIsFullscreen(document.fullscreenElement === resultsRef.current && !!document.fullscreenElement);
@@ -3781,7 +4797,11 @@ function StudioPane({ active: paneActive = true }) {
     else resultsRef.current?.requestFullscreen?.();
   };
 
-  const [resultTab, setResultTab] = useState('data'); // data | columns | details
+  const [resultTab, setResultTab] = useState('data'); // data | record | profile | chart | pivot | columns | details
+  // The tab lights up at once; the view behind it (a chart, a pivot) renders right after, without blocking the click.
+  const shownTab = useDeferredValue(resultTab);
+  const [recIdx, setRecIdx] = useState(0);             // row shown in the record view
+  const [chartBy, setChartBy] = useState(null);        // column the chart groups by
 
   /* -------------------------------- editor -------------------------------- */
   const editorRef = useRef(null);
@@ -3827,6 +4847,14 @@ function StudioPane({ active: paneActive = true }) {
 
   /* --------------------------- history / saved --------------------------- */
   const [panel, setPanel] = useState(null); // history | saved | null
+  const [tableInfo, setTableInfo] = useState(null);   // the table in the details panel
+  const openDetails = (info) => { setPanel(null); setTableInfo(info); };
+  useEffect(() => {
+    if (!tableInfo) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('[role=dialog]')) setTableInfo(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tableInfo]);
   const [history, setHistory] = useState({ status: 'idle', items: [], error: null });
   const [saved, setSaved] = useState({ status: 'idle', items: [], error: null });
   const [panelFilter, setPanelFilter] = useState('');
@@ -3870,6 +4898,7 @@ function StudioPane({ active: paneActive = true }) {
   }, [panel]);
 
   const openPanel = (which) => {
+    setTableInfo(null);
     setPanelFilter('');
     setPanel(p => (p === which ? null : which));
     if (which === 'history') loadHistory(); else loadSaved();
@@ -3923,6 +4952,7 @@ function StudioPane({ active: paneActive = true }) {
 
   const applyFinished = useCallback((tabId, jid, data, seq, firstPage) => {
     const patch = { meta: data, rowCount: data.row_count };
+    if ((data.statement_count || 1) > 1) patch.run = { jobId: jid, meta: data, sql: viewsRef.current[tabId]?.sql || '' };
     if (data.status === 'success') {
       patch.status = 'success';
       if (data.returns_rows && firstPage) {
@@ -4006,14 +5036,70 @@ function StudioPane({ active: paneActive = true }) {
     runSeqRef.current[tabId] = (runSeqRef.current[tabId] || 0) + 1;
     stopPolling(tabId);
     // Hand the old job's session back to the pool straight away.
-    if (previousJobId) apiFetch(`${E.api}/query/${previousJobId}`, { method: 'DELETE' }).catch(() => {});
+    const runJob = viewsRef.current[tabId]?.run?.jobId;
+    [...new Set([previousJobId, runJob].filter(Boolean))]
+      .forEach(j => apiFetch(`${E.api}/query/${j}`, { method: 'DELETE' }).catch(() => {}));
     patchView(tabId, { ...EMPTY_VIEW, status: 'starting', sql, startedAt: Date.now() });
     setEditorMax(false);
-    setResultTab('data');
+    // A chart or pivot redraws for the new result, so stay on it.
+    setResultTab(t => (LOOK_VIEWS.has(t) ? t : 'data'));
+    setRecIdx(0);
     submitQuery(tabId, sql, false);
   };
 
+  // Multi-statement run: each statement that returned rows can be opened.
+  // Its result is a job of its own, so paging, sorting and downloads follow it.
+  const runParts = useMemo(() => {
+    const r = view.run;
+    if (!r) return [];
+    const spans = statementSpans(r.sql, E.upperIdents);
+    const done = (r.meta.statements || []).map(st => ({ ...st, text: spans[st.index - 1] ? r.sql.slice(spans[st.index - 1].start, spans[st.index - 1].end).trim() : st.sql }));
+    // The statement that failed, and the ones it stopped, aren't in the list.
+    const total = r.meta.statement_count || done.length;
+    const reached = done.length + 1;
+    for (let i = reached; i <= total; i += 1) {
+      const sp = spans[i - 1];
+      const failed = i === reached && r.meta.status === 'failed';
+      // The failed one opens the run itself, which is where its error is.
+      done.push({ index: i, status: failed ? 'failed' : 'skipped', job_id: failed ? r.jobId : undefined, text: sp ? r.sql.slice(sp.start, sp.end).trim() : '' });
+    }
+    return done;
+  }, [view.run, E.upperIdents]);
+  const shownPart = runParts.find(p => p.job_id && p.job_id === view.jobId);
+
+  const showPart = async (part) => {
+    const tabId = active.id;
+    const v = viewsRef.current[tabId] || EMPTY_VIEW;
+    if (!v.run || !part.job_id || part.job_id === v.jobId) return;
+    if (v.editTarget && Object.keys(v.edits || {}).length + (v.deleted || []).length + (v.newRows || []).length) {
+      toast('Save or revert your edits to these rows first', 'info', 4000);
+      return;
+    }
+    const seq = runSeqRef.current[tabId];
+    const reset = { sort: [], filters: [], page: 1, rows: [], rowSel: [], widths: {}, editTarget: null, edits: {}, deleted: [], newRows: [], keyColumns: [], tableMeta: null };
+    setRecIdx(0);
+    if (part.job_id === v.run.jobId) {
+      const m = v.run.meta;
+      patchView(tabId, { ...reset, jobId: v.run.jobId, meta: m, sql: v.run.sql, rowCount: m.row_count, status: m.status, error: m.status === 'failed' ? m.error : null });
+      if (m.status === 'success' && m.returns_rows) fetchPage(tabId, v.run.jobId, 1, pageSize, [], [], seq);
+      return;
+    }
+    patchView(tabId, { ...reset, jobId: part.job_id, sql: part.text, rowCount: part.row_count, status: 'success', error: null, loading: true });
+    try {
+      const data = await fetchJson(`${E.api}/query/${part.job_id}/status`);
+      if (seq !== runSeqRef.current[tabId] || viewsRef.current[tabId]?.jobId !== part.job_id) return;
+      patchView(tabId, { meta: data, rowCount: data.row_count });
+      fetchPage(tabId, part.job_id, 1, pageSize, [], [], seq);
+    } catch (err) {
+      if (seq !== runSeqRef.current[tabId]) return;
+      patchView(tabId, { loading: false, status: 'failed', error: err.status === 404 ? 'This result has expired on the server. Run the query again.' : err.message });
+    }
+  };
+
   const busy = view.status === 'running' || view.status === 'starting';
+  // A worksheet that hasn't run anything yet: the editor takes the room.
+  const waiting = active.kind === 'query' && view.status === 'idle' && !sideBySide && !resultsMax && !editorMax;
+  const editorFill = editorMax || waiting;
   // ranBy is set on a run someone else started in a shared worksheet. It is
   // shown like any other, but it is not ours to wait for or cancel.
   const ownBusy = busy && !view.ranBy;
@@ -4629,6 +5715,25 @@ function StudioPane({ active: paneActive = true }) {
     reload({ filters: next, page: 1 });
   };
 
+  // The filter menu's value counts: over the whole result on the server,
+  // or, in a table tab, over the rows on screen.
+  const fetchValues = async (col, search = '') => {
+    if (!isData && view.jobId) {
+      return fetchJson(`${E.api}/query/${view.jobId}/values`, { method: 'POST', body: { column: col, filters: view.filters, limit: 8, search: search || undefined } });
+    }
+    const needle = search.toLowerCase();
+    const i = gridColumns.findIndex(c => c.name === col);
+    const counts = new Map();
+    (view.rows || []).forEach(r => {
+      const v = Array.isArray(r) ? r[i] : r?.[col];
+      if (v == null || typeof v === 'object') return;
+      if (needle && !String(v).toLowerCase().includes(needle)) return;
+      counts.set(v, (counts.get(v) || 0) + 1);
+    });
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([value, count]) => ({ value, count }));
+    return { values: top, more: counts.size > 8, scope: 'page' };
+  };
+
   const clearFilters = () => { if (holdEdits('changing the filters')) return; patchActive({ filters: [] }); reload({ filters: [], page: 1 }); };
 
   const goToPage = (n) => {
@@ -4756,8 +5861,25 @@ function StudioPane({ active: paneActive = true }) {
   const leadHint = leadKeywordHint(queryText);
   const gridSource = isData ? view.columns : view.meta?.columns;
   const gridColumns = useMemo(() => (gridSource || []).map(c => { const t = displayType(c); return { name: c.name, type: t, display_type: t }; }), [gridSource]);
+  const gridFamilies = useMemo(() => gridColumns.map(c => typeFamily(c.type)), [gridColumns]);
+  // The extra views read rows, they don't edit them; editing goes back to the grid.
+  useEffect(() => { if (editing && LOOK_VIEWS.has(resultTab)) setResultTab('data'); }, [editing, resultTab]);
+  // J and K step through rows in the record view, like a mail client.
+  useEffect(() => {
+    if (resultTab !== 'record' || !paneActive) return undefined;
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable) return;
+      if (e.key === 'j') setRecIdx(i => Math.min(i + 1, Math.max(0, (view.rows?.length || 1) - 1)));
+      if (e.key === 'k') setRecIdx(i => Math.max(0, i - 1));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [resultTab, paneActive, view.rows]);
   const canEdit = (isData ? view.tableMeta?.editable : editingResult) && writesOk;
   const hasGrid = isData ? (view.columns || []).length > 0 : (view.status === 'success' && view.meta?.returns_rows);
+  // Read once per result, not on every render (a layout read in render runs on each keystroke).
+  const scanH = useMemo(() => gridScrollRef.current?.clientHeight || 600, [view.jobId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const canFilter = hasGrid && !editing && (resultTab === 'data' || LOOK_VIEWS.has(resultTab));
   const columnsList = isData ? (view.columns || []) : (view.meta?.columns || []);
   const rowOffset = ((view.page || 1) - 1) * pageSize;
   const selectedObj = isData
@@ -4767,13 +5889,13 @@ function StudioPane({ active: paneActive = true }) {
   const statusLine = (() => {
     if (isCopier) return null;
     if (isData) {
-      if (view.loading && !view.columns.length) return { color: T.red, pulse: true, text: 'Loading table...' };
+      if (view.loading && !view.columns.length) return { color: E.accent, pulse: true, text: 'Loading table...' };
       if (view.status === 'failed') return { color: T.maroon, text: 'Could not load the table' };
       const key = view.keyColumns?.length ? `key ${view.keyColumns.join(', ')}` : 'no primary key, rows matched on every column';
       return { color: T.green, text: `${plural(view.rowCount ?? 0, 'row')} · ${canEdit ? 'editable' : 'read only'} · ${key}` };
     }
-    if (busy && view.ranBy) return { color: T.red, pulse: true, text: `${view.ranBy === 'you' ? 'Running in another tab of yours' : `${view.ranBy} is running a query`} · ${fmtMs(elapsed)}` };
-    if (busy) return { color: T.red, pulse: true, text: `Running in ${E.pickDb ? tabDb : activeConn?.warehouse || serverInfo?.warehouse || E.label} · ${fmtMs(elapsed)}` };
+    if (busy && view.ranBy) return { color: E.accent, pulse: true, text: `${view.ranBy === 'you' ? 'Running in another tab of yours' : `${view.ranBy} is running a query`} · ${fmtMs(elapsed)}` };
+    if (busy) return { color: E.accent, pulse: true, text: `Running in ${E.pickDb ? tabDb : activeConn?.warehouse || serverInfo?.warehouse || E.label} · ${fmtMs(elapsed)}` };
     if (editingResult && view.status === 'success') return { color: T.amber, text: `${plural(view.rowCount ?? 0, 'row')} · editing ${view.editTarget.table}${dirtyCount ? ` · ${plural(dirtyCount, 'unsaved change')}` : ''}` };
     if (view.status === 'failed') return { color: T.maroon, text: `Failed${view.meta?.elapsed_ms != null ? ` after ${fmtMs(view.meta.elapsed_ms)}` : ''}` };
     if (view.status === 'cancelled') return { color: T.faint, text: `Cancelled${view.meta?.elapsed_ms != null ? ` after ${fmtMs(view.meta.elapsed_ms)}` : ''}` };
@@ -4783,7 +5905,7 @@ function StudioPane({ active: paneActive = true }) {
         : [`${plural(view.meta.rows_affected ?? 0, 'row')} affected`, fmtMs(view.meta.elapsed_ms)];
       if (view.meta.bytes_scanned_human) bits.push(`${view.meta.bytes_scanned_human} scanned`);
       if (view.meta.from_cache) bits.push('from cache');
-      if (view.meta.statement_count > 1) bits.push(`${view.meta.statement_count} statements, showing the last`);
+      if (view.run) bits.push(`statement ${shownPart?.index ?? view.run.meta.statement_count} of ${view.run.meta.statement_count}`);
       if (view.ranBy) bits.push(view.ranBy === 'you' ? 'run in another tab' : `run by ${view.ranBy}`);
       return { color: T.green, text: bits.join(' · ') };
     }
@@ -4799,21 +5921,23 @@ function StudioPane({ active: paneActive = true }) {
   /* ------------------------------ early states ----------------------------- */
   if (connState === 'checking' && !serverInfo) {
     return (
-      <div className="h-full flex overflow-hidden bg-white font-johnson-text" aria-busy="true">
-        <div className="hidden lg:flex w-[288px] flex-shrink-0 flex-col border-r border-[#e8e6e3]">
-          <div className="h-[44px] px-4 flex items-center gap-2 border-b border-[#e8e6e3]"><Skel w={16} h={16} /><Skel w={90} h={10} /></div>
+      <div className="h-full flex overflow-hidden bg-[#efedea] font-johnson-text" aria-busy="true">
+        <div className="hidden lg:flex w-[288px] flex-shrink-0 flex-col bg-white border-r border-[#e8e6e3]">
+          <div className="mx-3 mt-3 mb-1 px-3.5 py-3 rounded-[12px] space-y-2.5" style={{ background: E.soft }}>
+            <div className="flex items-center gap-2.5"><img src={E.icon} alt="" className="w-[22px] h-[22px]" /><Skel w={90} h={12} /></div>
+            <Skel w="60%" h={20} className="!rounded-full" />
+          </div>
           <div className="p-3"><Skel h={32} className="rounded-md" /></div>
           <div className="px-4 space-y-3 pt-1">{Array.from({ length: 8 }).map((_, i) => <Skel key={i} w={`${50 + ((i * 29) % 45)}%`} h={10} />)}</div>
         </div>
         <div className="flex-1 min-w-0 flex flex-col">
-          <div className="h-[52px] px-4 flex items-center gap-3 border-b border-[#e8e6e3]">
-            <Skel w={160} h={12} /><div className="ml-auto flex gap-2"><Skel w={90} h={30} className="rounded-md" /><Skel w={76} h={30} className="rounded-md" /></div>
+          <div className="h-[52px] px-3 flex items-center gap-2">
+            <Skel w={130} h={34} className="!rounded-[10px]" /><div className="ml-auto flex gap-2"><Skel w={84} h={34} className="!rounded-[10px]" /><Skel w={34} h={34} className="!rounded-[10px]" /></div>
           </div>
-          <div className="h-[38px] bg-[#f8f7f5] border-b border-[#e8e6e3]" />
-          <div className="h-[200px] border-b border-[#e8e6e3] flex items-center justify-center gap-2 text-[12.5px] text-[#6e6259]">
+          <div className="mx-3 h-[38%] min-h-[180px] rounded-[14px] bg-[#2b2624] flex items-center justify-center gap-2 text-[12.5px] text-[#a39992]">
             <Spinner /> Connecting to {E.label}...
           </div>
-          <div className="flex-1 min-h-0 overflow-hidden"><GridSkeleton cols={5} rows={8} /></div>
+          <div className="flex-1 min-h-0 m-3 rounded-[14px] bg-white shadow-[0_0_0_1px_#e8e6e3] overflow-hidden"><GridSkeleton cols={5} rows={8} /></div>
         </div>
       </div>
     );
@@ -4821,15 +5945,17 @@ function StudioPane({ active: paneActive = true }) {
 
   if (connState === 'unconfigured') {
     return (
-      <div className="h-full bg-white font-johnson-text">
-        <EmptyState
-          icon={Database}
-          title={`${E.label} isn't set up for Data Studio yet`}
-          action={<Button icon={RefreshCw} onClick={checkConnection}>Check again</Button>}
-        >
-          Add a <code className="px-1.5 py-0.5 rounded bg-[#f1efed] text-[12px] text-[#312c2a]">{E.configKey}</code> section to the backend config to switch it on.
-          {connError && <div className="mt-2 text-[11.5px] text-[#81766f]">{connError}</div>}
-        </EmptyState>
+      <div className="h-full flex items-center justify-center p-4 bg-[#efedea] font-johnson-text">
+        <div className="w-full max-w-[520px] rounded-[14px] bg-white shadow-[0_0_0_1px_#e8e6e3,0_8px_24px_rgba(49,44,42,.06)]">
+          <EmptyState
+            icon={Database}
+            title={`${E.label} isn't set up for Data Studio yet`}
+            action={<Button icon={RefreshCw} onClick={checkConnection}>Check again</Button>}
+          >
+            Add a <code className="px-1.5 py-0.5 rounded bg-[#f1efed] text-[12px] text-[#312c2a] break-all">{E.configKey}</code> section to the backend config to switch it on.
+            {connError && !connError.includes(E.configKey) && <div className="mt-2 text-[11.5px] text-[#766a63] break-words">{connError}</div>}
+          </EmptyState>
+        </div>
       </div>
     );
   }
@@ -4843,11 +5969,11 @@ function StudioPane({ active: paneActive = true }) {
     const c = tv.status === 'failed' ? T.maroon : tv.status === 'success' ? T.green : null;
     return c
       ? <StatusDot color={c} />
-      : <FileCode2 size={13} className="flex-shrink-0 text-[#81766f]" />;
+      : <FileCode2 size={13} className="flex-shrink-0 text-[#766a63]" />;
   };
 
   return (
-    <div className="relative h-full flex overflow-hidden bg-white text-[#312c2a] font-johnson-text">
+    <div className="ds-root relative h-full flex overflow-hidden bg-[#efedea] text-[#312c2a] font-johnson-text">
 
       {/* ------------------------------ explorer ------------------------------ */}
       {!isWide && drawerOpen && (
@@ -4855,13 +5981,28 @@ function StudioPane({ active: paneActive = true }) {
       )}
       <aside
         className={isWide
-          ? `${showExplorer ? 'flex' : 'hidden'} relative flex-shrink-0 border-r border-[#e8e6e3]`
-          : `absolute inset-y-0 left-0 z-[46] flex bg-white transition-transform duration-200 ${drawerOpen ? 'translate-x-0 shadow-[8px_0_32px_rgba(49,44,42,.18)]' : '-translate-x-full invisible'}`}
+          ? `${showExplorer ? 'flex' : 'hidden'} relative flex-shrink-0 flex-col bg-white border-r border-[#e8e6e3]`
+          : `absolute inset-y-0 left-0 z-[46] flex flex-col bg-white transition-transform duration-200 ${drawerOpen ? 'translate-x-0 shadow-[8px_0_32px_rgba(49,44,42,.18)]' : '-translate-x-full invisible'}`}
         style={{ width: isWide ? explorerW : Math.min(340, (typeof window !== 'undefined' ? window.innerWidth : 360) - 40) }}
         aria-label="Object explorer"
         aria-hidden={!showExplorer}
       >
-        <div className="flex-1 min-w-0">
+        <ConnCard
+          E={E}
+          state={connState}
+          info={serverInfo}
+          conn={activeConn}
+          connections={connections}
+          connId={activeConnId}
+          onConn={active.kind === 'query' ? (id => setTabConn(active.id, id)) : null}
+          role={activeRole}
+          roleOptions={roleOptions}
+          roleKey={activeRoleKey}
+          onRole={active.kind === 'query' ? (key => pickRole(active.id, key)) : null}
+          roleLabel={roleLabel}
+          writesOk={writesOk}
+        />
+        <div className="flex-1 min-h-0 min-w-0">
           <SfExplorer
             key={cq}
             cq={cq}
@@ -4869,7 +6010,8 @@ function StudioPane({ active: paneActive = true }) {
             onPreview={previewTable}
             onEditData={(db, sc, t) => openDataEditor(db, sc, t)}
             onShowDdl={showDdl}
-            onCollapse={toggleExplorer}
+            onDetails={openDetails}
+            onCollapse={isWide ? undefined : toggleExplorer}
             onSelect={setExplorerSel}
             selected={selectedObj}
             reveal={isData ? active.table : null}
@@ -4883,151 +6025,30 @@ function StudioPane({ active: paneActive = true }) {
             onMouseDown={startExplorerResize}
             onDoubleClick={() => { setExplorerW(288); writeLocal(LS.explorerW, '288'); }}
             title="Drag to resize, double-click to reset"
-            className="absolute top-0 -right-[3px] z-10 h-full w-[6px] cursor-col-resize hover:bg-[#eb1700]/25 active:bg-[#eb1700]/40"
+            className="absolute top-0 -right-[3px] z-10 h-full w-[6px] cursor-col-resize hover:bg-[var(--sig-ring)] active:bg-[var(--sig)]"
           />
         )}
       </aside>
 
       {/* ------------------------------ workspace ----------------------------- */}
-      <div ref={workRef} className="flex-1 min-w-0 flex flex-col min-h-0">
+      <div ref={workRefCb} className="flex-1 min-w-0 flex flex-col min-h-0">
 
-        {/* header */}
-        <div className="flex-shrink-0 flex items-center gap-3 h-[52px] pl-3 pr-3 md:pl-4 border-b border-[#e8e6e3]">
-          {!showExplorer && (
-            <IconButton icon={PanelLeftOpen} label="Show databases" onClick={toggleExplorer} size={32} />
-          )}
-          <div className="flex-1 min-w-0 flex items-center gap-2.5">
-            <img src={E.icon} alt="" className="w-[18px] h-[18px] flex-shrink-0" />
-            {isData ? (
-              <nav aria-label="Current table" className="min-w-0 flex items-center gap-1 text-[13px]">
-                <span className="hidden sm:inline min-w-[48px] truncate shrink-[8] text-[#6e6259]" title={active.table.database}>{active.table.database}</span>
-                <ChevronRight size={13} className="hidden sm:block flex-shrink-0 text-[#a39992]" />
-                <span className="hidden sm:inline min-w-[48px] truncate shrink-[8] text-[#6e6259]" title={active.table.schema}>{active.table.schema}</span>
-                <ChevronRight size={13} className="hidden sm:block flex-shrink-0 text-[#a39992]" />
-                <span className="min-w-[60px] truncate font-johnson-display font-bold text-[15px] text-[#312c2a]" title={`${active.table.database}.${active.table.schema}.${active.table.table}`}>
-                  {active.table.table}
-                </span>
-                <IconButton
-                  icon={Copy}
-                  label="Copy full table name"
-                  size={24}
-                  iconSize={12}
-                  onClick={() => navigator.clipboard?.writeText(`"${active.table.database}"."${active.table.schema}"."${active.table.table}"`).then(() => toast('Table name copied', 'success', 2000)).catch(() => {})}
-                />
-              </nav>
-            ) : (
-              <div className="min-w-0 flex items-center gap-2 overflow-hidden p-[3px] -m-[3px]">
-                <h2 className="hidden sm:block truncate shrink-[2] font-johnson-display font-bold text-[15px] text-[#312c2a]" title={active.name}>{active.name}</h2>
-                {!isCopier && E.pickDb && active.kind === 'query' && connections.length > 1 && (
-                  <Picker
-                    value={activeConnId || ''}
-                    onChange={e => setTabConn(active.id, e.target.value)}
-                    title="Login this worksheet runs as"
-                    aria-label="Connection"
-                    icon={KeyRound}
-                    className="max-w-[200px]"
-                  >
-                    {connections.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                  </Picker>
-                )}
-                {!isCopier && E.pickDb && active.kind === 'query' && (
-                  <Picker
-                    value={tabDb || ''}
-                    onChange={e => setTabDb(active.id, e.target.value)}
-                    title={tabDb ? `Database: ${tabDb}` : "Database this worksheet runs in"}
-                    aria-label="Database"
-                    icon={Database}
-                    className="max-w-[200px]"
-                  >
-                    {(dbList.includes(tabDb) || !tabDb ? dbList : [tabDb, ...dbList]).map(d => <option key={d} value={d}>{d}</option>)}
-                  </Picker>
-                )}
-                {!isCopier && !E.pickDb && active.kind === 'query' && (
-                  <>
-                    <Picker
-                      value={tabDb || ''}
-                      onChange={e => setTabDb(active.id, e.target.value)}
-                      title={tabDb ? `Database: ${tabDb}` : "Database this worksheet runs in"}
-                      aria-label="Database"
-                      icon={Database}
-                      className="max-w-[200px]"
-                    >
-                      {!tabDb && <option value="">Database</option>}
-                      {(dbList.includes(tabDb) || !tabDb ? dbList : [tabDb, ...dbList]).map(d => <option key={d} value={d}>{d}</option>)}
-                    </Picker>
-                    <Picker
-                      value={tabSchema || ''}
-                      onChange={e => setTabSchema(active.id, e.target.value)}
-                      disabled={!tabDb}
-                      title={tabSchema ? `Schema: ${tabSchema}` : "Schema this worksheet runs in"}
-                      aria-label="Schema"
-                      icon={Layers}
-                      className="max-w-[200px]"
-                    >
-                      {!tabSchema && <option value="">Schema</option>}
-                      {(schemaList.includes(tabSchema) || !tabSchema ? schemaList : [tabSchema, ...schemaList]).map(x => <option key={x} value={x}>{x}</option>)}
-                    </Picker>
-                  </>
-                )}
-              </div>
-            )}
-            {editing && dirtyCount > 0 && (
-              <span className="flex-shrink-0 inline-flex items-center h-[22px] px-2 rounded-full bg-[#fff3ea] text-[11.5px] font-medium text-[#a14a00]">
-                {dirtyCount} unsaved
-              </span>
-            )}
-          </div>
-
-          <div className="flex-shrink-0 flex items-center gap-2">
-            {E.copier && canCopy && (
-              <Button variant="secondary" icon={CopyPlus} onClick={addCopierTab} title="Copy a table or schema" aria-label="Copy tables" className={isMd ? '' : '!px-2'}>
-                {isMd && 'Copy tables'}
-              </Button>
-            )}
-            <Button variant={panel === 'history' ? 'dark' : 'secondary'} icon={History} onClick={() => openPanel('history')} title="Query history" aria-label="Query history" className={isMd ? '' : '!px-2'}>
-              {isMd && 'History'}
-            </Button>
-            <Button variant={panel === 'saved' ? 'dark' : 'secondary'} icon={Bookmark} onClick={() => openPanel('saved')} title="Saved queries" aria-label="Saved queries" className={isMd ? '' : '!px-2'}>
-              {isMd && 'Saved'}
-            </Button>
-            {active.kind === 'query' && (
-              ownBusy ? (
-                <Button variant="dark" icon={Square} onClick={cancelQuery} className="min-w-[96px]">Cancel</Button>
-              ) : (
-                <Button
-                  variant={leadHint ? 'danger' : 'primary'}
-                  icon={Play}
-                  onClick={() => runQuery()}
-                  disabled={!queryText.trim() || connState !== 'ready' || lockedTab}
-                  title={sharedRole === 'view' ? 'You have view-only access to this shared worksheet' : statementCount > 1 ? 'Ctrl/Cmd + Enter runs the selection, or the statement at the cursor' : 'Ctrl/Cmd + Enter runs the selection, or the whole worksheet'}
-                  className="min-w-[96px]"
-                >
-                  {leadHint ? `Run ${leadHint}` : 'Run'}
-                </Button>
-              )
-            )}
-            {active.kind === 'query' && !ownBusy && !lockedTab && statementCount > 1 && (
-              <Button
-                icon={Play}
-                onClick={runAll}
-                disabled={connState !== 'ready'}
-                title="Ctrl/Cmd + Shift + Enter runs every statement in order and shows the last result"
-                className={isMd ? '' : '!px-2'}
-              >
-                {isMd ? `Run all ${statementCount}` : statementCount}
-              </Button>
-            )}
-            {editing && dirtyCount > 0 && (
-              <Button variant="danger" icon={Save} onClick={previewSave} disabled={saving}>
-                {saving ? 'Preparing...' : `Review ${dirtyCount}`}
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* worksheet tabs */}
-        <div className="flex-shrink-0 flex items-end h-[38px] pl-2 pr-2 bg-[#f8f7f5] border-b border-[#e8e6e3]">
-          <div className="flex-1 min-w-0 flex items-end h-full overflow-x-auto overflow-y-hidden" style={{ scrollbarWidth: 'thin' }} role="tablist">
+        {/* top bar: worksheets, then the tools that act on them */}
+        <div className="flex-shrink-0 flex items-center gap-1.5 h-[40px] px-2">
+          <IconButton
+            icon={showExplorer ? PanelLeftClose : PanelLeftOpen}
+            label={showExplorer ? 'Hide databases' : 'Show databases'}
+            onClick={toggleExplorer}
+            size={30}
+            className="flex-shrink-0 hover:!bg-white"
+          />
+          <span aria-hidden="true" className="flex-shrink-0 w-px h-5 mx-1 bg-[#d5cfc9]" />
+          <div
+            className="min-w-0 flex items-center gap-1 h-full overflow-x-auto ds-noscroll"
+            ref={setTabStrip}
+            style={tabsCut ? { maskImage: 'linear-gradient(90deg,#000 calc(100% - 24px),transparent)', WebkitMaskImage: 'linear-gradient(90deg,#000 calc(100% - 24px),transparent)' } : undefined}
+            role="tablist"
+          >
             {tabs.map(tab => {
               const on = tab.id === active.id;
               const tv = views[tab.id] || EMPTY_VIEW;
@@ -5043,11 +6064,10 @@ function StudioPane({ active: paneActive = true }) {
                   onAuxClick={e => { if (e.button === 1) { e.preventDefault(); closeTab(tab.id); } }}
                   onDoubleClick={() => tab.kind === 'query' && setRenaming(tab.id)}
                   title={tab.kind === 'data' ? `${tab.table.database}.${tab.table.schema}.${tab.table.table}` : `${tab.name}${tab.shared ? '\nShared worksheet' : ''}\nDouble-click to rename`}
-                  className={`group relative flex-shrink-0 flex items-center gap-2 h-[32px] min-w-[120px] max-w-[280px] pl-3 pr-1.5 mr-1 rounded-t-md cursor-pointer select-none text-[12.5px] transition-colors ${
-                    on ? 'bg-white text-[#312c2a] font-medium border border-b-0 border-[#e8e6e3] -mb-px h-[33px]' : 'text-[#6e6259] hover:bg-[#f1efed] hover:text-[#312c2a]'
+                  className={`group relative flex-shrink-0 flex items-center gap-2 h-[30px] min-w-[104px] max-w-[260px] pl-2.5 pr-1 rounded-[9px] cursor-pointer select-none text-[12.5px] transition-[color,background-color,box-shadow] ${
+                    on ? 'bg-white text-[#312c2a] font-medium shadow-[0_0_0_1px_#e8e6e3,0_1px_2px_rgba(49,44,42,.06)]' : 'text-[#6e6259] hover:bg-white/60 hover:text-[#312c2a]'
                   }`}
                 >
-                  {on && <span className="absolute left-0 right-0 top-0 h-[2px] rounded-t-md bg-[#eb1700]" />}
                   {tabIcon(tab, tv)}
                   {renaming === tab.id ? (
                     <input
@@ -5056,7 +6076,7 @@ function StudioPane({ active: paneActive = true }) {
                       onClick={e => e.stopPropagation()}
                       onBlur={e => commitRename(tab.id, e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') commitRename(tab.id, e.target.value); if (e.key === 'Escape') setRenaming(null); }}
-                      className="flex-1 min-w-0 h-[22px] px-1 rounded border border-[#eb1700] bg-white text-[12.5px] focus:outline-none"
+                      className="flex-1 min-w-0 h-[22px] px-1 rounded border border-[var(--sig)] bg-white text-[12.5px] focus:outline-none"
                     />
                   ) : (
                     <span className="flex-1 min-w-0 truncate">{label}</span>
@@ -5065,82 +6085,84 @@ function StudioPane({ active: paneActive = true }) {
                     onClick={e => { e.stopPropagation(); closeTab(tab.id); }}
                     title="Close tab"
                     aria-label={`Close ${label}`}
-                    className={`flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[#81766f] hover:bg-[#e8e6e3] hover:text-[#312c2a] ${on ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                    className={`flex-shrink-0 w-5 h-5 flex items-center justify-center rounded-md text-[#766a63] hover:bg-[#f1efed] hover:text-[#312c2a] ${on ? '' : 'opacity-0 group-hover:opacity-100'}`}
                   >
                     <X size={12} strokeWidth={2.2} />
                   </button>
                 </div>
               );
             })}
-            <div className="flex-shrink-0 flex items-center h-full pb-[3px]">
-              <IconButton icon={Plus} label="New worksheet" onClick={() => addTab()} size={28} />
+          </div>
+          <IconButton icon={Plus} label="New worksheet" onClick={() => addTab()} size={28} className="flex-shrink-0 hover:!bg-white" />
+          <div className="flex-1 min-w-0" />
+          {active.shared && session && (
+            <PeerBar session={session} meta={sharedMeta} colorOf={peerColor} onFollow={pos => editorRef.current?.reveal(pos)} />
+          )}
+          {active.kind === 'query' && isWide && (
+            <div role="radiogroup" aria-label="Layout" className="flex-shrink-0 flex items-center p-[2px] rounded-[9px] bg-[#e8e6e3]/70">
+              {[['stacked', Rows2, 'Editor above the results'], ['side', Columns2, 'Editor beside the results']].map(([k, Ico, label]) => {
+                const on = (k === 'side') === sideBySide;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    aria-label={label}
+                    title={label}
+                    onClick={() => pickLayout(k)}
+                    className={`inline-flex items-center justify-center w-[28px] h-[24px] rounded-[7px] transition-colors ${on ? 'bg-white text-[#312c2a] shadow-[0_1px_2px_rgba(49,44,42,.14)]' : 'text-[#766a63] hover:text-[#312c2a]'}`}
+                  >
+                    <Ico size={14} strokeWidth={1.9} />
+                  </button>
+                );
+              })}
             </div>
-          </div>
-          <div className="flex-shrink-0 flex items-center h-full pb-[3px] pl-2">
-              {active.shared && session && (
-                <PeerBar session={session} meta={sharedMeta} colorOf={peerColor} onFollow={pos => editorRef.current?.reveal(pos)} />
-              )}
-              {active.kind === 'query' && (
-                <Button size="sm" variant={active.shared ? 'secondary' : 'ghost'} icon={UserPlus} onClick={() => setShareOpen(true)} title={active.shared ? 'People in this worksheet' : 'Work in this worksheet with other people'} className="mr-1">
-                  <span className="hidden sm:inline">Share</span>
-                </Button>
-              )}
-              <span className="relative mr-1">
-                <IconButton
-                  icon={Users}
-                  label="Shared worksheets"
-                  active={Boolean(sharedMenu)}
-                  onClick={e => { e.stopPropagation(); if (sharedMenu) setSharedMenu(null); else openSharedMenu(); }}
-                />
-                <Menu open={Boolean(sharedMenu)} onClose={closeSharedMenu}>
-                  <div className="w-[260px] max-h-[320px] overflow-y-auto">
-                    {sharedMenu?.status === 'loading' && <div className="flex items-center gap-2 px-3 py-2 text-[12.5px] text-[#6e6259]"><Spinner size={12} /> Loading...</div>}
-                    {sharedMenu?.status === 'error' && <div className="px-3 py-2 text-[12.5px] text-[#9e0000]">{sharedMenu.error || 'Could not load shared worksheets'}</div>}
-                    {sharedMenu?.status === 'ready' && sharedMenu.items.length === 0 && (
-                      <div className="px-3 py-2 text-[12.5px] text-[#6e6259]">No shared worksheets yet. Use Share on a worksheet to start one.</div>
-                    )}
-                    {sharedMenu?.items.map(w => (
-                      <button
-                        key={w.id}
-                        type="button"
-                        onClick={() => { setSharedMenu(null); openShared(w.id).catch(err => toast(err.message || 'Could not open the shared worksheet', 'error')); }}
-                        className="block w-full text-left px-3 py-1.5 hover:bg-[#f4f2f0]"
-                      >
-                        <span className="block truncate text-[12.5px] text-[#312c2a]">{w.name}</span>
-                        <span className="block truncate text-[11px] text-[#81766f]">{w.owned ? 'Yours' : `From ${w.owner.name || w.owner.email}`} · {plural(w.people, 'person').replace('persons', 'people')}</span>
-                      </button>
-                    ))}
-                  </div>
-                </Menu>
-              </span>
-              {serverInfo && (
-                <div
-                  className={`${E.pickDb ? 'hidden md:flex' : 'flex'} items-center gap-2 h-7 pl-2.5 ${E.pickDb ? 'pr-2.5' : 'pr-1'} mr-1 rounded-md border border-[#e8e6e3] bg-white text-[11.5px] text-[#4a423e] max-w-[480px]`}
-                  title={E.pickDb ? `Server ${activeConn?.host || serverInfo.account}\nUser ${activeConn?.user || serverInfo.user}` : `Account ${activeConn?.account || serverInfo.account}\nUser ${activeConn?.user || serverInfo.user}\nRole ${activeRole || 'default'}\nWarehouse ${activeConn?.warehouse || serverInfo.warehouse || 'default'}`}
-                >
-                  <StatusDot color={connState === 'error' ? T.maroon : T.green} />
-                  {E.pickDb || roleOptions.length === 0 ? (
-                    <span className="truncate">{E.pickDb ? activeConn?.user || serverInfo.user : activeRole || 'default role'}</span>
-                  ) : (
-                    <Picker size="sm" icon={ShieldCheck} value={activeRoleKey} onChange={e => pickRole(active.id, e.target.value)} disabled={active.kind !== 'query'} title={activeRole ? `Role: ${activeRole}` : "Role this worksheet runs as"} aria-label="Role" className="max-w-[240px]">
-                      {roleOptions.map(o => <option key={`${o.conn}|${o.role}`} value={`${o.conn}|${o.role}`}>{roleLabel(o)}</option>)}
-                    </Picker>
-                  )}
-                  {/* Postgres: the server name is long and adds nothing here; it is in the tooltip. */}
-                  {!E.pickDb && (
-                    <>
-                      <span className="text-[#cbc4bc]">|</span>
-                      <span className="truncate">{activeConn?.warehouse || serverInfo.warehouse || 'default warehouse'}</span>
-                    </>
-                  )}
-                  {!writesOk && <span className="flex-shrink-0 text-[#a14a00] font-medium">read only</span>}
-                </div>
-              )}
-          </div>
+          )}
+          {active.kind === 'query' && (
+            <Button variant="secondary" icon={UserPlus} onClick={() => setShareOpen(true)} title={active.shared ? 'People in this worksheet' : 'Work in this worksheet with other people'} className="!rounded-[9px] !h-[30px] !border-[#e8e6e3]">
+              <span className="hidden sm:inline">Share</span>
+            </Button>
+          )}
+          <span className="relative">
+            <IconButton
+              icon={Users}
+              label="Shared worksheets"
+              active={Boolean(sharedMenu)}
+              size={30}
+              className="hover:!bg-white"
+              onClick={e => { e.stopPropagation(); if (sharedMenu) setSharedMenu(null); else openSharedMenu(); }}
+            />
+            <Menu open={Boolean(sharedMenu)} onClose={closeSharedMenu}>
+              <div className="w-[260px] max-h-[320px] overflow-y-auto">
+                {sharedMenu?.status === 'loading' && <div className="flex items-center gap-2 px-3 py-2 text-[12.5px] text-[#6e6259]"><Spinner size={12} /> Loading...</div>}
+                {sharedMenu?.status === 'error' && <div className="px-3 py-2 text-[12.5px] text-[#9e0000]">{sharedMenu.error || 'Could not load shared worksheets'}</div>}
+                {sharedMenu?.status === 'ready' && sharedMenu.items.length === 0 && (
+                  <div className="px-3 py-2 text-[12.5px] text-[#6e6259]">No shared worksheets yet. Use Share on a worksheet to start one.</div>
+                )}
+                {sharedMenu?.items.map(w => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => { setSharedMenu(null); openShared(w.id).catch(err => toast(err.message || 'Could not open the shared worksheet', 'error')); }}
+                    className="block w-full text-left px-3 py-1.5 hover:bg-[#f4f2f0]"
+                  >
+                    <span className="block truncate text-[12.5px] text-[#312c2a]">{w.name}</span>
+                    <span className="block truncate text-[11px] text-[#766a63]">{w.owned ? 'Yours' : `From ${w.owner.name || w.owner.email}`} · {plural(w.people, 'person').replace('persons', 'people')}</span>
+                  </button>
+                ))}
+              </div>
+            </Menu>
+          </span>
+          {E.copier && canCopy && (
+            <IconButton icon={CopyPlus} label="Copy a table or schema" onClick={addCopierTab} size={30} className="hover:!bg-white" />
+          )}
+          <IconButton icon={History} label="Query history" active={panel === 'history'} onClick={() => openPanel('history')} size={30} className="hover:!bg-white" />
+          <IconButton icon={Bookmark} label="Saved queries" active={panel === 'saved'} onClick={() => openPanel('saved')} size={30} className="hover:!bg-white" />
         </div>
 
         {connState === 'error' && (
-          <div className="flex-shrink-0 flex items-center gap-3 px-4 py-2.5 bg-[#fdf3f1] border-b border-[#f3d0cc] text-[12.5px] text-[#312c2a]">
+          <div className="flex-shrink-0 flex items-center gap-3 mx-3 mb-2.5 px-4 py-2.5 rounded-[12px] bg-[#fdf3f1] border border-[#f3d0cc] text-[12.5px] text-[#312c2a]">
             <WifiOff size={15} className="flex-shrink-0 text-[#9e0000]" />
             <span className="flex-1 min-w-0 truncate" title={connError || ''}>
               <span className="font-bold">Can't reach {E.label}.</span> {connError || 'The Data Studio API did not answer.'}
@@ -5150,101 +6172,206 @@ function StudioPane({ active: paneActive = true }) {
         )}
 
         {isCopier && (
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 mx-3 mb-3 rounded-[14px] overflow-hidden bg-white shadow-[0_0_0_1px_#e8e6e3]">
             {canCopy ? <TableCopier serverInfo={serverInfo} /> : (
               <div className="p-6 text-[13px] text-[#6e6259]">You don't have Copy Tables access. Ask an admin to turn it on in User Management.</div>
             )}
           </div>
         )}
 
-        {/* editor */}
-        {active.kind === 'query' && (
-          <>
-            <div className={editorMax ? 'flex-1 min-h-0 relative' : 'flex-shrink-0 relative'} style={editorMax ? undefined : { height: editorH ?? clampEditor(null) }}>
-              <SfEditor
-                key={`${active.id}|${cq}`}
-                cq={cq}
-                ref={editorRef}
-                value={queryText}
-                onChange={sql => editSql(active.id, sql)}
-                readOnly={lockedTab}
-                session={active.shared ? session : null}
-                peerColor={peerColor}
-                onSelect={active.shared ? (sel => sessionOf(active.id)?.select(sel)) : undefined}
+        {/* editor and results: one above the other, or side by side. Until the
+            worksheet has a result, the editor gets the room and results wait in a slim bar. */}
+        <div className={sideBySide && active.kind === 'query' && !isCopier ? 'flex-1 min-h-0 flex gap-0 px-2 pb-2' : 'contents'}>
+        {active.kind === 'query' && !resultsMax && (
+          <div
+            className={sideBySide ? `${editorMax ? 'flex-1' : 'flex-shrink-0'} relative min-h-0 min-w-0 flex flex-col` : `contents`}
+            // The results keep at least 440px beside it, whatever width was saved.
+            style={sideBySide && !editorMax ? { width: editorW, maxWidth: 'calc(100% - 448px)', minWidth: 300 } : undefined}
+          >
+            <section
+              className={`relative mx-2 flex flex-col min-h-0 min-w-0 rounded-[12px] overflow-hidden ${editorTheme === 'dark' ? 'ds-dark' : ''} ${sideBySide ? '!mx-0' : ''} ${editorFill || sideBySide ? 'flex-1' : 'flex-shrink-0'} ${editorMax && !sideBySide ? 'mb-2' : ''}`}
+              style={{
+                background: editorTheme === 'dark' ? '#2b2624' : '#ffffff',
+                boxShadow: editorTheme === 'dark' ? '0 1px 2px rgba(0,0,0,.25)' : '0 0 0 1px #e8e6e3',
+                ...(editorFill || sideBySide ? {} : { height: editorH ?? clampEditor(null, workH || 700) }),
+              }}
+              aria-label="SQL editor"
+            >
+              <span aria-hidden="true" className="absolute inset-x-0 top-0 h-[2px] z-10" style={{ background: `linear-gradient(90deg, ${E.accent}, transparent 65%)` }} />
+              {/* where it runs, who else is here, editor tools */}
+              <div className="flex-shrink-0 flex items-center gap-1.5 min-w-0 pl-3 pr-2 pt-2 pb-0.5">
+                {!isCopier && E.pickDb && connections.length > 1 && (
+                  <Picker tone={editorTheme} size="sm" value={activeConnId || ''} onChange={e => setTabConn(active.id, e.target.value)} title="Login this worksheet runs as" aria-label="Connection" icon={KeyRound} className="max-w-[180px]">
+                    {connections.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  </Picker>
+                )}
+                {!isCopier && (
+                  <Picker tone={editorTheme} size="sm" value={tabDb || ''} onChange={e => setTabDb(active.id, e.target.value)} title={tabDb ? `Database: ${tabDb}` : 'Database this worksheet runs in'} aria-label="Database" variant="crumb" className="max-w-[220px]">
+                    {!tabDb && <option value="">Database</option>}
+                    {(dbList.includes(tabDb) || !tabDb ? dbList : [tabDb, ...dbList]).map(d => <option key={d} value={d}>{d}</option>)}
+                  </Picker>
+                )}
+                {!isCopier && !E.pickDb && (
+                  <>
+                    <ChevronRight size={12} className={`flex-shrink-0 ${editorTheme === 'dark' ? 'text-[#6e6259]' : 'text-[#a39992]'}`} />
+                    <Picker tone={editorTheme} size="sm" value={tabSchema || ''} onChange={e => setTabSchema(active.id, e.target.value)} disabled={!tabDb} title={tabSchema ? `Schema: ${tabSchema}` : 'Schema this worksheet runs in'} aria-label="Schema" variant="crumb" className="max-w-[220px]">
+                      {!tabSchema && <option value="">Schema</option>}
+                      {(schemaList.includes(tabSchema) || !tabSchema ? schemaList : [tabSchema, ...schemaList]).map(x => <option key={x} value={x}>{x}</option>)}
+                    </Picker>
+                  </>
+                )}
+                <div className="flex-1 min-w-0 flex justify-end pr-1">
+                  <PeerActivity session={active.shared ? session : null} meta={sharedMeta}>{null}</PeerActivity>
+                </div>
+                <div className="flex-shrink-0 flex items-center gap-0.5">
+                  <EdTool dark={editorTheme === 'dark'} icon={AlignLeft} label={`Format SQL (${MOD} Shift F)`} onClick={() => editorRef.current?.command('format')} disabled={!queryText.trim()} />
+                  <span className="relative">
+                    <EdTool dark={editorTheme === 'dark'} icon={CaseSensitive} label="Change case of the selection or word" onClick={e => { e.stopPropagation(); setCaseOpen(o => !o); }} />
+                    <Menu open={caseOpen} onClose={closeCase}>
+                      {[['upper', 'UPPER CASE', `${MOD} Shift U`], ['lower', 'lower case', `${MOD} Shift L`], ['camel', 'camelCase', `${MOD} Alt C`], ['pascal', 'PascalCase', `${MOD} Alt P`], ['snake', 'snake_case', `${MOD} Alt S`], ['title', 'Title Case', null]].map(([id, label, hint]) => (
+                        <MenuItem key={id} hint={hint} onClick={() => { setCaseOpen(false); editorRef.current?.command(id); }}>{label}</MenuItem>
+                      ))}
+                    </Menu>
+                  </span>
+                  <EdTool dark={editorTheme === 'dark'} icon={copied ? Check : Copy} label={copied ? 'Copied' : 'Copy the SQL'} onClick={copyQueryText} disabled={!queryText.trim()} />
+                  <EdTool dark={editorTheme === 'dark'} icon={Bookmark} label="Save this query" onClick={() => setSavePromptOpen(true)} disabled={!queryText.trim()} />
+                  <EdTool dark={editorTheme === 'dark'} icon={editorTheme === 'dark' ? Sun : Moon} label={editorTheme === 'dark' ? 'Light editor' : 'Dark editor'} onClick={toggleEditorTheme} />
+                  <EdTool dark={editorTheme === 'dark'} icon={Keyboard} label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)} />
+                  <EdTool dark={editorTheme === 'dark'} icon={editorMax ? Minimize2 : Maximize2} label={editorMax ? 'Show results' : 'Give the editor the whole space'} onClick={() => setEditorMax(m => !m)} />
+                </div>
+              </div>
+              <div className="relative flex-1 min-h-0">
+                <SfEditor
+                  key={`${active.id}|${cq}`}
+                  historyKey={active.id}
+                  cq={cq}
+                  ref={editorRef}
+                  value={queryText}
+                  onChange={sql => editSql(active.id, sql)}
+                  readOnly={lockedTab}
+                  session={active.shared ? session : null}
+                  peerColor={peerColor}
+                  onSelect={active.shared ? (sel => sessionOf(active.id)?.select(sel)) : undefined}
+                  onRun={() => runQuery()}
+                  onRunAll={runAll}
+                  onSave={() => queryText.trim() && setSavePromptOpen(true)}
+                  theme={editorTheme}
+                  defaultDb={tabDb}
+                  defaultSchema={(E.pickDb ? serverInfo?.default_schema : tabSchema) || null}
+                  placeholder={`-- Write ${E.label} SQL here, or double-click a table on the left\nSELECT *\nFROM ${E.sample}\nLIMIT 100;`}
+                />
+              </div>
+              <RunBar
+                dark={editorTheme === 'dark'}
+                accent={E.accent}
+                busy={ownBusy}
+                othersBusy={busy && !ownBusy}
+                status={view.run ? view.run.meta.status : view.status}
+                meta={view.run?.meta || view.meta}
+                elapsed={elapsed}
+                statementCount={statementCount}
+                leadHint={leadHint}
+                canRun={Boolean(queryText.trim()) && connState === 'ready' && !lockedTab}
+                lockedReason={sharedRole === 'view' ? 'You have view-only access to this shared worksheet' : null}
                 onRun={() => runQuery()}
                 onRunAll={runAll}
-                onSave={() => queryText.trim() && setSavePromptOpen(true)}
-                theme={editorTheme}
-                defaultDb={tabDb}
-                defaultSchema={(E.pickDb ? serverInfo?.default_schema : tabSchema) || null}
-                placeholder={`-- Write ${E.label} SQL here, or double-click a table on the left\nSELECT *\nFROM ${E.sample}\nLIMIT 100;`}
+                onCancel={cancelQuery}
               />
-            </div>
-            <div className="flex-shrink-0 flex items-center gap-2 h-[36px] px-3 bg-[#f8f7f5] border-y border-[#e8e6e3]">
-              <PeerActivity session={active.shared ? session : null} meta={sharedMeta}>
-                <div className="hidden md:flex items-center gap-1.5 min-w-0 text-[11.5px] text-[#6e6259] truncate">
-                  <Kbd>Ctrl</Kbd><span>+</span><Kbd>Enter</Kbd><span className="ml-1 truncate">runs the selection or the statement at the cursor. Add Shift to run all.</span>
-                </div>
-              </PeerActivity>
-              <div className="ml-auto flex items-center gap-1">
-                <Button size="sm" variant="ghost" icon={AlignLeft} onClick={() => editorRef.current?.command('format')} disabled={!queryText.trim()} title={`Format SQL (${MOD} Shift F)`}>
-                  <span className="hidden sm:inline">Format</span>
-                </Button>
-                <span className="relative">
-                  <Button size="sm" variant="ghost" icon={CaseSensitive} onClick={e => { e.stopPropagation(); setCaseOpen(o => !o); }} title="Change case of the selection or word">
-                    <span className="hidden sm:inline">Case</span>
-                    <ChevronDown size={12} />
-                  </Button>
-                  <Menu open={caseOpen} onClose={closeCase}>
-                    {[['upper', 'UPPER CASE', `${MOD} Shift U`], ['lower', 'lower case', `${MOD} Shift L`], ['camel', 'camelCase', `${MOD} Alt C`], ['pascal', 'PascalCase', `${MOD} Alt P`], ['snake', 'snake_case', `${MOD} Alt S`], ['title', 'Title Case', null]].map(([id, label, hint]) => (
-                      <MenuItem key={id} hint={hint} onClick={() => { setCaseOpen(false); editorRef.current?.command(id); }}>{label}</MenuItem>
-                    ))}
-                  </Menu>
-                </span>
-                <Button size="sm" variant="ghost" icon={copied ? Check : Copy} onClick={copyQueryText} disabled={!queryText.trim()}>
-                  {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button size="sm" variant="ghost" icon={Save} onClick={() => setSavePromptOpen(true)} disabled={!queryText.trim()}>Save</Button>
-                <IconButton icon={editorTheme === 'dark' ? Sun : Moon} label={editorTheme === 'dark' ? 'Light editor' : 'Dark editor'} onClick={toggleEditorTheme} />
-                <IconButton icon={Keyboard} label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)} />
-                <IconButton icon={editorMax ? Minimize2 : Maximize2} label={editorMax ? 'Show results' : 'Expand editor'} active={editorMax} onClick={() => setEditorMax(m => !m)} />
+            </section>
+            {sideBySide && !editorMax && (
+              <div
+                onMouseDown={startEditorWidthResize}
+                onDoubleClick={() => { setEditorW(560); writeLocal(LS.editorW, '560'); }}
+                title="Drag to resize, double-click to reset"
+                role="separator"
+                aria-orientation="vertical"
+                className="group absolute top-0 -right-[9px] z-10 h-full w-[18px] flex items-center justify-center cursor-col-resize"
+              >
+                <span className="w-[4px] h-10 rounded-full bg-[#cbc4bc] opacity-0 group-hover:opacity-100 group-hover:bg-[var(--sig)] transition-opacity" />
               </div>
-            </div>
-            {!editorMax && <div
-              onMouseDown={startEditorResize}
-              onDoubleClick={() => { setEditorH(null); try { window.localStorage.removeItem(LS.editorH); } catch { /* private mode */ } }}
-              title="Drag to resize, double-click to reset"
-              role="separator"
-              aria-orientation="horizontal"
-              className="group flex-shrink-0 h-[8px] -mt-[1px] flex items-center justify-center cursor-row-resize bg-white border-b border-[#e8e6e3] hover:bg-[#fdeeec]"
-            >
-              <div className="w-10 h-[3px] rounded-full bg-[#d5cfc9] group-hover:bg-[#eb1700]" />
-            </div>}
-          </>
+            )}
+            {!editorFill && !sideBySide && (
+              <div
+                onMouseDown={startEditorResize}
+                onDoubleClick={() => { setEditorH(null); try { window.localStorage.removeItem(LS.editorH); } catch { /* private mode */ } }}
+                title="Drag to resize, double-click to reset"
+                role="separator"
+                aria-orientation="horizontal"
+                className="group flex-shrink-0 h-[8px] flex items-center justify-center cursor-row-resize"
+              >
+                <div className="w-10 h-[4px] rounded-full bg-[#cbc4bc] opacity-0 group-hover:opacity-100 group-hover:bg-[var(--sig)] transition-opacity" />
+              </div>
+            )}
+          </div>
+        )}
+        {sideBySide && active.kind === 'query' && !resultsMax && !editorMax && <div className="w-2 flex-shrink-0" />}
+
+        {waiting && (
+          <button
+            type="button"
+            onClick={() => editorRef.current?.focus?.()}
+            className="flex-shrink-0 mx-2 my-2 h-[32px] flex items-center gap-2.5 px-3 rounded-[10px] bg-white shadow-[0_0_0_1px_#e8e6e3] text-left text-[12.5px] text-[#6e6259] hover:text-[#312c2a]"
+            title="Results open here when you run a query"
+          >
+            <Table2 size={14} className="flex-shrink-0 text-[#a39992]" />
+            <span className="font-medium text-[#312c2a]">Results</span>
+            <span className="truncate">Run a query with <Kbd>{MOD}</Kbd> + <Kbd>Enter</Kbd> and its rows open here</span>
+          </button>
         )}
 
         {/* results */}
-        {!isCopier && !(editorMax && active.kind === 'query') && (
-          <div ref={resultsRef} className="flex-1 min-h-0 flex flex-col bg-white">
-            <div className="flex-shrink-0 flex items-center gap-4 h-[42px] px-4 border-b border-[#e8e6e3]">
-              <div className="flex items-stretch gap-4 h-full" role="tablist" aria-label="Result views">
-                <SubTab active={resultTab === 'data'} onClick={() => setResultTab('data')} icon={Table2}>{isData ? 'Data' : 'Results'}</SubTab>
-                <SubTab active={resultTab === 'columns'} onClick={() => setResultTab('columns')} icon={Columns3} count={columnsList.length || null}>Columns</SubTab>
-                <SubTab active={resultTab === 'details'} onClick={() => setResultTab('details')} icon={Info}>Details</SubTab>
-              </div>
-
-              <div className="ml-auto flex items-center gap-1.5 min-w-0">
-                {resultTab === 'data' && view.filters.length > 0 && (
-                  <button
-                    onClick={clearFilters}
-                    title="Remove all column filters"
-                    className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-2 rounded-full bg-[#fdeeec] text-[12px] font-medium text-[#c51300] hover:bg-[#fbdcd7]"
-                  >
-                    <Filter size={12} />
-                    {plural(view.filters.length, 'filter')}
-                    <X size={12} />
-                  </button>
+        {!isCopier && !(editorMax && active.kind === 'query') && !waiting && (
+          <div
+            ref={el => { resultsRef.current = el; setResultsEl(el); }}
+            className={`relative flex-1 min-h-0 min-w-0 flex flex-col bg-white rounded-[12px] overflow-hidden shadow-[0_0_0_1px_#e8e6e3,0_1px_2px_rgba(49,44,42,.04)] ${sideBySide && active.kind === 'query' ? '' : 'mx-2 mb-2'}`}
+          >
+            {isData && (
+              <div className="flex-shrink-0 flex items-center gap-2 min-w-0 px-4 pt-3 pb-1">
+                <img src={E.icon} alt="" className="w-[16px] h-[16px] flex-shrink-0" />
+                <nav aria-label="Current table" className="min-w-0 flex items-center gap-1 text-[13px]">
+                  <span className="hidden sm:inline min-w-[3ch] truncate shrink-[8] text-[#6e6259]" title={active.table.database}>{active.table.database}</span>
+                  <ChevronRight size={13} className="hidden sm:block flex-shrink-0 text-[#a39992]" />
+                  <span className="hidden sm:inline min-w-[3ch] truncate shrink-[8] text-[#6e6259]" title={active.table.schema}>{active.table.schema}</span>
+                  <ChevronRight size={13} className="hidden sm:block flex-shrink-0 text-[#a39992]" />
+                  <span className="min-w-[60px] truncate font-johnson-display font-bold text-[17px] text-[#312c2a]" title={`${active.table.database}.${active.table.schema}.${active.table.table}`}>{active.table.table}</span>
+                  <IconButton
+                    icon={Copy}
+                    label="Copy full table name"
+                    size={24}
+                    iconSize={12}
+                    onClick={() => navigator.clipboard?.writeText(`"${active.table.database}"."${active.table.schema}"."${active.table.table}"`).then(() => toast('Table name copied', 'success', 2000)).catch(() => {})}
+                  />
+                </nav>
+                {dirtyCount > 0 && (
+                  <span className="flex-shrink-0 inline-flex items-center h-[22px] px-2 rounded-full bg-[#fff3ea] text-[11.5px] font-medium text-[#a14a00]">{dirtyCount} unsaved</span>
                 )}
+              </div>
+            )}
+            {!isData && runParts.length > 1 && !busy && (
+              <StatementStrip parts={runParts} shown={view.jobId} accent={E.accent} onPick={showPart} />
+            )}
+            <div className="flex-shrink-0 flex items-center gap-3 min-h-[38px] min-w-0 px-2 border-b border-[#efedea]">
+              <div className="min-w-0 flex items-center p-[2px] rounded-[9px] bg-[#f1efed] overflow-x-auto ds-noscroll" role="tablist" aria-label="Result views">
+                <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'data'} onClick={() => setResultTab('data')} icon={Table2} title="The rows as a table">{isData ? 'Data' : 'Table'}</ViewTab>
+                {hasGrid && !editing && (
+                  <>
+                    <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'record'} onClick={() => setResultTab('record')} icon={IdCard} title="One row at a time">Record</ViewTab>
+                    <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'profile'} onClick={() => setResultTab('profile')} icon={ScanText} title="Every column at a glance">Profile</ViewTab>
+                    <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'chart'} onClick={() => setResultTab('chart')} icon={ChartColumnBig} title="Chart the rows">Chart</ViewTab>
+                    <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'pivot'} onClick={() => setResultTab('pivot')} icon={Grid3x3} title="Pivot table">Pivot</ViewTab>
+                  </>
+                )}
+                <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'columns'} onClick={() => setResultTab('columns')} icon={Columns3} title="Column names and types">Columns</ViewTab>
+                <ViewTab accent={E.accent} compact={compactViews} active={resultTab === 'details'} onClick={() => setResultTab('details')} icon={Info} title="Timing, statements and where it ran">Details</ViewTab>
+              </div>
+              {hasGrid && !busy && view.rowCount != null && (
+                <div key={`${view.jobId || ''}|${view.rowCount}`} className={`ds-count items-baseline gap-1 flex-shrink-0 whitespace-nowrap ${resultsW > 0 && resultsW < 460 ? 'hidden' : 'hidden md:flex'}`}>
+                  <span className="font-johnson-display font-bold text-[18px] leading-none tabular-nums text-[#312c2a]">{fmtN(view.rowCount)}</span>
+                  <span className="text-[12.5px] text-[#6e6259]">{view.rowCount === 1 ? 'row' : 'rows'}</span>
+                </div>
+              )}
+
+              <div className="ml-auto flex-shrink-0 flex items-center gap-1.5">
                 {resultTab === 'data' && editing && dupInfo.count > 0 && (
                   <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-[#fdf3f1] text-[12px] font-medium text-[#9e0000]" title="Rows marked DUP match another row. Change them before saving.">
                     <TriangleAlert size={12} />{plural(dupInfo.count, 'duplicate')}
@@ -5265,12 +6392,20 @@ function StudioPane({ active: paneActive = true }) {
                     <span className="hidden sm:inline">Revert</span>
                   </Button>
                 )}
+                {editing && dirtyCount > 0 && (
+                  <Button size="sm" variant="primary" icon={Save} onClick={previewSave} disabled={saving}>
+                    {saving ? 'Preparing...' : `Review ${dirtyCount}`}
+                  </Button>
+                )}
                 {isData && (
                   <IconButton
                     icon={RefreshCw}
                     label="Reload rows"
                     onClick={() => (dirtyCount ? toast('Save or revert your changes first', 'info') : loadTablePage(active.id, active.table, view.page, pageSize, view.sort, view.filters))}
                   />
+                )}
+                {canFilter && (
+                  <FilterButton columns={gridColumns || []} fetchValues={fetchValues} onAdd={handleFilter} count={view.filters?.length || 0} compact={narrowResults} />
                 )}
                 {resultTab === 'data' && !isData && hasGrid && !busy && writesOk && (
                   editingResult ? (
@@ -5285,23 +6420,31 @@ function StudioPane({ active: paneActive = true }) {
                       onClick={() => startEditResult(active.id, view.sql, view.meta?.columns || [])}
                       title="Edit these rows and save the changes back to the table"
                     >
-                      <span className="hidden sm:inline">Edit rows</span>
+                      <span className={narrowResults ? 'hidden' : 'hidden sm:inline'}>Edit rows</span>
                     </Button>
                   )
                 )}
                 {!isData && hasGrid && view.jobId && (view.rowCount ?? 0) > 0 && (
                   <span className="relative">
-                    <Button size="sm" icon={Download} onClick={e => { e.stopPropagation(); setExportOpen(o => !o); }}>
-                      <span className="hidden sm:inline">Download</span>
+                    <Button size="sm" icon={Download} title="Download the result" onClick={e => { e.stopPropagation(); setExportOpen(o => !o); }}>
+                      <span className={narrowResults ? 'hidden' : 'hidden sm:inline'}>Download</span>
                       <ChevronDown size={12} />
                     </Button>
                     <Menu open={exportOpen} onClose={closeExport}>
-                      <div className="px-3 pt-1.5 pb-1 text-[10.5px] font-bold uppercase tracking-[.08em] text-[#81766f]">Full result set</div>
+                      <div className="px-3 pt-1.5 pb-1 text-[11.5px] font-medium text-[#766a63]">Full result set</div>
                       {EXPORT_FORMATS.map(f => (
                         <MenuItem key={f.id} hint={`.${f.id}`} onClick={() => { setExportOpen(false); downloadResults(f.id); }}>{f.label}</MenuItem>
                       ))}
                     </Menu>
                   </span>
+                )}
+                {active.kind === 'query' && (
+                  <IconButton
+                    icon={resultsMax ? ChevronsDown : ChevronsUp}
+                    label={resultsMax ? 'Show the editor again' : 'Give the results the whole space'}
+                    active={resultsMax}
+                    onClick={() => { setResultsMax(m => !m); setEditorMax(false); }}
+                  />
                 )}
                 {hasGrid && (
                   <IconButton icon={isFullscreen ? Minimize2 : Maximize2} label={isFullscreen ? 'Exit full screen' : 'Full screen'} onClick={toggleFullscreen} />
@@ -5310,20 +6453,32 @@ function StudioPane({ active: paneActive = true }) {
             </div>
 
             {(busy || view.loading || editLoading) && <ProgressBar />}
+            {canFilter && view.filters?.length > 0 && (
+              <FilterBar
+                filters={view.filters}
+                onRemove={col => handleFilter({ col })}
+                onClear={clearFilters}
+              />
+            )}
             {editingResult && resultTab === 'data' && (
               <div className="flex-shrink-0 flex items-center gap-2.5 px-4 py-2 bg-[#fff8f2] border-b border-[#f6dfcc] text-[12px] text-[#4a423e]">
                 <Pencil size={13} className="flex-shrink-0 text-[#a14a00]" />
                 <span className="min-w-0 truncate">
                   Editing rows of <span className="font-mono font-medium text-[#312c2a]">{view.editTarget.database}.{view.editTarget.schema}.{view.editTarget.table}</span>
-                  <span className="text-[#81766f]"> · matched on {view.keyColumns.length === 1 ? view.keyColumns[0] : view.tableMeta?.primary_key?.length ? view.keyColumns.join(', ') : 'every column'}</span>
-                  {(view.columns || []).some(c => c.derived) && <span className="text-[#81766f]"> · computed columns are read only</span>}
+                  <span className="text-[#766a63]"> · matched on {view.keyColumns.length === 1 ? view.keyColumns[0] : view.tableMeta?.primary_key?.length ? view.keyColumns.join(', ') : 'every column'}</span>
+                  {(view.columns || []).some(c => c.derived) && <span className="text-[#766a63]"> · computed columns are read only</span>}
                 </span>
               </div>
             )}
 
             <div ref={gridScrollRef} className="relative flex-1 min-h-0 overflow-auto">
-              {resultTab === 'data' && (
-                <>
+              {/* A sweep down the rows when a new result lands. */}
+              {hasGrid && !busy && !view.error && view.jobId && (
+                <div key={view.jobId} aria-hidden="true" className="ds-scan" onAnimationEnd={e => { e.currentTarget.style.display = 'none'; }} style={{ '--ds-h': `${scanH}px`, background: `linear-gradient(180deg, transparent, ${E.accent}14 80%, ${E.accent}80)` }} />
+              )}
+              {/* The grid stays mounted (just hidden) behind the other views, so coming back to Table is instant. */}
+              {(shownTab === 'data' || hasGrid) && (
+                <div className={shownTab === 'data' ? 'contents' : 'hidden'}>
                   {!isData && view.status === 'idle' && (
                     <EmptyState
                       icon={Play}
@@ -5331,22 +6486,22 @@ function StudioPane({ active: paneActive = true }) {
                       // Pick up where you left off: the last few distinct queries that worked.
                       action={recentQueries.length > 0 && (
                         <div className="w-full text-left">
-                          <div className="mb-1 px-2.5 text-[11px] font-bold uppercase tracking-wide text-[#81766f]">Recent</div>
+                          <div className="mb-1 px-2.5 text-[12px] font-medium text-[#6e6259]">Pick up a recent query</div>
                           {recentQueries.map(h => (
                             <button
                               key={h.id}
                               onClick={() => loadSql(h.sql, null, false, h.database)}
-                              title="Open in this worksheet (or a new one if this one has SQL in it)"
+                              title={`${h.sql}\n\nOpens here, or in a new worksheet if this one has SQL in it`}
                               className="flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left hover:bg-[#f4f2f0]"
                             >
                               <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-[#312c2a]">{h.sql.replace(/\s+/g, ' ')}</span>
-                              <span className="flex-shrink-0 text-[11px] text-[#81766f]">{formatWhen(h.created_at)}</span>
+                              <span className="flex-shrink-0 text-[11px] text-[#766a63]">{formatWhen(h.created_at)}</span>
                             </button>
                           ))}
                         </div>
                       )}
                     >
-                      Write SQL above and press <Kbd>Ctrl</Kbd> + <Kbd>Enter</Kbd>, or double-click any table on the left to preview its first 100 rows.
+                      Write SQL above and press <Kbd>{MOD}</Kbd> + <Kbd>Enter</Kbd>, or double-click any table on the left to preview its first 100 rows.
                     </EmptyState>
                   )}
                   {((!isData && busy) || (isData && view.loading && !view.columns.length && !view.error)) && <GridSkeleton cols={6} rows={12} />}
@@ -5381,6 +6536,8 @@ function StudioPane({ active: paneActive = true }) {
                   {hasGrid && !busy && !view.error && (
                     <>
                       <SfGrid
+                        stats={colStats}
+                        onToggleStats={toggleColStats}
                         columns={gridColumns}
                         rows={view.rows}
                         widths={view.widths}
@@ -5434,10 +6591,35 @@ function StudioPane({ active: paneActive = true }) {
                       </span>
                     </div>
                   )}
-                </>
+                </div>
               )}
 
-              {resultTab === 'columns' && (
+              {LOOK_VIEWS.has(shownTab) && (
+                !hasGrid || busy || view.error ? (
+                  busy ? <GridSkeleton cols={4} rows={8} /> : (
+                    <EmptyState icon={ChartColumnBig} title="Nothing to look at yet">Run a query that returns rows, or open a table, and it shows up here.</EmptyState>
+                  )
+                ) : shownTab === 'record' ? (
+                  <RecordView
+                    columns={gridColumns}
+                    families={gridFamilies}
+                    rows={view.rows}
+                    rowOffset={rowOffset}
+                    index={recIdx}
+                    onIndex={setRecIdx}
+                    accent={E.accent}
+                    onCopy={obj => navigator.clipboard?.writeText(JSON.stringify(obj, null, 2)).then(() => toast('Row copied as JSON', 'success', 1500)).catch(() => {})}
+                  />
+                ) : shownTab === 'profile' ? (
+                  <ProfileView columns={gridColumns} families={gridFamilies} rows={view.rows} total={view.rowCount} accent={E.accent} onChart={name => { setChartBy(name); setResultTab('chart'); }} />
+                ) : shownTab === 'chart' ? (
+                  <ChartView columns={gridColumns} families={gridFamilies} rows={view.rows} total={view.rowCount} accent={E.accent} groupBy={chartBy} onGroupBy={setChartBy} />
+                ) : (
+                  <PivotView columns={gridColumns} families={gridFamilies} rows={view.rows} total={view.rowCount} accent={E.accent} />
+                )
+              )}
+
+              {shownTab === 'columns' && (
                 columnsList.length === 0 ? (
                   <EmptyState icon={Columns3} title="No columns yet">Run a query that returns rows, or open a table, to see its columns.</EmptyState>
                 ) : (
@@ -5452,7 +6634,7 @@ function StudioPane({ active: paneActive = true }) {
                     <tbody>
                       {columnsList.map((c, i) => (
                         <tr key={c.name} className="hover:bg-[#f4f2f0]">
-                          <td className="h-9 px-4 border-b border-[#f1efed] text-right tabular-nums text-[#81766f]">{i + 1}</td>
+                          <td className="h-9 px-4 border-b border-[#f1efed] text-right tabular-nums text-[#766a63]">{i + 1}</td>
                           <td className="h-9 px-4 border-b border-[#f1efed] font-medium break-all">{c.name}</td>
                           <td className="h-9 px-4 border-b border-[#f1efed] font-mono text-[12px] text-[#4a423e]">{displayType(c)}</td>
                           <td className="h-9 px-4 border-b border-[#f1efed] text-[#6e6259]">{c.nullable === false ? 'NOT NULL' : c.nullable === true ? 'yes' : '-'}</td>
@@ -5466,7 +6648,7 @@ function StudioPane({ active: paneActive = true }) {
                 )
               )}
 
-              {resultTab === 'details' && (
+              {shownTab === 'details' && (
                 <div className="max-w-[860px] px-5 py-3">
                   {isData ? (
                     <>
@@ -5486,17 +6668,17 @@ function StudioPane({ active: paneActive = true }) {
                       <DetailRow label={view.meta && !view.meta.returns_rows ? 'Rows affected' : 'Rows'}>
                         {view.meta ? fmtN(view.meta.returns_rows ? view.rowCount : view.meta.rows_affected) : '-'}
                       </DetailRow>
-                      <DetailRow label="Bytes scanned">{view.meta?.bytes_scanned_human || (view.meta?.bytes_scanned != null ? fmtN(view.meta.bytes_scanned) : '-')}</DetailRow>
-                      <DetailRow label="Result cache">{view.meta?.from_cache == null ? '-' : view.meta.from_cache ? 'Hit' : 'Miss'}</DetailRow>
-                      {view.meta?.statements?.length > 0 && (
+                      {!E.pickDb && <DetailRow label="Bytes scanned">{view.meta?.bytes_scanned_human || (view.meta?.bytes_scanned != null ? fmtN(view.meta.bytes_scanned) : '-')}</DetailRow>}
+                      {!E.pickDb && <DetailRow label="Result cache">{view.meta?.from_cache == null ? '-' : view.meta.from_cache ? 'Hit' : 'Miss'}</DetailRow>}
+                      {(view.run?.meta || view.meta)?.statements?.length > 0 && (
                         <DetailRow label="Statements">
                           <ol className="m-0 p-0 list-none space-y-1">
-                            {view.meta.statements.map(st => (
+                            {(view.run?.meta || view.meta).statements.map(st => (
                               <li key={st.index} className="flex items-baseline gap-2 min-w-0">
-                                <span className="flex-shrink-0 tabular-nums text-[#81766f]">{st.index}.</span>
+                                <span className="flex-shrink-0 tabular-nums text-[#766a63]">{st.index}.</span>
                                 <span className="flex-shrink-0 font-medium">{st.statement_type}</span>
                                 <span className="min-w-0 truncate font-mono text-[11.5px] text-[#6e6259]" title={st.sql}>{st.sql}</span>
-                                <span className="ml-auto flex-shrink-0 tabular-nums text-[#81766f]">
+                                <span className="ml-auto flex-shrink-0 tabular-nums text-[#766a63]">
                                   {st.row_count != null ? plural(st.row_count, 'row') : st.rows_affected != null ? `${fmtN(st.rows_affected)} affected` : ''}
                                   {' · '}{fmtMs(st.elapsed_ms)}
                                 </span>
@@ -5530,7 +6712,7 @@ function StudioPane({ active: paneActive = true }) {
             </div>
 
             {/* status bar */}
-            <div className="flex-shrink-0 flex items-center flex-wrap gap-x-4 gap-y-1 min-h-[38px] px-4 py-1 border-t border-[#e8e6e3] bg-[#f8f7f5]">
+            <div className="flex-shrink-0 flex items-center flex-wrap gap-x-4 gap-y-1 min-h-[30px] px-3 py-0.5 border-t border-[#efedea] bg-white">
               {statusLine && (
                 <div className="flex items-center gap-2 min-w-0 text-[12px] text-[#4a423e] tabular-nums" aria-live="polite">
                   <StatusDot color={statusLine.color} pulse={statusLine.pulse} />
@@ -5539,7 +6721,7 @@ function StudioPane({ active: paneActive = true }) {
               )}
               {cellStats && hasGrid && resultTab === 'data' && (
                 <div className="flex items-center gap-3 min-w-0 text-[12px] text-[#4a423e] tabular-nums" title="Selected cells. Ctrl+C copies them, Ctrl+Shift+C with the column names.">
-                  <span className="text-[#81766f]">{fmtN(cellStats.rows)} × {fmtN(cellStats.cols)} selected</span>
+                  <span className="text-[#766a63]">{fmtN(cellStats.rows)} × {fmtN(cellStats.cols)} selected</span>
                   {cellStats.nums > 0 && (
                     <>
                       <span>Sum <b className="font-medium text-[#312c2a]">{fmtStat(cellStats.sum)}</b></span>
@@ -5550,15 +6732,15 @@ function StudioPane({ active: paneActive = true }) {
                   )}
                 </div>
               )}
-              {hasGrid && resultTab === 'data' && (
+              {hasGrid && (resultTab === 'data' || LOOK_VIEWS.has(resultTab)) && (
                 <div className="ml-auto flex items-center gap-3">
-                  <label className="hidden sm:flex items-center gap-2 text-[12px] text-[#6e6259]">
-                    Rows per page
+                  <label className="hidden sm:flex items-center gap-2 text-[12px] text-[#6e6259] whitespace-nowrap" title="Rows per page">
+                    <span className={narrowResults ? 'hidden' : ''}>Rows per page</span>
                     <select
                       value={pageSize}
                       onChange={e => changePageSize(Number(e.target.value))}
                       disabled={view.loading}
-                      className="h-[26px] rounded-md border border-[#d5cfc9] bg-white px-1.5 text-[12px] text-[#312c2a] focus:outline-none focus:border-[#eb1700]"
+                      className="h-[22px] rounded-md border border-[#d5cfc9] bg-white px-1 text-[11.5px] text-[#312c2a] focus:outline-none focus:border-[var(--sig)]"
                     >
                       {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
                     </select>
@@ -5569,7 +6751,17 @@ function StudioPane({ active: paneActive = true }) {
             </div>
           </div>
         )}
+        </div>
       </div>
+
+      <TableDetails
+        info={tableInfo}
+        cq={cq}
+        onClose={() => setTableInfo(null)}
+        onPreview={(d, sc, t) => { setTableInfo(null); previewTable(d, sc, t); }}
+        onInsert={text => insertIntoEditor(text)}
+        onToast={toast}
+      />
 
       {/* ------------------------ history / saved drawer ----------------------- */}
       {panel && <div className="absolute inset-0 z-[47] bg-[#312c2a]/20" onClick={() => setPanel(null)} aria-hidden="true" />}
@@ -5589,8 +6781,8 @@ function StudioPane({ active: paneActive = true }) {
           </div>
         </div>
         <div className="flex-shrink-0 px-3 py-2.5 border-b border-[#f1efed]">
-          <div className="flex items-center gap-2 h-8 px-2.5 rounded-md border border-[#d5cfc9] focus-within:border-[#eb1700] focus-within:ring-2 focus-within:ring-[#eb1700]/15">
-            <Search size={14} className="text-[#81766f]" />
+          <div className="flex items-center gap-2 h-8 px-2.5 rounded-md border border-[#d5cfc9] focus-within:border-[var(--sig)] focus-within:ring-2 focus-within:ring-[var(--sig-ring)]">
+            <Search size={14} className="text-[#766a63]" />
             <input
               value={panelFilter}
               onChange={e => setPanelFilter(e.target.value)}
@@ -5611,7 +6803,7 @@ function StudioPane({ active: paneActive = true }) {
               )}
               {filteredPanelItems(history.items).map(h => (
                 <div key={h.id} className="group px-4 py-3 border-b border-[#f1efed] hover:bg-[#fbfaf9]">
-                  <div className="flex items-center gap-2 mb-1.5 min-h-[24px] text-[11px] text-[#81766f] tabular-nums">
+                  <div className="flex items-center gap-2 mb-1.5 min-h-[24px] text-[11px] text-[#766a63] tabular-nums">
                     <StatusDot color={h.status === 'success' ? T.green : T.maroon} />
                     <span>{formatWhen(h.created_at)}</span>
                     <span>·</span>
@@ -5622,7 +6814,7 @@ function StudioPane({ active: paneActive = true }) {
                       <IconButton icon={ExternalLink} label="Open in a new worksheet" size={24} iconSize={13} onClick={() => loadSql(h.sql, null, true, h.database)} />
                     </span>
                   </div>
-                  <button onClick={() => loadSql(h.sql, null, false, h.database)} className="block w-full text-left rounded-md -mx-1.5 px-1.5 py-1 hover:bg-[#f1efed]" title="Click to load into the current worksheet">
+                  <button onClick={() => loadSql(h.sql, null, false, h.database)} className="block w-full text-left rounded-md -mx-1.5 px-1.5 py-1 hover:bg-[#f1efed]" title={`${h.sql.length > 900 ? `${h.sql.slice(0, 900)}...` : h.sql}\n\nClick to load into the current worksheet`}>
                     <div className="text-[12px] leading-[18px] font-mono text-[#312c2a] whitespace-pre-wrap line-clamp-6 break-words"><SqlCode sql={h.sql} /></div>
                   </button>
                   {h.error && <div className="mt-1.5 text-[11px] text-[#9e0000] line-clamp-2">{h.error}</div>}
@@ -5642,14 +6834,14 @@ function StudioPane({ active: paneActive = true }) {
               )}
               {saved.status === 'error' && <ErrorPanel error={saved.error} onRetry={loadSaved} />}
               {saved.status === 'ready' && saved.items.length === 0 && (
-                <EmptyState icon={Bookmark} title="No saved queries">Use Save under the editor to keep a query for later.</EmptyState>
+                <EmptyState icon={Bookmark} title="No saved queries">Use the bookmark above the editor, or {MOD} + S, to keep a query for later.</EmptyState>
               )}
               {filteredPanelItems(saved.items).map(s => (
                 <div key={s.id} className="group px-4 py-3 border-b border-[#f1efed] hover:bg-[#fbfaf9]">
                   <div className="flex items-start gap-2">
                     <button onClick={() => loadSql(s.sql, s.name, true, s.database)} className="flex-1 min-w-0 text-left">
                       <div className="text-[13px] font-bold text-[#312c2a] truncate" title={s.name}>{s.name}</div>
-                      <div className="mt-0.5 text-[11px] text-[#81766f] truncate">
+                      <div className="mt-0.5 text-[11px] text-[#766a63] truncate">
                         {formatWhen(s.updated_at)}{s.shared ? ' · shared' : ''}{!s.owned && s.user_email ? ` · ${s.user_email}` : ''}
                       </div>
                     </button>
@@ -5693,7 +6885,7 @@ function StudioPane({ active: paneActive = true }) {
       />
       <Modal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} width={440} labelledBy="sf-keys-title">
         <div className="flex items-center gap-3 px-5 py-3.5 border-b border-[#e8e6e3]">
-          <Keyboard size={17} className="text-[#eb1700]" />
+          <Keyboard size={17} className="text-[var(--sig-ink)]" />
           <h3 id="sf-keys-title" className="flex-1 font-johnson-display font-bold text-[15px] text-[#312c2a]">Editor shortcuts</h3>
           <IconButton icon={X} label="Close" onClick={() => setShortcutsOpen(false)} />
         </div>
@@ -5701,10 +6893,10 @@ function StudioPane({ active: paneActive = true }) {
           {SHORTCUTS.map(([label, keys]) => (
             <div key={label} className="flex items-center justify-between gap-4 py-2 border-b border-[#f1efed] last:border-0 text-[12.5px]">
               <span className="text-[#312c2a]">{label}</span>
-              <span className="flex items-center gap-1 flex-shrink-0">{keys.split(' ').map((k, i) => (k === '/' ? <span key={i} className="text-[#81766f]">/</span> : <Kbd key={i}>{k}</Kbd>))}</span>
+              <span className="flex items-center gap-1 flex-shrink-0">{keys.split(' ').map((k, i) => (k === '/' ? <span key={i} className="text-[#766a63]">/</span> : <Kbd key={i}>{k}</Kbd>))}</span>
             </div>
           ))}
-          <p className="py-3 text-[11.5px] text-[#81766f]">Case changes apply to the selection, or to the word under the cursor when nothing is selected. Ctrl+Z undoes any of them. Copied cells paste into Excel as cells, and the status bar shows the count, sum and average of a selection.</p>
+          <p className="py-3 text-[11.5px] text-[#766a63]">Case changes apply to the selection, or to the word under the cursor when nothing is selected. Ctrl+Z undoes any of them. Copied cells paste into Excel as cells, and the status bar shows the count, sum and average of a selection.</p>
         </div>
       </Modal>
       <ShareModal

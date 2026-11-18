@@ -15,11 +15,11 @@ const C = {
   panelSoft: '#f8f7f5',
   ink: '#312c2a',
   muted: '#6e6259',
-  faint: '#81766f',
+  faint: '#766a63',
   primary: '#eb1700',
   primaryHover: '#c51300',
-  accent: '#eb1700',
-  accentSoft: '#fdeeec',
+  accent: 'var(--sig)',
+  accentSoft: 'var(--sig-soft)',
   green: '#328714',
   greenSoft: '#eef6ea',
   red: '#9e0000',
@@ -64,7 +64,7 @@ const Field = ({ label, children, hint }) => (
   <label className="flex flex-col gap-1">
     <span className="text-[11px] font-medium text-[#6e6259] uppercase tracking-wide">{label}</span>
     {children}
-    {hint && <span className="text-[11px] text-[#81766f]">{hint}</span>}
+    {hint && <span className="text-[11px] text-[#766a63]">{hint}</span>}
   </label>
 );
 
@@ -74,7 +74,7 @@ const Select = ({ value, onChange, options, placeholder, disabled }) => (
       value={value || ''}
       onChange={e => onChange(e.target.value)}
       disabled={disabled}
-      className="w-full h-[32px] pl-2.5 pr-7 rounded border border-[#e8e6e3] bg-white text-[12.5px] appearance-none disabled:bg-[#f6f5f3] disabled:text-[#81766f]"
+      className="w-full h-[32px] pl-2.5 pr-7 rounded border border-[#e8e6e3] bg-white text-[12.5px] appearance-none disabled:bg-[#f6f5f3] disabled:text-[#766a63]"
     >
       <option value="">{placeholder}</option>
       {options.map((o) => {
@@ -92,7 +92,7 @@ const Pill = ({ active, onClick, children, disabled }) => (
     onClick={onClick}
     disabled={disabled}
     className={`h-[30px] px-3 rounded text-[12.5px] border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-      active ? 'border-[#eb1700] bg-[#fdeeec] text-[#eb1700] font-medium' : 'border-[#e8e6e3] hover:bg-[#f6f5f3]'
+      active ? 'border-[var(--sig)] bg-[var(--sig-soft)] text-[var(--sig-ink)] font-medium' : 'border-[#e8e6e3] hover:bg-[#f6f5f3]'
     }`}
   >
     {children}
@@ -439,7 +439,7 @@ export default function TableCopier({ serverInfo }) {
         )}
         {writeLabel && (
           <span
-            className="text-[11px] text-[#eb1700] bg-[#fdeeec] rounded px-2 py-0.5 truncate"
+            className="text-[11px] text-[var(--sig-ink)] bg-[var(--sig-soft)] rounded px-2 py-0.5 truncate"
             title={`Reads use ${readLabel}, writes use ${writeLabel}`}
           >
             two logins: {readLabel} → {writeLabel}
@@ -460,7 +460,7 @@ export default function TableCopier({ serverInfo }) {
                   <Pill active={form.copyType === 'schema'} onClick={() => { set({ copyType: 'schema' }); clearPlan(); }}>Whole schema</Pill>
                 </div>
                 {form.copyType === 'schema' && (
-                  <span className="text-[11px] text-[#81766f]">Tables and views, everything in the schema.</span>
+                  <span className="text-[11px] text-[#766a63]">Tables and views, everything in the schema.</span>
                 )}
               </div>
               <div className="flex flex-col gap-1.5">
@@ -516,7 +516,7 @@ export default function TableCopier({ serverInfo }) {
                 <div className="flex items-baseline gap-2">
                   <span className="text-[12px] font-semibold text-[#312c2a]">Source</span>
                   {writeLabel && readLabel && (
-                    <span className="text-[10.5px] text-[#81766f] truncate" title={`Browsed and read as ${readLabel}`}>
+                    <span className="text-[10.5px] text-[#766a63] truncate" title={`Browsed and read as ${readLabel}`}>
                       read as {readLabel}
                     </span>
                   )}
@@ -570,7 +570,7 @@ export default function TableCopier({ serverInfo }) {
                             });
                             clearPlan();
                           }}
-                          className="flex-shrink-0 text-[11px] text-[#eb1700] hover:underline disabled:opacity-40"
+                          className="flex-shrink-0 text-[11px] text-[var(--sig-ink)] hover:underline disabled:opacity-40"
                         >
                           {filteredObjects.length && filteredObjects.every(t => form.sourceTables.includes(t.name))
                             ? 'Clear these' : 'Select these'}
@@ -578,10 +578,10 @@ export default function TableCopier({ serverInfo }) {
                       </div>
                       <div className="max-h-[190px] overflow-y-auto">
                         {!form.sourceSchema && (
-                          <div className="px-2.5 py-2 text-[11.5px] text-[#81766f]">Pick a schema first.</div>
+                          <div className="px-2.5 py-2 text-[11.5px] text-[#766a63]">Pick a schema first.</div>
                         )}
                         {form.sourceSchema && !filteredObjects.length && (
-                          <div className="px-2.5 py-2 text-[11.5px] text-[#81766f]">Nothing matches that.</div>
+                          <div className="px-2.5 py-2 text-[11.5px] text-[#766a63]">Nothing matches that.</div>
                         )}
                         {filteredObjects.map(t => {
                           const checked = form.sourceTables.includes(t.name);
@@ -605,7 +605,7 @@ export default function TableCopier({ serverInfo }) {
                               />
                               <span className="flex-1 min-w-0 truncate" title={t.name}>{t.name}</span>
                               {t.kind !== 'table' && (
-                                <span className="flex-shrink-0 text-[10.5px] text-[#81766f]">view</span>
+                                <span className="flex-shrink-0 text-[10.5px] text-[#766a63]">view</span>
                               )}
                             </label>
                           );
@@ -636,7 +636,7 @@ export default function TableCopier({ serverInfo }) {
                 <div className="flex items-baseline gap-2">
                   <span className="text-[12px] font-semibold text-[#312c2a]">Target</span>
                   {writeLabel && (
-                    <span className="text-[10.5px] text-[#81766f] truncate" title={`Browsed and written as ${writeLabel}`}>
+                    <span className="text-[10.5px] text-[#766a63] truncate" title={`Browsed and written as ${writeLabel}`}>
                       written as {writeLabel}
                     </span>
                   )}
@@ -696,7 +696,7 @@ export default function TableCopier({ serverInfo }) {
                   </Field>
                 )}
                 {form.copyType !== 'table' && (
-                  <div className="text-[11px] text-[#81766f]">
+                  <div className="text-[11px] text-[#766a63]">
                     {form.copyType === 'tables'
                       ? 'Every selected object keeps its name. A target schema that does not exist yet is created as part of the copy.'
                       : 'A target schema that doesn\'t exist yet is created as part of the copy.'}
@@ -765,7 +765,7 @@ export default function TableCopier({ serverInfo }) {
                   </span>
                 </div>
                 {canExclude && (
-                  <div className="flex items-center gap-3 px-3.5 py-1.5 border-b border-[#f1efed] text-[11px] text-[#81766f]">
+                  <div className="flex items-center gap-3 px-3.5 py-1.5 border-b border-[#f1efed] text-[11px] text-[#766a63]">
                     <span>
                       {plan.single_statement && excluded.size === 0
                         ? 'Copied by one CREATE SCHEMA … CLONE, which brings the views and everything else across too. Untick anything and it clones table by table instead.'
@@ -774,7 +774,7 @@ export default function TableCopier({ serverInfo }) {
                     <button
                       type="button"
                       onClick={() => setExcluded(excluded.size ? new Set() : new Set(planItems.map(i => i.name)))}
-                      className="ml-auto text-[#eb1700] hover:underline"
+                      className="ml-auto text-[var(--sig-ink)] hover:underline"
                     >
                       {excluded.size ? 'Tick all' : 'Untick all'}
                     </button>
@@ -858,7 +858,7 @@ export default function TableCopier({ serverInfo }) {
                 <span className="text-[13px] font-medium truncate">{job.source} → {job.target}</span>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <span className="text-[11.5px] text-[#81766f]">{fmtElapsed(job.elapsed_ms)}</span>
+                <span className="text-[11.5px] text-[#766a63]">{fmtElapsed(job.elapsed_ms)}</span>
                 {busy && (
                   <button
                     onClick={cancelCopy}
@@ -901,7 +901,7 @@ export default function TableCopier({ serverInfo }) {
                         <div className="flex items-center justify-between mb-1.5">
                           <span className="text-[12.5px] font-medium truncate">{t.name === '__schema__' ? job.source : t.name}</span>
                           <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="text-[11px] text-[#81766f]">
+                            <span className="text-[11px] text-[#766a63]">
                               {fmtN(t.rows_copied)}{t.est_rows ? ` / ${fmtN(t.est_rows)}` : ''} rows
                               {t.chunks_total > 1 ? ` · ${t.chunks_done}/${t.chunks_total} chunks` : ''}
                             </span>

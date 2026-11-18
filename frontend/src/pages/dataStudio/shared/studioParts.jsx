@@ -482,7 +482,7 @@ function SavePromptModal({ open, initialName, onCancel, onSave }) {
 }
 
 export {
-  IconDefs, Icon, TINTS, CopyIcon, ObjectMark, Pager, ExplorerTree,
+  IconDefs, Icon, CopyIcon, ObjectMark, Pager, ExplorerTree,
   ConfirmDestructiveModal, TextModal, SavePromptModal,
   ResultsSkeleton, SkeletonLine, TreeRowSkeleton,
 };

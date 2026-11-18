@@ -29,8 +29,8 @@ const FILTER_OPS = [
   { id: 'lte', label: '≤', needsValue: true },
   { id: 'in', label: 'in list', needsValue: true },
   { id: 'not_in', label: 'not in list', needsValue: true },
-  { id: 'is_null', label: 'is null', needsValue: false },
-  { id: 'is_not_null', label: 'is not null', needsValue: false },
+  { id: 'is_null', label: 'is empty', needsValue: false },
+  { id: 'is_not_null', label: 'is not empty', needsValue: false },
 ];
 
 // Leading keyword that means the statement mutates something. Purely a
@@ -45,13 +45,24 @@ function leadKeywordHint(sql) {
   return match[1].toUpperCase();
 }
 
+// What the browser says when the request never got an answer.
+const OFFLINE = "Couldn't reach the SmartHub server. Check your connection and try again.";
+const GATEWAY = { 502: 'bad gateway', 503: 'unavailable', 504: 'timed out' };
+
 async function fetchJson(url, opts) {
-  const res = await apiFetch(url, opts);
+  let res;
+  try {
+    res = await apiFetch(url, opts);
+  } catch (err) {
+    if (err instanceof TypeError) { const e = new Error(OFFLINE); e.status = 0; e.offline = true; throw e; }
+    throw err;
+  }
   let body = null;
   try { body = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
     const detail = body && body.detail;
-    const message = (typeof detail === 'string' ? detail : detail?.message) || `Request failed (${res.status})`;
+    const message = (typeof detail === 'string' ? detail : detail?.message)
+      || (GATEWAY[res.status] ? `The SmartHub server isn't answering right now (${res.status} ${GATEWAY[res.status]}). Try again in a minute.` : `Request failed (${res.status})`);
     const err = new Error(message);
     err.status = res.status;
     err.body = body;
@@ -136,6 +147,23 @@ const SF_FUNCTIONS = [
 const STATIC_SUGGESTIONS = [
   ...SF_KEYWORDS.map(text => ({ text, kind: 'keyword' })),
   ...SF_FUNCTIONS.map(text => ({ text, kind: 'function' })),
+];
+
+// Postgres: drop the Snowflake-only words, add its own.
+const SF_ONLY = new Set(['QUALIFY', 'RLIKE', 'PIVOT', 'UNPIVOT', 'SAMPLE', 'COPY INTO', 'AT', 'BEFORE', 'CHANGES', 'FLATTEN', 'CLUSTER BY', 'DESCRIBE TABLE', 'SHOW TABLES', 'CREATE OR REPLACE TABLE']);
+const PG_KEYWORDS = ['RETURNING', 'ON CONFLICT', 'DO NOTHING', 'FETCH FIRST', 'CREATE OR REPLACE VIEW', 'EXPLAIN ANALYZE', 'FILTER (WHERE'];
+const PG_FUNCTIONS = [
+  'COUNT(', 'SUM(', 'AVG(', 'MIN(', 'MAX(', 'STDDEV(', 'VARIANCE(', 'COALESCE(', 'NULLIF(', 'GREATEST(', 'LEAST(', 'CAST(',
+  'TO_CHAR(', 'TO_DATE(', 'TO_TIMESTAMP(', 'TO_NUMBER(', 'DATE_TRUNC(', 'DATE_PART(', 'EXTRACT(', 'AGE(', 'NOW()',
+  'CURRENT_DATE', 'CURRENT_TIMESTAMP', 'CURRENT_USER', 'ROW_NUMBER() OVER (', 'RANK() OVER (', 'DENSE_RANK() OVER (',
+  'LAG(', 'LEAD(', 'FIRST_VALUE(', 'LAST_VALUE(', 'NTILE(', 'STRING_AGG(', 'ARRAY_AGG(', 'JSON_AGG(', 'JSONB_AGG(',
+  'JSONB_BUILD_OBJECT(', 'JSON_BUILD_OBJECT(', 'JSONB_EXTRACT_PATH_TEXT(', 'JSONB_ARRAY_ELEMENTS(', 'TRIM(', 'UPPER(',
+  'LOWER(', 'INITCAP(', 'LENGTH(', 'SUBSTRING(', 'SPLIT_PART(', 'REPLACE(', 'CONCAT(', 'CONCAT_WS(', 'REGEXP_REPLACE(',
+  'REGEXP_MATCHES(', 'ROUND(', 'MD5(', 'GEN_RANDOM_UUID()', 'GENERATE_SERIES(', 'UNNEST(', 'PG_SIZE_PRETTY(',
+];
+const PG_SUGGESTIONS = [
+  ...SF_KEYWORDS.filter(k => !SF_ONLY.has(k)).concat(PG_KEYWORDS).map(text => ({ text, kind: 'keyword' })),
+  ...PG_FUNCTIONS.map(text => ({ text, kind: 'function' })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -278,9 +306,9 @@ function tokenizeSql(text) {
 
 const TOKEN_COLORS = {
   dark: {
-    comment: '#8a827d', string: '#9ee493', dollar: '#9ee493', quoted: '#d7b7ff',
-    number: '#ffd479', keyword: '#7fd6ff', type: '#6ee7c7', function: '#ffb26b',
-    operator: '#cfc9c5', punct: '#a9a29d', plain: 'rgba(255,255,255,0.92)',
+    comment: '#9a8f87', string: '#ffd38a', dollar: '#ffd38a', quoted: '#d7b7ff',
+    number: '#9fd4ff', keyword: '#ff9d85', type: '#8fe3c8', function: '#c9b3ff',
+    operator: '#d9d1ca', punct: '#a39992', plain: '#f1ebe6',
   },
   light: {
     comment: '#8c827c', string: '#1a7f37', dollar: '#1a7f37', quoted: '#6b3fa0',
@@ -499,7 +527,7 @@ function caretPixelPos(ta, caret) {
 
 export {
   PAGE_SIZE_OPTIONS, DEFAULT_COL_WIDTH, MIN_COL_WIDTH, MAX_COL_WIDTH,
-  EXPORT_FORMATS, FILTER_OPS, STATIC_SUGGESTIONS,
+  EXPORT_FORMATS, FILTER_OPS, STATIC_SUGGESTIONS, PG_SUGGESTIONS,
   fetchJson, cellText, formatBytes, formatCount, formatWhen,
   leadKeywordHint, sqlTokenAtCaret, caretPixelPos,
   tokenizeSql, TOKEN_COLORS, parseTableRefs, resolveRef, clauseAtCaret, rankSuggestions,

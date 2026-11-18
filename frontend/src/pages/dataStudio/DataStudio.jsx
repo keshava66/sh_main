@@ -31,6 +31,18 @@ export default function DataStudio() {
   const urlPane = params.get('pane');
   const active = has(urlPane) ? urlPane : has(readPane()) ? readPane() : panes[0]?.id;
 
+  // A link to a pane that doesn't exist (or you can't open) shows the right one.
+  useEffect(() => {
+    if (urlPane && urlPane !== active && active) {
+      setParams(prev => {
+        const next = new URLSearchParams(prev);
+        next.set('pane', active);
+        ['ws', 'db', 'schema', 'table'].forEach(k => next.delete(k));
+        return next;
+      }, { replace: true });
+    }
+  }, [urlPane, active, setParams]);
+
   const [mounted, setMounted] = useState(() => new Set([active]));
   useEffect(() => {
     setMounted(prev => (prev.has(active) ? prev : new Set(prev).add(active)));
@@ -75,7 +87,7 @@ export default function DataStudio() {
               <button
                 key={p.id}
                 onClick={() => switchTo(p)}
-                className={`group relative flex items-center gap-2 pl-[9px] pr-[13px] py-[6px] rounded-lg text-[12.5px] font-johnson-text whitespace-nowrap transition-all ${
+                className={`group relative flex items-center gap-2 pl-[9px] pr-[13px] py-[6px] rounded-lg text-[12.5px] font-johnson-text whitespace-nowrap transition-[color,background-color,box-shadow,border-color] ${
                   isActive
                     ? 'bg-white text-jj-gray-08 font-medium shadow-[0_1px_4px_rgba(49,44,42,.14)] border border-jj-gray-02'
                     : 'border border-transparent text-jj-gray-06 hover:text-jj-gray-08 hover:bg-white/70'

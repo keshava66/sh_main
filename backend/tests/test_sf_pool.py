@@ -294,3 +294,236 @@ def test_warmer_only_runs_while_rim_docs_is_used(monkeypatch):
     finally:
         U.stop_warmer()
         U._warm_thread.join(1)
+
+
+# ── Data Studio, Snowflake pane: pooled sessions and cancel ──
+
+class _SfConn:
+    def __init__(self, sid=7):
+        self.session_id, self.closed, self.ran = sid, False, []
+
+    def is_closed(self):
+        return self.closed
+
+    def close(self):
+        self.closed = True
+
+    def cursor(self):
+        conn = self
+
+        class Cur:
+            def execute(self, sql, params=None):
+                conn.ran.append((sql, params))
+
+            def close(self):
+                pass
+        return Cur()
+
+
+def test_sf_pool_skips_a_closed_session(monkeypatch):
+    import snowflake_query_runner as S
+    pool = S._ConnectionPool()
+    dead, fresh = _SfConn(1), _SfConn(2)
+    pool.release(dead, pool._key(None, None, None), _time.time())
+    dead.closed = True
+    monkeypatch.setattr(S, "_connect", lambda *a, **k: fresh)
+    assert pool.acquire()[0] is fresh
+
+
+def test_sf_cancel_stops_the_running_statement_and_retires_the_session(monkeypatch):
+    import threading
+    import snowflake_query_runner as S
+    side, busy = _SfConn(99), _SfConn(42)
+    monkeypatch.setattr(S, "_pool", S._ConnectionPool())
+    monkeypatch.setattr(S, "_connect", lambda *a, **k: side)
+    job = {"job_id": "j1", "owner": "a@x.com", "status": "running", "conn": busy, "done": threading.Event(),
+           "cancel_requested": False, "last_used": 0}
+    monkeypatch.setitem(S._jobs, "j1", job)
+    S.cancel_query("j1", auth={"user": {"email": "a@x.com"}})
+    for _ in range(50):
+        if side.ran:
+            break
+        _time.sleep(0.02)
+    job["done"].set()
+    # The statement's own query id isn't known yet, so the whole session is cancelled.
+    assert side.ran[0] == ("SELECT SYSTEM$CANCEL_ALL_QUERIES(?)", (42,))
+    S._pool.release(busy, S._pool._key(None, None, None), _time.time())
+    assert busy.closed       # never handed to the next query
+
+
+def test_sf_temp_objects_keep_a_session_out_of_the_pool():
+    from snowflake_query_runner import _SESSION_CHANGE as R
+    for sql in ("create temp table t as select 1", "CREATE OR REPLACE TEMPORARY TABLE x (a int)",
+                "create local temporary stage s", "use role analyst", "begin"):
+        assert R.search(sql), sql
+    for sql in ("create table t (a int)", "select 1", "create transient table t (a int)"):
+        assert not R.search(sql), sql
+
+
+def test_sf_run_all_keeps_each_statements_result(monkeypatch):
+    """Every statement of a run that returns rows gets a job of its own, so its
+    result can be opened, paged and sorted; the rest just get a summary line."""
+    import threading
+    import snowflake_query_runner as S
+
+    class Conn(_SfConn):
+        def cursor(self):
+            conn = self
+
+            class Cur:
+                description, rowcount, sfqid = None, -1, None
+
+                def execute(self, sql, params=None):
+                    conn.ran.append(sql)
+                    self.sfqid = f"q{len(conn.ran)}"
+                    rows = {"select a": 3, "show tables": 2, "select b": 5}.get(sql.strip().lower())
+                    self.description = [("A", 0, None, None, None, None)] if rows else None
+                    self.rowcount = rows if rows else 1
+                    self._rows = [(i,) for i in range(rows or 0)]
+
+                def fetchall(self):
+                    return self._rows
+
+                def close(self):
+                    pass
+            return Cur()
+
+    conn = Conn()
+    monkeypatch.setattr(S, "_pool", S._ConnectionPool())
+    monkeypatch.setattr(S._pool, "acquire", lambda *a, **k: (conn, "k", _time.time()))
+    monkeypatch.setattr(S, "_apply_statement_timeout", lambda *a, **k: None)
+    planned = S.plan_statements("select a; use schema s; show tables; select b")
+    job = S._new_job(planned[-1]["cls"], "DB", "SC", None, 60, "a@x.com")
+    job.update(statements=planned, statement_results=[], slots=threading.Semaphore(0), profile=S.READ_PROFILE, shared_ws=None)
+    S._run_job(job["job_id"])
+
+    assert job["status"] == "success", job["error"]
+    res = job["statement_results"]
+    assert [r["index"] for r in res] == [1, 2, 3, 4]
+    assert "job_id" not in res[1]                         # USE has no rows to show
+    assert res[3]["job_id"] == job["job_id"] and job["row_count"] == 5
+    first, show = S._jobs[res[0]["job_id"]], S._jobs[res[2]["job_id"]]
+    assert (first["status"], first["row_count"], first["query_id"], first["conn"]) == ("success", 3, "q1", None)
+    assert show["inline_rows"] == [[0], [1]]              # SHOW is read once, kept in memory
+    assert first["_history_written"]                      # the run goes into history once, not per statement
+    for r in res:
+        S._jobs.pop(r.get("job_id"), None)
+
+
+def test_sf_filter_menu_counts_a_result_held_in_memory():
+    from snowflake_query_runner import ColumnFilter, ValuesRequest, inline_values
+    job = {"columns": [{"name": "K"}, {"name": "N"}], "inline_rows": [["a", 1], ["a", 2], ["b", 3], [None, 4], [{"x": 1}, 5]]}
+    got = inline_values(job, ValuesRequest(column="K", limit=2))
+    assert got["values"][0] == {"value": "a", "count": 2} and len(got["values"]) == 2 and got["more"]
+    got = inline_values(job, ValuesRequest(column="K", filters=[ColumnFilter(col="N", op="gt", value="1")]))
+    assert {v["count"] for v in got["values"]} == {1}
+    # Searching narrows the list to values containing the text.
+    got = inline_values(job, ValuesRequest(column="K", search="B"))
+    assert got["values"] == [{"value": "b", "count": 1}]
+
+
+# ── Data Studio, Postgres pane ──
+
+def test_pg_writes_hidden_in_a_select_need_the_confirm():
+    from postgres_query_runner import classify_and_validate_sql as c
+    cte = c("with d as (delete from t where id = 1 returning *) select * from d")
+    assert cte.is_destructive and not cte.cursorable and cte.returns_rows and cte.lead_keyword == "DELETE"
+    into = c("select * into t2 from t")
+    assert into.is_destructive and not into.cursorable and not into.returns_rows
+    plain = c("with a as (select 'into' x) select * from a")
+    assert not plain.is_destructive and plain.cursorable
+
+
+@pytest.fixture
+def pgs(monkeypatch):
+    import psycopg2.extensions
+    d = psycopg2.extensions.parse_dsn(_PG_DSN)
+    for k, v in (("PGQR_HOST", d.get("host", "localhost")), ("PGQR_PORT", d.get("port", "5432")),
+                 ("PGQR_USER", d.get("user", "postgres")), ("PGQR_PASSWORD", d.get("password", "")),
+                 ("PGQR_DATABASE", d.get("dbname", "postgres"))):
+        monkeypatch.setenv(k, v)
+    import postgres_studio as P
+    monkeypatch.setattr(P, "_record_history", lambda *a, **k: None)
+    return P, {"user": {"email": "t@x.com"}}
+
+
+def _pg_run(P, auth, sql, sid, wait=5000, confirm=True):
+    return P.start_query(P.PgQueryRequest(sql=sql, session_id=sid, wait_ms=wait, confirm=confirm), conn_id=None, auth=auth)
+
+
+@_pg
+def test_pg_closing_a_worksheet_cancels_its_run(pgs):
+    P, A = pgs
+    r = _pg_run(P, A, "select pg_sleep(30)", "ws-close", wait=0)
+    _time.sleep(0.5)
+    P.close_session("ws-close", auth=A)
+    job = P._jobs[r["job_id"]]
+    assert job["done"].wait(10) and job["status"] == "cancelled", job["error"]
+
+
+@_pg
+def test_pg_closing_an_old_result_never_waits_on_a_run(pgs):
+    P, A = pgs
+    old = _pg_run(P, A, "select 1", "ws-busy")
+    new = _pg_run(P, A, "select pg_sleep(2)", "ws-busy", wait=0)
+    _time.sleep(0.3)
+    t0 = _time.time()
+    P.close_query(old["job_id"], auth=A)
+    assert _time.time() - t0 < 0.5
+    assert P._jobs[new["job_id"]]["done"].wait(10)
+
+
+@_pg
+def test_pg_run_all_keeps_each_statements_result(pgs):
+    P, A = pgs
+    r = _pg_run(P, A, "select 1 as a union all select 2; set search_path to public; select 'x' as b", "ws-parts")
+    assert r["status"] == "success", r.get("error")
+    first, setp, last = r["statements"]
+    assert "job_id" not in setp and last["job_id"] == r["job_id"]
+    rows = P.get_query_rows(first["job_id"], P.RowsRequest(page=1, page_size=10, sort=[{"col": "a", "dir": "desc"}]), auth=A)
+    assert rows["rows"] == [[2], [1]]
+    # The next run on the worksheet clears them all.
+    _pg_run(P, A, "select 3", "ws-parts")
+    with pytest.raises(P.HTTPException) as e:
+        P.get_query_rows(first["job_id"], P.RowsRequest(page=1, page_size=10), auth=A)
+    assert e.value.status_code == 410
+    P.close_session("ws-parts", auth=A)
+
+
+@_pg
+def test_pg_filter_menu_counts_values_across_the_result(pgs):
+    P, A = pgs
+    from snowflake_query_runner import ColumnFilter
+    r = _pg_run(P, A, "select * from (values ('a', 1, '{}'::json), ('a', 2, '{}'), ('b', 3, '{}'), (null, 4, '{}')) t(k, n, j)", "ws-vals")
+    got = P.get_query_values(r["job_id"], P.ValuesRequest(column="k"), auth=A)
+    assert got["values"] == [{"value": "a", "count": 2}, {"value": "b", "count": 1}] and not got["more"]
+    # Other filters still apply; one on the same column is ignored.
+    got = P.get_query_values(r["job_id"], P.ValuesRequest(column="k", filters=[ColumnFilter(col="n", op="gt", value="1"), ColumnFilter(col="k", op="eq", value="a")]), auth=A)
+    assert got["values"] == [{"value": "a", "count": 1}, {"value": "b", "count": 1}]
+    got = P.get_query_values(r["job_id"], P.ValuesRequest(column="k", search="B"), auth=A)
+    assert got["values"] == [{"value": "b", "count": 1}]
+    # json can't be grouped: a clear 400, and an open transaction on the worksheet survives it.
+    _pg_run(P, A, "begin", "ws-vals")
+    r = _pg_run(P, A, "select '{}'::json as j", "ws-vals")
+    with pytest.raises(P.HTTPException) as e:
+        P.get_query_values(r["job_id"], P.ValuesRequest(column="j"), auth=A)
+    assert e.value.status_code == 400
+    assert _pg_run(P, A, "select 1 as ok", "ws-vals")["status"] == "success"
+    _pg_run(P, A, "rollback", "ws-vals")
+    P.close_session("ws-vals", auth=A)
+
+
+@_pg
+def test_pg_edit_matches_a_row_whose_big_value_was_cut_short(pgs):
+    P, A = pgs
+    _pg_run(P, A, "drop table if exists ds_nokey; create table ds_nokey(v text, big text);"
+                  "insert into ds_nokey values ('a', repeat('x', 30000)), ('b', 'y')", "ws-edit")
+    got = P.table_rows(P.TableRowsRequest(database=P._cfg()["default_database"], schema="public", table="ds_nokey",
+                                          page=1, page_size=10, sort=[{"col": "v", "dir": "asc"}]), conn_id=None, auth=A)
+    row = dict(zip([c["name"] for c in got["columns"]], got["rows"][0]))
+    assert row["big"]["$truncated"]
+    done = P.table_mutate(P.MutateRequest(database=P._cfg()["default_database"], schema="public", table="ds_nokey",
+                                          changes=[{"kind": "update", "original": row, "values": {"v": "a2"}}], confirm=True),
+                          conn_id=None, auth=A)
+    assert done["total"] == 1
+    _pg_run(P, A, "drop table ds_nokey", "ws-edit")

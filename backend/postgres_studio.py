@@ -30,7 +30,7 @@ from snowflake_query_runner import (
     ALL_OPS, EXPORT_FORMATS, ROWS_PAGE_MAX_SIZE, SET_OPS, TEXT_OPS,
     CELL_MAX_CHARS, CELL_PREVIEW_CHARS, CellRequest, ColumnFilter, full_cell, MutateRequest, RowsRequest, SavedQueryRequest, TableRowsRequest, grid_rows,
     _DuplicateRow, _MutationMismatch, _statement_result, confirm_detail, failed_at, numbered_sections, plan_statements, _cache_drop_prefix, _cache_get, _cache_set,
-    _change_summary, _dedupe_columns, _key_columns_for, _paged_inline, _parse_json_param,
+    _change_summary, _dedupe_columns, _is_truncated, _key_columns_for, _paged_inline, _parse_json_param, ValuesRequest, inline_values,
     _stream_rows, build_order_by, qualified, quote_ident,
 )
 
@@ -464,7 +464,7 @@ def _resize_slots(n: int):
 
 
 def _new_session(key: Optional[str], database: str, conn_id: Optional[str]) -> Dict[str, Any]:
-    return {"key": key, "database": database, "conn_id": conn_id, "conn": None, "temp": None,
+    return {"key": key, "database": database, "conn_id": conn_id, "conn": None, "temps": [],
             "lock": threading.Lock(), "last_used": time.time(), "job": None}
 
 
@@ -491,18 +491,20 @@ def _session_for(owner: str, session_id: Optional[str], database: str, conn_id: 
 def _close_session(s: Dict[str, Any]):
     with s["lock"]:
         _quiet_close(s["conn"])
-        s["conn"], s["temp"] = None, None
+        s["conn"], s["temps"] = None, []
 
 
-def _drop_temp(s: Dict[str, Any]):
-    """Caller holds s['lock']."""
-    if s["temp"] and s["conn"] is not None and not s["conn"].closed:
-        try:
-            with s["conn"].cursor() as cur:
-                cur.execute(f"DROP TABLE IF EXISTS pg_temp.{quote_ident(s['temp'])}")
-        except Exception:
-            pass
-    s["temp"] = None
+def _drop_temp(s: Dict[str, Any], only: Optional[str] = None):
+    """Drop the worksheet's result tables (or just one). Caller holds s['lock']."""
+    gone = [only] if only else list(s["temps"])
+    if s["conn"] is not None and not s["conn"].closed:
+        for t in gone:
+            try:
+                with s["conn"].cursor() as cur:
+                    cur.execute(f"DROP TABLE IF EXISTS pg_temp.{quote_ident(t)}")
+            except Exception:
+                pass
+    s["temps"] = [t for t in s["temps"] if t not in gone]
 
 
 def _get_job(job_id: str, owner: Optional[str] = None, shared: bool = False) -> Dict[str, Any]:
@@ -520,14 +522,19 @@ def _get_job(job_id: str, owner: Optional[str] = None, shared: bool = False) -> 
 
 
 def _close_job(job: Dict[str, Any]):
-    """Throwaway sessions close; a worksheet session only loses this job's result."""
+    """Throwaway sessions close; a worksheet session only loses this job's result.
+    Never waits on a busy worksheet: a run going on there drops the old result
+    itself, and waiting would park this request (or cleanup_jobs, so every
+    other user's next run) behind a query that may take an hour."""
     s = job["session"]
     if s["key"] is None:
         _close_session(s)
         return
-    with s["lock"]:
-        if job.get("temp_table") and s["temp"] == job["temp_table"]:
-            _drop_temp(s)
+    if not s["lock"].acquire(blocking=False):
+        return
+    with _Held(s["lock"]):
+        if job.get("temp_table") in s["temps"]:
+            _drop_temp(s, job["temp_table"])
 
 
 def cleanup_jobs():
@@ -603,7 +610,8 @@ def _run_last(job: Dict[str, Any], cur, st: Dict[str, Any]):
         job["_wrap"] = f"CREATE TEMP TABLE {quote_ident(tmp)} AS SELECT row_number() OVER () AS {quote_ident(RN)}, _q.* FROM ("
         cur.execute(f"{job['_wrap']}{sql}\n) AS _q({', '.join(quote_ident(n) for n in names)})")
         job["_wrap"] = None
-        job["session"]["temp"] = job["temp_table"] = tmp
+        job["temp_table"] = tmp
+        job["session"]["temps"].append(tmp)
         count = cur.rowcount
         if count is None or count < 0:
             cur.execute(f"SELECT COUNT(*) FROM {quote_ident(tmp)}")
@@ -634,6 +642,25 @@ def _run_last(job: Dict[str, Any], cur, st: Dict[str, Any]):
         job["row_count"] = 0
 
 
+def _statement_job(job: Dict[str, Any], st: Dict[str, Any], started: float) -> Dict[str, Any]:
+    """A finished job for one statement of a multi-statement run, on the same
+    worksheet session, so its result pages, sorts and downloads like any other."""
+    c = st["cls"]
+    return {
+        **{k: job[k] for k in ("owner", "shared_ws", "database", "session", "timeout_seconds", "created_at", "last_used", "slots")},
+        "job_id": uuid.uuid4().hex, "sql": st["sql"], "statements": [st], "statement_results": [],
+        "lead_keyword": c.lead_keyword, "is_destructive": False, "returns_rows": True,
+        "status": "success", "conn": None, "temp_table": None, "inline_rows": None,
+        "columns": None, "row_count": None, "rows_affected": None, "error": None,
+        "started_at": started, "finished_at": None, "done": _DONE, "cancel_requested": False,
+        "_history_written": True,     # the run as a whole goes into history, once
+    }
+
+
+_DONE = threading.Event()
+_DONE.set()
+
+
 def _run_job(job_id: str):
     import psycopg2
 
@@ -649,14 +676,14 @@ def _run_job(job_id: str):
         if s["job"] is job:
             s["job"] = None
         job["done"].set()
-        _slots.release()
+        job["slots"].release()
         return
     with _Held(s["lock"]):
         try:
             if job["cancel_requested"]:
                 raise _Cancelled()      # cancelled before it got the connection
             if s["conn"] is None or s["conn"].closed:
-                s["conn"], s["temp"] = _connect(job["database"], s["conn_id"]), None
+                s["conn"], s["temps"] = _connect(job["database"], s["conn_id"]), []
             conn = job["conn"] = s["conn"]
             _drop_temp(s)   # the worksheet's previous result
             with conn.cursor() as cur:
@@ -669,11 +696,18 @@ def _run_job(job_id: str):
                     started = time.time()
                     if k < len(planned) - 1:
                         c = st["cls"]
-                        if c.returns_rows and c.cursorable:
-                            # Counted, not fetched, so a big SELECT mid-script never lands in API memory.
-                            job["_wrap"] = "SELECT count(*) FROM ("
-                            cur.execute(f"SELECT count(*) FROM ({st['sql']}\n) AS _q")
-                            extra = {"row_count": cur.fetchone()[0]}
+                        if c.returns_rows:
+                            # Its own result, kept like the last one's (temp table, or a
+                            # capped inline read), so each statement can be looked at.
+                            part = _statement_job(job, st, started)
+                            try:
+                                _run_last(part, cur, st)
+                            finally:
+                                job["_wrap"] = part.get("_wrap")
+                            part["finished_at"] = time.time()
+                            with _jobs_lock:
+                                _jobs[part["job_id"]] = part
+                            extra = {"row_count": part["row_count"], "job_id": part["job_id"]}
                         else:
                             job["_wrap"] = None
                             cur.execute(st["sql"])
@@ -681,6 +715,8 @@ def _run_job(job_id: str):
                     else:
                         _run_last(job, cur, st)
                         extra = {"row_count": job["row_count"], "rows_affected": job["rows_affected"]}
+                        if st["cls"].returns_rows:
+                            extra["job_id"] = job["job_id"]
                     if len(planned) > 1:
                         job["statement_results"].append(_statement_result(st, k, started, "success", **extra))
             job["status"] = "success"
@@ -698,18 +734,18 @@ def _run_job(job_id: str):
                 text = _user_error(e, planned[k]["sql"], job.get("_wrap")) if k < len(planned) else str(e).strip()
                 job.update(status="failed", error=failed_at(text, planned, k))
             if s["conn"] is not None and s["conn"].closed:
-                s["conn"], s["temp"] = None, None
+                s["conn"], s["temps"] = None, []
         finally:
             if s["job"] is job:
                 s["job"] = None
             job["finished_at"] = time.time()
-            if s["key"] is None and (not job.get("temp_table") or job["status"] != "success" or job.get("closed")):
+            if s["key"] is None and (not s["temps"] or job["status"] != "success" or job.get("closed")):
                 _quiet_close(s["conn"])
                 s["conn"] = None
             elif job.get("closed"):
                 _drop_temp(s)
     job["done"].set()
-    _slots.release()
+    job["slots"].release()
 
 
 def _job_status(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -733,7 +769,7 @@ def _job_status(job: Dict[str, Any]) -> Dict[str, Any]:
 def _result_conn(job: Dict[str, Any]):
     """Caller holds the session lock."""
     s = job["session"]
-    if s["conn"] is None or s["conn"].closed or s["temp"] != job["temp_table"]:
+    if s["conn"] is None or s["conn"].closed or job["temp_table"] not in s["temps"]:
         raise HTTPException(status_code=410, detail="This result is no longer available (the worksheet ran something newer, "
                                                     "or sat idle too long). Re-run the query.")
     return s["conn"]
@@ -1064,7 +1100,8 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
                            "Cancel it, or wait for it to finish.",
                 "running_job_id": running["job_id"] if running and running["owner"] == owner else None,
             })
-    if not _slots.acquire(blocking=False):
+    slots = _slots
+    if not slots.acquire(blocking=False):
         raise HTTPException(status_code=429, detail=f"Too many queries already running (max {cfg['max_concurrent_jobs']} concurrent). Cancel one or wait for it to finish.")
 
     last = planned[-1]["cls"]
@@ -1088,6 +1125,7 @@ def start_query(body: PgQueryRequest, conn_id: Optional[str] = Query(None), auth
         "columns": None, "row_count": None, "rows_affected": None, "error": None,
         "created_at": now, "started_at": now, "last_used": now, "finished_at": None,
         "done": threading.Event(), "cancel_requested": False,
+        "slots": slots,         # released into the same semaphore even if the limit changes meanwhile
     }
     with _jobs_lock:
         _jobs[job["job_id"]] = job
@@ -1156,6 +1194,45 @@ def get_query_rows(job_id: str, body: RowsRequest, auth: dict = Depends(require_
         "columns": job["columns"], "rows": rows, "page": page, "page_size": size,
         "total_rows": total, "total_pages": max(1, -(-total // size)) if total else 1,
     }
+
+
+@pg_studio_router.post("/query/{job_id}/values")
+def get_query_values(job_id: str, body: ValuesRequest, auth: dict = Depends(require_permission(PERM))):
+    job = _get_job(job_id, auth["user"]["email"], shared=True)
+    if job["status"] != "success" or not job["returns_rows"]:
+        raise HTTPException(status_code=409, detail="This result has no rows to count")
+    if job["inline_rows"] is not None:
+        return inline_values(job, body)
+    names = [c["name"] for c in job["columns"]]
+    if body.column not in names:
+        raise HTTPException(status_code=400, detail=f"'{body.column}' is not a column of this result")
+    where, params = build_where(body.others(), names)
+    col = quote_ident(body.column)
+    where = f"{where} AND {col} IS NOT NULL" if where else f" WHERE {col} IS NOT NULL"
+    import psycopg2.extensions as ext
+    with job["session"]["lock"]:
+        conn = _result_conn(job)
+        # Inside the worksheet's own open transaction, a failed count must not abort it.
+        guard = conn.info.transaction_status == ext.TRANSACTION_STATUS_INTRANS
+        try:
+            with conn.cursor() as cur:
+                if guard:
+                    cur.execute("SAVEPOINT sh_values")
+                cur.execute(_ps(f"SELECT {col}, COUNT(*) FROM {quote_ident(job['temp_table'])}{where} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {body.limit + 1}"),
+                            tuple(params))
+                rows = cur.fetchall()
+                if guard:
+                    cur.execute("RELEASE SAVEPOINT sh_values")
+        except Exception as e:
+            if guard and not conn.closed:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("ROLLBACK TO SAVEPOINT sh_values")
+                except Exception:
+                    pass
+            # json has no equality, so it can't be grouped: say so instead of a 500.
+            raise HTTPException(status_code=400, detail=f"Can't count the values of {body.column}: {str(e).strip().splitlines()[0]}")
+    return {"column": body.column, "values": [{"value": _safe(v), "count": int(n)} for v, n in rows[:body.limit]], "more": len(rows) > body.limit}
 
 
 @pg_studio_router.post("/query/{job_id}/cell")
@@ -1251,6 +1328,8 @@ def close_session(session_id: str, auth: dict = Depends(require_permission(PERM)
     with _sessions_lock:
         s = _sessions.pop(f"{_email(auth)}:{session_id}", None)
     if s:
+        if s.get("job"):
+            s["job"]["cancel_requested"] = True   # so it ends as cancelled, not "timed out"
         if s["lock"].locked() and s["conn"] is not None:
             try:
                 s["conn"].cancel()
@@ -1359,6 +1438,8 @@ def _where_for_row(original: Dict[str, Any], key_columns: List[str], by_name: Di
             raise HTTPException(status_code=400, detail=f"Unknown key column '{name}'")
         if name not in original:
             raise HTTPException(status_code=400, detail=f"The row is missing key column '{name}' - refresh and try again")
+        if _is_truncated(original[name]):
+            continue        # the grid only had the start of it; the other columns match the row
         ident = quote_ident(name)
         if col["comparable"]:
             clauses.append(f"{ident} IS NOT DISTINCT FROM CAST(? AS {col['data_type']})")
