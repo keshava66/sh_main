@@ -4679,7 +4679,7 @@ function StudioPane({ active: paneActive = true }) {
     document.addEventListener('mouseup', onUp);
   };
 
-  const [editorTheme, setEditorTheme] = useState(() => (readLocal(LS.theme) === 'light' ? 'light' : 'dark'));
+  const [editorTheme, setEditorTheme] = useState(() => (readLocal(LS.theme) === 'dark' ? 'dark' : 'light'));
   const toggleEditorTheme = () => setEditorTheme(t => {
     const next = t === 'dark' ? 'light' : 'dark';
     writeLocal(LS.theme, next);
