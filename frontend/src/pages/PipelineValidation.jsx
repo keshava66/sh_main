@@ -2444,6 +2444,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
 const STATUS = { // label, badge class, tile colour
   PASSED: ['Passed', 'is-pass', '#53ce76'],
   CRITICAL: ['Critical', 'is-crit', '#ff3b22'],
+  WARNING: ['Warning', 'is-warn', '#e0a100'],
   FAULTY: ['Faulty', 'is-faulty', '#ff6017'],
   ERROR: ['Error', 'is-err', '#b19beb'],
   TIMEOUT: ['Timeout', 'is-nf', '#fbe058'],
@@ -2550,6 +2551,7 @@ textarea.pvs-input { height: 78px; padding: 8px 10px; font: 11px var(--mono); re
 .pvs-st.is-pass { background: #dcfce7; color: #166534; }
 .pvs-st.is-crit { background: #fee2e2; color: #991b1b; }
 .pvs-st.is-faulty { background: #ffedd5; color: #9a3412; }
+.pvs-st.is-warn { background: #fef3c7; color: #92400e; }
 .pvs-st.is-err { background: #f3e8ff; color: #6b21a8; }
 .pvs-st.is-nf { background: #fef9c3; color: #854d0e; }
 .pvs-stats { display: flex; gap: 28px; flex-wrap: wrap; }
@@ -2776,7 +2778,7 @@ function useValidation({ canValidate, canHistory }) {
 // The Validate tab: settings + logins -> extract & review -> confirm -> validate -> (write) -> results.
 // All state comes from useValidation (`v`), so switching tabs or pipelines never drops a run.
 
-const FILTERS = ['ALL', 'PASSED', 'CRITICAL', 'FAULTY', 'ERROR', 'TABLE_NOT_FOUND'];
+const FILTERS = ['ALL', 'PASSED', 'CRITICAL', 'WARNING', 'FAULTY', 'ERROR', 'TABLE_NOT_FOUND'];
 const MODES = [['config', 'Config'], ['pipeline', 'From pipeline'], ['custom', 'My own']];
 const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
 const uniqJoin = (a) => [...new Set(a)].join(', ') || '?';

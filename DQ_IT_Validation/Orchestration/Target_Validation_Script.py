@@ -831,7 +831,7 @@ class TargetCollector:
             'check_constraints': {'source': 0, 'snowflake': 0},
             'not_null_constraints': {'source': 0, 'snowflake': 0}
         }
-        constraint_details = {'oracle': oracle_constraints, 'snowflake': {}}
+        constraint_details = {'source': oracle_constraints, 'snowflake': {}}
         validation_results = {
             'primary_keys': {'status': 'UNKNOWN', 'details': None},
             'unique_constraints': {'status': 'UNKNOWN', 'details': None},
@@ -857,7 +857,7 @@ class TargetCollector:
                 details = []
                 if pk_only_oracle:
                     constraint_counts['primary_keys']['source'] = len(pk_only_oracle)
-                    details.append(f"Primary keys only in Oracle: {list(pk_only_oracle)}")
+                    details.append(f"Primary keys only in Source: {list(pk_only_oracle)}")
                 if pk_only_sf:
                     constraint_counts['primary_keys']['snowflake'] = len(pk_only_sf)
                     details.append(f"Primary keys only in Snowflake: {list(pk_only_sf)}")
@@ -872,7 +872,7 @@ class TargetCollector:
             else:
                 validation_results['unique_constraints']['status'] = 'MISMATCH'
                 validation_results['unique_constraints']['details'] = (
-                    f"Unique constraint count mismatch: Oracle={oracle_unique_count}, Snowflake={sf_unique_count}")
+                    f"Unique constraint count mismatch: Source={oracle_unique_count}, Snowflake={sf_unique_count}")
                 if oracle_unique_count > sf_unique_count:
                     constraint_counts['unique_constraints']['source'] = oracle_unique_count - sf_unique_count
                 if sf_unique_count > oracle_unique_count:
@@ -902,7 +902,7 @@ class TargetCollector:
                     exists_in_sf = col in sf_nn
                     constraint_status = {
                         'column': col,
-                        'exists_in_oracle': True,
+                        'exists_in_source': True,
                         'exists_in_snowflake': exists_in_sf,
                         'snowflake_total_rows': total_rows,
                         'snowflake_null_count': null_count,
@@ -934,7 +934,7 @@ class TargetCollector:
             else:
                 validation_results['check_constraints']['status'] = 'MISMATCH'
                 validation_results['check_constraints']['details'] = (
-                    f"Check constraint count mismatch: Oracle={oracle_check_count}, Snowflake={sf_check_count}")
+                    f"Check constraint count mismatch: Source={oracle_check_count}, Snowflake={sf_check_count}")
                 if oracle_check_count > sf_check_count:
                     constraint_counts['check_constraints']['source'] = oracle_check_count - sf_check_count
                 if sf_check_count > oracle_check_count:
@@ -952,7 +952,7 @@ class TargetCollector:
             else:
                 validation_results['foreign_keys']['status'] = 'MISMATCH'
                 validation_results['foreign_keys']['details'] = (
-                    f"Foreign key count mismatch: Oracle={oracle_fk_count}, Snowflake={sf_fk_count}")
+                    f"Foreign key count mismatch: Source={oracle_fk_count}, Snowflake={sf_fk_count}")
                 if oracle_fk_count > sf_fk_count:
                     constraint_counts['foreign_keys']['source'] = oracle_fk_count - sf_fk_count
                 if sf_fk_count > oracle_fk_count:
@@ -1002,12 +1002,12 @@ class TargetCollector:
         Produces the exact same dict structure as the original _perform_validation.
         """
         sf_table = table_snapshot['snowflake_table']
-        oracle_table = table_snapshot['oracle_table']
-        oracle_columns = table_snapshot['oracle_columns']
-        oracle_row_count = table_snapshot['oracle_row_count']
-        oracle_col_stats_list = table_snapshot.get('oracle_column_stats', [])
-        oracle_dup_count = table_snapshot.get('oracle_duplicate_count')
-        oracle_constraints = table_snapshot.get('oracle_constraints', {
+        oracle_table = table_snapshot['source_table']
+        oracle_columns = table_snapshot['source_columns']
+        oracle_row_count = table_snapshot['source_row_count']
+        oracle_col_stats_list = table_snapshot.get('source_column_stats', [])
+        oracle_dup_count = table_snapshot.get('source_duplicate_count')
+        oracle_constraints = table_snapshot.get('source_constraints', {
             'primary_keys': [], 'unique_constraints': [],
             'check_constraints': [], 'not_null_columns': [], 'foreign_keys': []
         })
@@ -1081,9 +1081,9 @@ class TargetCollector:
 
             col_stat = {
                 'column_name': col_name,
-                'oracle_type': oracle_stat.get('oracle_type', 'UNKNOWN'),
+                'source_type': oracle_stat.get('source_type', 'UNKNOWN'),
                 'snowflake_type': sf_col_obj['type'] if sf_col_obj else 'UNKNOWN',
-                'oracle_stats': {
+                'source_stats': {
                     'distinct_count': oracle_stat['distinct_count'],
                     'null_count': oracle_stat['null_count']
                 },
@@ -1097,7 +1097,7 @@ class TargetCollector:
                 }
             }
             if self.field_name_transformation:
-                col_stat['oracle_original_name'] = oracle_stat.get('oracle_original_name', col_name)
+                col_stat['source_original_name'] = oracle_stat.get('source_original_name', col_name)
                 col_stat['snowflake_name'] = sf_col_obj['name'] if sf_col_obj else col_name
 
             column_statistics.append(col_stat)
@@ -1108,46 +1108,52 @@ class TargetCollector:
         # --- Validation issues (same logic as original _perform_validation) ---
         validation_issues = []
         if oracle_row_count != sf_row_count:
-            validation_issues.append(f"Row count mismatch: Oracle={oracle_row_count}, Snowflake={sf_row_count}")
+            validation_issues.append(f"Row count mismatch: Source={oracle_row_count}, Snowflake={sf_row_count}")
         if oracle_only:
-            validation_issues.append(f"Columns only in Oracle: {', '.join(sorted(oracle_only))}")
+            validation_issues.append(f"Columns only in Source: {', '.join(sorted(oracle_only))}")
         if sf_only:
             validation_issues.append(f"Columns only in Snowflake: {', '.join(sorted(sf_only))}")
         if oracle_nulls != sf_nulls:
-            validation_issues.append(f"Null count mismatch: Oracle={oracle_nulls}, Snowflake={sf_nulls}")
+            validation_issues.append(f"Null count mismatch: Source={oracle_nulls}, Snowflake={sf_nulls}")
         if oracle_dup_count != sf_dup_count:
-            validation_issues.append(f"Duplicate count mismatch: Oracle={oracle_dup_count}, Snowflake={sf_dup_count}")
+            validation_issues.append(f"Duplicate count mismatch: Source={oracle_dup_count}, Snowflake={sf_dup_count}")
         for col_stat in column_statistics:
             if not col_stat['stats_match']['distinct_count']:
                 validation_issues.append(
                     f"Column {col_stat['column_name']}: distinct count mismatch "
-                    f"(Oracle={col_stat['oracle_stats']['distinct_count']}, "
+                    f"(Source={col_stat['source_stats']['distinct_count']}, "
                     f"Snowflake={col_stat['snowflake_stats']['distinct_count']})"
                 )
 
-        status = 'PASSED' if not validation_issues else 'CRITICAL'
+        # CRITICAL = row counts differ; any other difference is a WARNING (same as Src_to_Trgt_Validation_Script)
+        if oracle_row_count != sf_row_count:
+            status = 'CRITICAL'
+        elif validation_issues:
+            status = 'WARNING'
+        else:
+            status = 'PASSED'
 
         return {
             'table_name': oracle_table,
             'snowflake_table': sf_table,
             'status': status,
             'row_counts': {
-                'oracle': oracle_row_count,
+                'source': oracle_row_count,
                 'snowflake': sf_row_count,
                 'match': oracle_row_count == sf_row_count
             },
             'column_analysis': {
-                'oracle_columns': len(oracle_columns),
+                'source_columns': len(oracle_columns),
                 'snowflake_columns': len(sf_columns),
                 'common_columns': len(common_col_names),
-                'oracle_only_columns': list(sorted(oracle_only)),
+                'source_only_columns': list(sorted(oracle_only)),
                 'snowflake_only_columns': list(sorted(sf_only))
             },
             'data_quality': {
-                'oracle_nulls': oracle_nulls,
+                'source_nulls': oracle_nulls,
                 'snowflake_nulls': sf_nulls,
                 'null_match': oracle_nulls == sf_nulls,
-                'oracle_duplicates': oracle_dup_count,
+                'source_duplicates': oracle_dup_count,
                 'snowflake_duplicates': sf_dup_count,
                 'duplicate_match': oracle_dup_count == sf_dup_count
             },
@@ -1163,7 +1169,7 @@ class TargetCollector:
         Produces identical result structure to the original _validate_single_table.
         """
         start_time = time.time()
-        oracle_table = table_snapshot.get('oracle_table', 'UNKNOWN')
+        oracle_table = table_snapshot.get('source_table', 'UNKNOWN')
         sf_table = table_snapshot.get('snowflake_table', 'UNKNOWN')
 
         # If source collection failed, propagate error — don't hit Snowflake
@@ -1338,7 +1344,7 @@ class TargetCollector:
         """Process a single table with timeout support — abandons thread on timeout"""
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(self._collect_and_merge_table, table_snapshot)
-        oracle_table = table_snapshot.get('oracle_table', 'UNKNOWN')
+        oracle_table = table_snapshot.get('source_table', 'UNKNOWN')
         sf_table = table_snapshot.get('snowflake_table', 'UNKNOWN')
         try:
             result = future.result(timeout=timeout)
@@ -1400,7 +1406,7 @@ class TargetCollector:
                             'retry_attempts': self.max_retries
                         })
 
-            status_icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "❌")
+            status_icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "🟡" if result['status'] == 'WARNING' else "❌")
             print_safe(f"    {status_icon} Query validation - {result['status']}")
             with self.results_lock:
                 self.results['table_validations'].append(result)
@@ -1422,7 +1428,7 @@ class TargetCollector:
                             timeout_snapshots.append(snap)
                             print_safe(f"    ⏱️  [{idx}/{total}] {result.get('table_name', 'Unknown')} - Timed out")
                         else:
-                            icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "❌")
+                            icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "🟡" if result['status'] == 'WARNING' else "❌")
                             print_safe(f"    {icon} [{idx}/{total}] {result.get('table_name', 'Unknown')} - {result['status']}")
                         with self.results_lock:
                             self.results['table_validations'].append(result)
@@ -1433,7 +1439,7 @@ class TargetCollector:
                         timeout_snapshots.append(snap)
                         print_safe(f"    ⏱️  [{idx}/{total}] {result.get('table_name', 'Unknown')} - Timed out")
                     else:
-                        icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "❌")
+                        icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "🟡" if result['status'] == 'WARNING' else "❌")
                         print_safe(f"    {icon} [{idx}/{total}] {result.get('table_name', 'Unknown')} - {result['status']}")
                     with self.results_lock:
                         self.results['table_validations'].append(result)
@@ -1452,7 +1458,7 @@ class TargetCollector:
                             still_timeout.append(snap)
                             print_safe(f"       ⏱️  {result.get('table_name', 'Unknown')} - Still timing out...")
                         else:
-                            icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "❌")
+                            icon = "✅" if result['status'] == 'PASSED' else ("🚨" if result['status'] == 'CRITICAL' else "🟡" if result['status'] == 'WARNING' else "❌")
                             print_safe(f"       {icon} {result.get('table_name', 'Unknown')} - {result['status']}")
                             with self.results_lock:
                                 self.results['table_validations'] = [
@@ -1466,7 +1472,7 @@ class TargetCollector:
                     print_safe(f"    ⚠️  {len(timeout_snapshots)} tables marked as FAULTY after {self.max_retries} retries")
                     with self.results_lock:
                         for snap in timeout_snapshots:
-                            table_name = snap.get('oracle_table', 'UNKNOWN')
+                            table_name = snap.get('source_table', 'UNKNOWN')
                             sf_table = snap.get('snowflake_table')
                             for r in self.results['table_validations']:
                                 if r.get('table_name') == table_name and r.get('status') == 'TIMEOUT':
@@ -1485,6 +1491,7 @@ class TargetCollector:
         total_time = time.time() - start_time
         passed = sum(1 for r in self.results['table_validations'] if r['status'] == 'PASSED')
         critical = sum(1 for r in self.results['table_validations'] if r['status'] == 'CRITICAL')
+        warnings = sum(1 for r in self.results['table_validations'] if r['status'] == 'WARNING')
         errors = sum(1 for r in self.results['table_validations'] if r['status'] == 'ERROR')
         faulty = sum(1 for r in self.results['table_validations'] if r['status'] == 'FAULTY')
         not_found = sum(1 for r in self.results['table_validations'] if r['status'] == 'TABLE_NOT_FOUND')
@@ -1493,6 +1500,7 @@ class TargetCollector:
             'total_validations': len(self.results['table_validations']),
             'passed': passed,
             'critical': critical,
+            'warnings': warnings,
             'errors': errors,
             'faulty': faulty,
             'not_found': not_found,
@@ -1501,7 +1509,7 @@ class TargetCollector:
                             if self.results['table_validations'] else 0
         }
 
-        summary_parts = [f"✅ {passed}", f"🚨 {critical}", f"⚠️ {errors}"]
+        summary_parts = [f"✅ {passed}", f"🚨 {critical}", f"🟡 {warnings}", f"⚠️ {errors}"]
         if not_found > 0:
             summary_parts.append(f"⊘ {not_found} not found")
         if faulty > 0:
@@ -1529,7 +1537,8 @@ def process_single_pipeline_target(pipeline_snapshot: Dict, config: Dict, pipeli
             'pipeline_number': pipeline_number,
             'status': 'ERROR',
             'error': f'Source collection failed: {error_msg}',
-            'oracle_schema': pipeline_snapshot.get('oracle_schema'),
+            'source_schema': pipeline_snapshot.get('source_schema'),
+            'source_type': pipeline_snapshot.get('source_type') or 'Oracle',
             'snowflake_database': pipeline_snapshot.get('snowflake_database'),
             'snowflake_schema': pipeline_snapshot.get('snowflake_schema'),
             'validation_results': None
@@ -1561,7 +1570,7 @@ def process_single_pipeline_target(pipeline_snapshot: Dict, config: Dict, pipeli
             sf_roles = [sf_role_config]
 
         print_safe(f"  📊 Configuration:")
-        print_safe(f"     Oracle Schema (from snapshot): {pipeline_snapshot.get('oracle_schema')}")
+        print_safe(f"     Oracle Schema (from snapshot): {pipeline_snapshot.get('source_schema')}")
         print_safe(f"     Snowflake Target: {sf_database}.{sf_schema}")
         print_safe(f"     Roles: {', '.join(sf_roles)}")
         print_safe(f"     Format: {pipeline_snapshot.get('format_type')}")
@@ -1605,7 +1614,8 @@ def process_single_pipeline_target(pipeline_snapshot: Dict, config: Dict, pipeli
                 return {
                     'pipeline_name': pipeline_name, 'pipeline_number': pipeline_number,
                     'status': 'ERROR', 'error': error_msg,
-                    'oracle_schema': pipeline_snapshot.get('oracle_schema'),
+                    'source_schema': pipeline_snapshot.get('source_schema'),
+                    'source_type': pipeline_snapshot.get('source_type') or 'Oracle',
                     'snowflake_database': sf_database, 'snowflake_schema': sf_schema,
                     'validation_results': None
                 }
@@ -1630,7 +1640,8 @@ def process_single_pipeline_target(pipeline_snapshot: Dict, config: Dict, pipeli
                 'pipeline_name': pipeline_name,
                 'pipeline_number': pipeline_number,
                 'status': 'SUCCESS',
-                'oracle_schema': pipeline_snapshot.get('oracle_schema'),
+                'source_schema': pipeline_snapshot.get('source_schema'),
+                'source_type': pipeline_snapshot.get('source_type') or 'Oracle',
                 'snowflake_database': sf_database,
                 'snowflake_schema': sf_schema,
                 'validation_results': validation_results
@@ -1658,7 +1669,8 @@ def process_single_pipeline_target(pipeline_snapshot: Dict, config: Dict, pipeli
         return {
             'pipeline_name': pipeline_name, 'pipeline_number': pipeline_number,
             'status': 'ERROR', 'error': str(e), 'error_details': error_details,
-            'oracle_schema': pipeline_snapshot.get('oracle_schema'),
+            'source_schema': pipeline_snapshot.get('source_schema'),
+            'source_type': pipeline_snapshot.get('source_type') or 'Oracle',
             'snowflake_database': pipeline_snapshot.get('snowflake_database'),
             'snowflake_schema': pipeline_snapshot.get('snowflake_schema'),
             'validation_results': None
@@ -1758,6 +1770,10 @@ def main():
                 r['validation_results']['summary']['critical']
                 for r in all_results if r['status'] == 'SUCCESS' and r['validation_results']
             ),
+            'total_warnings': sum(
+                r['validation_results']['summary'].get('warnings', 0)
+                for r in all_results if r['status'] == 'SUCCESS' and r['validation_results']
+            ),
             'total_errors': sum(
                 r['validation_results']['summary']['errors']
                 for r in all_results if r['status'] == 'SUCCESS' and r['validation_results']
@@ -1805,6 +1821,7 @@ def main():
     print_safe(f"   Total Validated: {consolidated_report['overall_summary']['total_tables_validated']}")
     print_safe(f"   ✅ Passed: {consolidated_report['overall_summary']['total_passed']}")
     print_safe(f"   🚨 Critical: {consolidated_report['overall_summary']['total_critical']}")
+    print_safe(f"   🟡 Warnings: {consolidated_report['overall_summary']['total_warnings']}")
     print_safe(f"   ⚠️  Errors: {consolidated_report['overall_summary']['total_errors']}")
     if consolidated_report['overall_summary']['total_not_found'] > 0:
         print_safe(f"   ⊘  Not Found in Snowflake: {consolidated_report['overall_summary']['total_not_found']}")

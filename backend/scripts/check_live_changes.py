@@ -142,7 +142,7 @@ def main():
             body = {
                 "pipeline_name": p.get("pipeline_name", ""),
                 "table_name": tv.get("table_name", ""),
-                "source_schema": tv.get("_oracle_schema") or p.get("oracle_schema", ""),
+                "source_schema": tv.get("_source_schema") or p.get("source_schema", ""),
                 "target_database": tv.get("_snowflake_database") or p.get("snowflake_database", ""),
                 "target_schema": tv.get("_snowflake_schema") or p.get("snowflake_schema", ""),
                 "snowflake_table": tv.get("snowflake_table") or tv.get("table_name", ""),

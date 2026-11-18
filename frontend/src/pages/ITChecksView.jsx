@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { apiEventSource, apiFetch, apiJson, downloadFile } from '../utils/apiClient';
 import './ITChecks.css';
@@ -49,27 +49,99 @@ const Tick = ({ on, onClick, label }) => (
   </span>
 );
 
+// ─── floating boxes (tooltips) ────────────────────────────────────────────────
+// Everything that floats is placed in JS against the visible page area (.itc on screen),
+// not the window: the app sidebar covers anything that pokes out to the left, and scroll
+// boxes clip anything drawn with CSS ::after. Above the anchor by default, below when there
+// is no room, always nudged sideways to stay fully on screen.
+function visibleArea(el) {
+  const r = (el?.closest('.itc') || document.body).getBoundingClientRect();
+  return {
+    left: Math.max(r.left, 0) + 8, right: Math.min(r.right, window.innerWidth) - 8,
+    top: Math.max(r.top, 0) + 8, bottom: Math.min(r.bottom, window.innerHeight) - 8,
+  };
+}
+function placeFloating(anchor, box, area, gap = 8) {
+  const w = box.width, h = box.height;
+  const left = Math.max(area.left, Math.min(area.right - w, anchor.left + anchor.width / 2 - w / 2));
+  let top = anchor.top - gap - h;
+  if (top < area.top) top = Math.min(anchor.bottom + gap, area.bottom - h);
+  return { left, top };
+}
+// Place `boxRef` next to `anchor` (a DOMRect) after every render, before paint. Written to the
+// DOM directly: the box has to be measured at the top-left corner first (near an edge a fixed
+// box shrinks to the room left), and React would skip re-applying an unchanged style.
+function useFloating(boxRef, anchor, gap) {
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    if (!anchor) { el.style.left = '-9999px'; el.style.top = '-9999px'; return; }
+    el.style.left = '0px'; el.style.top = '0px';
+    const { left, top } = placeFloating(anchor, el.getBoundingClientRect(), visibleArea(el), gap);
+    el.style.left = `${left}px`; el.style.top = `${top}px`;
+  });
+}
+
+// One tooltip for every [data-tip] on the page, on hover and on keyboard focus.
+function HoverTips() {
+  const [tip, setTip] = useState(null); // { text, rect }
+  const boxRef = useRef(null);
+  useEffect(() => {
+    const root = boxRef.current?.closest('.itc');
+    if (!root) return undefined;
+    const find = (e) => { const el = e.target?.closest?.('[data-tip]'); return el && root.contains(el) ? el : null; };
+    const show = (e) => {
+      const el = find(e);
+      const text = el?.getAttribute('data-tip');
+      setTip(text ? { text, rect: el.getBoundingClientRect() } : null);
+    };
+    const out = (e) => { const el = find(e); if (el && !el.contains(e.relatedTarget)) setTip(null); };
+    const hide = () => setTip(null);
+    root.addEventListener('mouseover', show);
+    root.addEventListener('mouseout', out);
+    root.addEventListener('focusin', show);
+    root.addEventListener('focusout', hide);
+    root.addEventListener('mousedown', hide);
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      root.removeEventListener('mouseover', show);
+      root.removeEventListener('mouseout', out);
+      root.removeEventListener('focusin', show);
+      root.removeEventListener('focusout', hide);
+      root.removeEventListener('mousedown', hide);
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, []);
+  useFloating(boxRef, tip?.rect, 6);
+  return <div ref={boxRef} className={`hovertip${tip ? ' show' : ''}`} role="tooltip">{tip?.text}</div>;
+}
+
 // ─── status bits ─────────────────────────────────────────────────────────────
 const LABEL = {
-  PASSED: 'Passed', CRITICAL: 'Critical', FAULTY: 'Faulty', ERROR: 'Error', TIMEOUT: 'Timeout',
+  PASSED: 'Passed', CRITICAL: 'Critical', WARNING: 'Warning', FAULTY: 'Faulty', ERROR: 'Error', TIMEOUT: 'Timeout',
   TABLE_NOT_FOUND: 'Not found', RUNNING: 'Validating', MATCH: 'Match', MISMATCH: 'Mismatch',
   DEFINITION_MISMATCH: 'Definition mismatch', NONE: 'None',
   PASS: 'Pass', FAIL: 'Fail', VALIDATION_FAILED: 'Nulls found', UNKNOWN: 'Not checked',
 };
-const SEVERITY = { CRITICAL: 0, ERROR: 1, FAULTY: 2, TABLE_NOT_FOUND: 3, TIMEOUT: 4, PASSED: 5 };
+// CRITICAL = row counts differ; WARNING = rows match but something else differs (columns, nulls,
+// duplicates, distinct counts). Same grading in the batch script and in re-validate.
+const SEVERITY = { CRITICAL: 0, ERROR: 1, FAULTY: 2, WARNING: 3, TABLE_NOT_FOUND: 4, TIMEOUT: 5, PASSED: 6 };
 const tileOf = (s) => (s === 'TIMEOUT' || s === 'TABLE_NOT_FOUND' ? 'MISSING' : s);
 const TILES = [
   { k: 'ALL', name: 'All tables', ic: 'grid' },
   { k: 'PASSED', name: 'Passed', ic: 'checkc' },
   { k: 'CRITICAL', name: 'Critical', ic: 'xc' },
-  { k: 'FAULTY', name: 'Faulty', ic: 'alert' },
+  { k: 'WARNING', name: 'Warnings', ic: 'alert' },
+  { k: 'FAULTY', name: 'Faulty', ic: 'clock' },
   { k: 'ERROR', name: 'Errors', ic: 'bug' },
   { k: 'MISSING', name: 'Not found / timeout', ic: 'ghost' },
 ];
 const TILE_NAME = Object.fromEntries(TILES.map((t) => [t.k, t.name]));
-const COLOR = { PASSED: 'var(--green)', CRITICAL: 'var(--red)', FAULTY: 'var(--orange)', ERROR: 'var(--violet)', MISSING: 'var(--yellow)' };
-const CELL = { PASSED: 'var(--green-light)', CRITICAL: 'var(--red)', FAULTY: 'var(--orange)', ERROR: 'var(--violet)', TIMEOUT: 'var(--yellow)', TABLE_NOT_FOUND: 'var(--yellow)' };
-const SPECTRUM = ['PASSED', 'FAULTY', 'MISSING', 'ERROR', 'CRITICAL'];
+const COLOR = { PASSED: 'var(--green)', CRITICAL: 'var(--red)', WARNING: 'var(--warn)', FAULTY: 'var(--orange)', ERROR: 'var(--violet)', MISSING: 'var(--slate-light)' };
+const CELL = { PASSED: 'var(--green-light)', CRITICAL: 'var(--red)', WARNING: 'var(--warn)', FAULTY: 'var(--orange)', ERROR: 'var(--violet)', TIMEOUT: 'var(--slate-light)', TABLE_NOT_FOUND: 'var(--slate-light)' };
+const SPECTRUM = ['PASSED', 'WARNING', 'MISSING', 'FAULTY', 'ERROR', 'CRITICAL'];
 const Status = ({ s }) => <span className={`status ${s}`}><i />{LABEL[s] || s || 'Unknown'}</span>;
 
 // the two sources the run endpoint knows about
@@ -107,11 +179,14 @@ const stamp = (ts) => (ts ? new Date(ts).toLocaleString('en-US', { month: 'short
 const shortDate = (s) => (s ? new Date(toTime(s)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '');
 const uniq = (a) => [...new Set(a.filter(Boolean))].sort();
 
+// One card per source database, never per environment: Insight7_DEV and Insight7_PROD are both
+// "Insight7", PIPE_RIMDocs_PROD (a Pipeline Studio run) is "RIMDocs", HAQ_DEV/HAQ_PROD are "HAQ".
 function sourceOf(raw) {
   const s = (raw || '').toLowerCase();
   if (s.includes('rim')) return 'RIMDocs';
   if (s.includes('insight')) return 'Insight7';
-  return raw || 'Oracle';
+  if (s.includes('haq')) return 'HAQ';
+  return raw || 'Unknown';
 }
 // ponytail: report rows don't carry the source engine, so map by name. Add here if more MariaDB sources show up.
 const engineOf = (src) => (/^haq/i.test(src || '') ? 'MariaDB' : 'Oracle');
@@ -129,9 +204,9 @@ const abbr = (src) => (src === 'Insight7' ? 'I7' : src === 'RIMDocs' ? 'RD' : sr
 
 function colStats(c) {
   return {
-    od: c.oracle_stats?.distinct_count ?? c.oracle_distinct_count ?? 0,
+    od: c.source_stats?.distinct_count ?? 0,
     sd: c.snowflake_stats?.distinct_count ?? c.snowflake_distinct_count ?? 0,
-    on: c.oracle_stats?.null_count ?? c.oracle_null_count ?? 0,
+    on: c.source_stats?.null_count ?? 0,
     sn: c.snowflake_stats?.null_count ?? c.snowflake_null_count ?? 0,
   };
 }
@@ -241,7 +316,7 @@ function useMounted() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Hero: orb + source → Snowflake flow
 // ═══════════════════════════════════════════════════════════════════════════════
-function Orb({ counts, total, pct, loading }) {
+function Orb({ counts, total, pct, loading, failed }) {
   const mounted = useMounted();
   const shown = useCountUp(pct, 1);
   const C = 2 * Math.PI * 103;
@@ -265,8 +340,9 @@ function Orb({ counts, total, pct, loading }) {
         ))}
       </svg>
       <div className="center">
-        {loading ? <div className="pct sk-pulse">–<small>%</small></div> : <div className="pct">{shown}<small>%</small></div>}
-        <div className="sub">{loading ? 'loading' : 'in sync'}</div>
+        {failed ? <div className="pct">–<small>%</small></div>
+          : loading ? <div className="pct sk-pulse">–<small>%</small></div> : <div className="pct">{shown}<small>%</small></div>}
+        <div className="sub">{failed ? 'no data' : loading ? 'loading' : 'in sync'}</div>
         {total > 0 && (
           <div className={`delta ${counts.PASSED === total ? 'up' : 'down'}`}>
             {counts.PASSED === total ? 'All passing' : `${fmt(total - counts.PASSED)} need attention`}
@@ -497,7 +573,7 @@ function ColumnDetails({ tables, columns }) {
       const s = out[c.column_name] ||= { column_name: c.column_name, occurrences: 0, src: new Set(), tgt: new Set(), od: 0, sd: 0, on: 0, sn: 0 };
       const v = colStats(c);
       s.occurrences++;
-      if (c.oracle_type) s.src.add(c.oracle_type);
+      if (c.source_type) s.src.add(c.source_type);
       if (c.snowflake_type) s.tgt.add(c.snowflake_type);
       s.od += v.od; s.sd += v.sd; s.on += v.on; s.sn += v.sn;
     }));
@@ -600,22 +676,23 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
     const verdict = constraintVerdict(ca);
     const nn = ca?.validation_results?.not_null_constraints;
     const checks = [
-      t.status === 'TABLE_NOT_FOUND' && ['Source table', 'ok', '', <>Found in {engineOf(t._src)} · {t._src}{srcPath(t) && <> · <span className="mono">{srcPath(t)}</span></>}</>],
+      t.status === 'TABLE_NOT_FOUND' && ['Source table', 'ok', '', <>Found in {t._engine} · {t._src}{srcPath(t) && <> · <span className="mono">{srcPath(t)}</span></>}</>],
       t.status === 'TABLE_NOT_FOUND' && ['Snowflake table', 'bad', '', <>Not found in <span className="mono">{sfPath(t) || 'Snowflake'}</span></>],
       t._hasRows && ['Row count', t._match ? 'ok' : 'bad', <><Num v={t._rs} /> → <Num v={t._rt} /></>, t._match ? 'Identical row counts' : <><Num v={Math.abs(t._rs - t._rt)} /> row difference</>],
-      dq && ['Null counts', dq.null_match ? 'ok' : 'bad', <><Num v={dq.oracle_nulls} /> → <Num v={dq.snowflake_nulls} /></>, dq.null_match ? 'Nulls match' : 'Null counts differ'],
-      dq && ['Duplicates', dq.duplicate_match ? 'ok' : 'bad', <><Num v={dq.oracle_duplicates} /> → <Num v={dq.snowflake_duplicates} /></>, dq.duplicate_match ? 'No duplicate drift' : 'Duplicate counts differ'],
-      t.column_analysis && ['Schema', an.oracle_only_columns?.length ? 'warn' : 'ok', `${an.oracle_columns ?? 0} → ${an.snowflake_columns ?? 0} cols`,
-        an.oracle_only_columns?.length ? `${an.oracle_only_columns.length} source column(s) missing in Snowflake` : 'All source columns present'],
+      dq && ['Null counts', dq.null_match ? 'ok' : 'bad', <><Num v={dq.source_nulls} /> → <Num v={dq.snowflake_nulls} /></>, dq.null_match ? 'Nulls match' : 'Null counts differ'],
+      dq && ['Duplicates', dq.duplicate_match ? 'ok' : 'bad', <><Num v={dq.source_duplicates} /> → <Num v={dq.snowflake_duplicates} /></>, dq.duplicate_match ? 'No duplicate drift' : 'Duplicate counts differ'],
+      t.column_analysis && ['Schema', an.source_only_columns?.length ? 'warn' : 'ok', `${an.source_columns ?? 0} → ${an.snowflake_columns ?? 0} cols`,
+        an.source_only_columns?.length ? `${an.source_only_columns.length} source column(s) missing in Snowflake` : 'All source columns present'],
       verdict && ['Constraints', verdict, '', verdict === 'ok' ? 'Keys and constraints line up' : verdict === 'warn' ? 'Definitions differ' : 'Constraint mismatch'],
       nn?.status && nn.status !== 'UNKNOWN' && (nn.status === 'VALIDATION_FAILED' ? ['NOT NULL', 'bad', '', 'Nulls found in NOT NULL columns']
         : nn.status === 'DEFINITION_MISMATCH' ? ['NOT NULL', 'warn', '', 'NOT NULL definitions differ']
-          : ['NOT NULL', 'ok', '', 'No nulls in NOT NULL columns']),
+          : nn.status === 'NONE' ? ['NOT NULL', 'ok', '', 'No NOT NULL columns to check']
+            : ['NOT NULL', 'ok', '', 'No nulls in NOT NULL columns']),
     ].filter(Boolean);
     pane = (
       <>
         <div className="kpis">
-          <div className="card kpi"><div className="k">Source rows</div><div className="v">{t._hasRows ? <Num v={t._rs} /> : '—'}</div><div className="d muted">{engineOf(t._src)} · {t._src}</div></div>
+          <div className="card kpi"><div className="k">Source rows</div><div className="v">{t._hasRows ? <Num v={t._rs} /> : '—'}</div><div className="d muted">{t._engine} · {t._src}</div></div>
           <div className="card kpi"><div className="k">Snowflake rows</div><div className="v">{t._hasRows ? <Num v={t._rt} /> : '—'}</div>
             {t._hasRows
               ? <div className={`d ${t._match ? 'ok-t' : 'bad-t'}`}>{t._match ? '✓ exact match' : <>{t._rs > t._rt ? '−' : '+'}<Num v={Math.abs(t._rs - t._rt)} /> rows</>}</div>
@@ -627,7 +704,7 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
         {t._hasRows && (
           <><div className="card compare">
             <h4>Row count comparison<span className="sp" /><Status s={t._match ? 'MATCH' : 'MISMATCH'} /></h4>
-            <CompareBars a={t._rs} b={t._rt} aLabel={engineOf(t._src)} ok={t._match} />
+            <CompareBars a={t._rs} b={t._rt} aLabel={t._engine} ok={t._match} />
           </div>
           <div className="gap" /></>
         )}
@@ -650,7 +727,7 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
     pane = (
       <>
         <div className="kpis">
-          <div className="card kpi"><div className="k">Source columns</div><div className="v">{an.oracle_columns ?? 0}</div></div>
+          <div className="card kpi"><div className="k">Source columns</div><div className="v">{an.source_columns ?? 0}</div></div>
           <div className="card kpi"><div className="k">Snowflake columns</div><div className="v">{an.snowflake_columns ?? 0}</div></div>
           <div className="card kpi"><div className="k">In common</div><div className="v ok-t">{an.common_columns ?? 0}</div></div>
         </div>
@@ -658,7 +735,7 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
         {sorted.length > 0 && (
           <div className="card blk" style={{ padding: '6px 6px 2px', overflowX: 'auto' }}>
             <table className="mini">
-              <thead><tr><th>Column</th><th>{engineOf(t._src)} → Snowflake</th><th className="r">Distinct</th><th className="r">Nulls</th><th /></tr></thead>
+              <thead><tr><th>Column</th><th>{t._engine} → Snowflake</th><th className="r">Distinct</th><th className="r">Nulls</th><th /></tr></thead>
               <tbody>
                 {sorted.map((c, i) => {
                   const v = colStats(c);
@@ -666,7 +743,7 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
                   return (
                     <tr key={`${c.column_name}-${i}`}>
                       <td><b>{c.column_name}</b></td>
-                      <td className="t">{c.oracle_type || '—'} → {c.snowflake_type || '—'}</td>
+                      <td className="t">{c.source_type || '—'} → {c.snowflake_type || '—'}</td>
                       <td className={`r mono${dOk ? '' : ' bad-t'}`}><Num v={v.od} />{!dOk && <> → <Num v={v.sd} /></>}</td>
                       <td className={`r mono${nOk ? '' : ' bad-t'}`}><Num v={v.on} />{!nOk && <> → <Num v={v.sn} /></>}</td>
                       <td className="r">{dOk && nOk ? <span className="ok-t"><Ico n="check" style={{ width: 14, height: 14 }} /></span> : <span className="bad-t"><Ico n="alert" style={{ width: 14, height: 14 }} /></span>}</td>
@@ -677,9 +754,9 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
             </table>
           </div>
         )}
-        {an.oracle_only_columns?.length > 0 && (
-          <><div className="gap" /><div className="card blk"><h4><span className="warn-t"><Ico n="alert" /></span>Only in {engineOf(t._src)} ({an.oracle_only_columns.length})</h4>
-            <div className="tagcloud">{an.oracle_only_columns.map((c) => <span key={c} className="tag o">{c}</span>)}</div></div></>
+        {an.source_only_columns?.length > 0 && (
+          <><div className="gap" /><div className="card blk"><h4><span className="warn-t"><Ico n="alert" /></span>Only in {t._engine} ({an.source_only_columns.length})</h4>
+            <div className="tagcloud">{an.source_only_columns.map((c) => <span key={c} className="tag o">{c}</span>)}</div></div></>
         )}
         {an.snowflake_only_columns?.length > 0 && (
           <><div className="gap" /><div className="card blk"><h4><span style={{ color: 'var(--blue)' }}><Ico n="db" /></span>Only in Snowflake ({an.snowflake_only_columns.length})</h4>
@@ -692,12 +769,12 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
       <>
         <div className="card compare">
           <h4>Null count analysis<span className="sp" /><Status s={dq.null_match ? 'MATCH' : 'MISMATCH'} /></h4>
-          <CompareBars a={dq.oracle_nulls} b={dq.snowflake_nulls} aLabel={engineOf(t._src)} ok={dq.null_match} />
+          <CompareBars a={dq.source_nulls} b={dq.snowflake_nulls} aLabel={t._engine} ok={dq.null_match} />
         </div>
         <div className="gap" />
         <div className="card compare">
           <h4>Duplicate count analysis<span className="sp" /><Status s={dq.duplicate_match ? 'MATCH' : 'MISMATCH'} /></h4>
-          <CompareBars a={dq.oracle_duplicates} b={dq.snowflake_duplicates} aLabel={engineOf(t._src)} ok={dq.duplicate_match} />
+          <CompareBars a={dq.source_duplicates} b={dq.snowflake_duplicates} aLabel={t._engine} ok={dq.duplicate_match} />
         </div>
       </>
     ) : (
@@ -722,7 +799,7 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
         )}
         {det && (
           <><div className="gap" /><div className="kpis two">
-            {[[engineOf(t._src), 'var(--blue)', det.oracle], ['Snowflake', 'var(--red)', det.snowflake]].map(([name, c, d = {}]) => (
+            {[[t._engine, 'var(--blue)', det.source], ['Snowflake', 'var(--red)', det.snowflake]].map(([name, c, d = {}]) => (
               <div className="card blk" key={name}>
                 <h4><span style={{ color: c }}><Ico n="db" /></span>{name}</h4>
                 <div className="lbl2">Primary key</div>
@@ -760,9 +837,13 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
       </>
     );
   } else {
-    pane = issues.length ? issues.map((iss, i) => (
-      <div className="issue" key={i}><Ico n="xc" /><div><p>{iss}</p>{t._t > 0 && <small>Detected {ago(t._t)} · {stamp(t._t)}</small>}</div></div>
-    )) : (
+    // a row-count difference (or a failed check) is critical; anything else is a warning
+    pane = issues.length ? issues.map((iss, i) => {
+      const warn = t.status === 'WARNING' || (t.status === 'CRITICAL' && !/^Row count mismatch/.test(iss));
+      return (
+        <div className={`issue${warn ? ' warn' : ''}`} key={i}><Ico n={warn ? 'alert' : 'xc'} /><div><p>{iss}</p>{t._t > 0 && <small>Detected {ago(t._t)} · {stamp(t._t)}</small>}</div></div>
+      );
+    }) : (
       <div className="card allgood"><div className="art"><Ico n="check" /></div><h3>No issues</h3><p>Every check passed on the last run.</p></div>
     );
   }
@@ -772,7 +853,7 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
       <div className="dr-head">
         <div className="dr-top">
           <div className="dr-path">
-            <div className="dr-end"><div className="k"><i style={{ background: 'var(--blue)' }} />{engineOf(t._src)} · {t._src}</div>
+            <div className="dr-end"><div className="k"><i style={{ background: 'var(--blue)' }} />{t._engine} · {t._src}</div>
               <div className="v" title={t.table_name}>{t.table_name}</div><div className="s">{t.source_schema}</div></div>
             <div className="dr-flow"><Ico n="arrow" /></div>
             <div className="dr-end"><div className="k"><i style={{ background: 'var(--red)' }} />Snowflake</div>
@@ -783,11 +864,17 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
         <div className="dr-sub">
           <Status s={busy ? 'RUNNING' : t.status} />
           {t._t > 0 && <span><Ico n="clock" />{ago(t._t)} · {stamp(t._t)}</span>}
+          {t.validation_time > 0 && <span title="How long this check took">took {dur(Math.max(1, Math.round(t.validation_time)))}</span>}
+          {toTime(t.Snowflake_Last_Updated) > 0 && (
+            <span title={`Snowflake table last changed ${stamp(toTime(t.Snowflake_Last_Updated))}`}>
+              <Ico n="db" />Snowflake data {ago(toTime(t.Snowflake_Last_Updated))}
+            </span>
+          )}
           <span className="sp" />
           <button type="button" className="btn sm" onClick={() => onCopy(t.snowflake_table)}><Ico n="copy" />Copy name</button>
           {canRefresh !== 'hidden' && (
             <button type="button" className="btn sm primary" disabled={busy || canRefresh !== 'active'} onClick={() => onRevalidate([t])}
-              title={canRefresh === 'no-connection' ? `No ${engineOf(t._src)} connection configured for this database` : undefined}>
+              title={canRefresh === 'no-connection' ? `No ${t._engine} connection configured for this database` : undefined}>
               <Ico n="refresh" className={busy ? 'spin' : ''} />{busy ? 'Validating…' : 'Re-validate'}
             </button>
           )}
@@ -823,19 +910,196 @@ const PIPE_COUNT_RE = /Starting validation of (\d+) pipeline/;
 const PIPE_DONE_RE = /Completed pipeline (\d+)\/(\d+)/;
 const TOTAL_RE = /^Total Validated:\s*(\d+)/;
 const PASSED_RE = /^✅ Passed:\s*(\d+)/;
+const WARN_SUM_RE = /^🟡 Warnings:\s*(\d+)/;
+
+// ── Run log: colour by meaning, section headers, filter/search, jump to errors,
+// folded Python noise, table results as rows. Pure display: the raw lines are untouched.
+const LOG_RULE_RE = /^\s*[=\-─]{8,}\s*$/;
+const LOG_ROW_RE = /^\s*(?:✅|🚨|🟡|⚠️|⏱️|⊘)?\s*(?:\[(\d+)\/(\d+)\]\s+)?(.+?)\s+-\s+(PASSED|CRITICAL|WARNING|ERROR|FAULTY|TIMEOUT|TABLE_NOT_FOUND|Timed out after .+|Table does not exist in Snowflake)\s*$/;
+const LOG_PYWARN_RE = /^(?:[A-Za-z]:\\|\/)\S.*?:\d+: \w*Warning: /;
+const LOG_CODE_RE = /^\s{2,}[\w.[\]]+\s*(?:=|\()/; // the source line Python echoes under a warning
+const LOG_TB_RE = /^Traceback \(most recent call last\):/;
+const ROW_TONE = (s) => (s === 'PASSED' ? ['ok', 'Passed'] : s === 'WARNING' ? ['warn', 'Warning'] : /^(CRITICAL|ERROR|FAULTY)$/.test(s) ? ['bad', s[0] + s.slice(1).toLowerCase()]
+  : /^(TIMEOUT|Timed out)/.test(s) ? ['warn', 'Timeout'] : ['warn', 'Not found']);
+
+function lineTone(l, text) {
+  const zero = /:\s*0\s*$/.test(text); // "❌ Errors: 0" is good news
+  if (/Completed in /.test(text)) return '';
+  if (l.type === 'error' || (/^\s*(?:❌|🚨|🔴)/.test(text) && !zero) || /^\s*Error: /.test(text)) return 'bad';
+  if ((/^\s*(?:⚠️|🟡|⊘|⏹️)/.test(text) || (/^\s*⏱️/.test(text) && /time(?:d)? ?out/i.test(text))) && !zero) return 'warn';
+  if (l.type === 'success' || /^\s*✅/.test(text)) return 'ok';
+  if (l.type === 'status' || l.type === 'info') return 'info';
+  if (/^\s*•/.test(text)) return 'dim';
+  return '';
+}
+
+function parseLog(logs) {
+  const items = [];
+  for (let i = 0; i < logs.length; i++) {
+    const l = logs[i];
+    const text = l.message || '';
+    const key = l.seq || `x${i}`;
+    if (l.type === 'separator') { items.push({ kind: 'sep', key }); continue; }
+    if (LOG_RULE_RE.test(text)) continue; // banners become headers below
+    const prevRule = i > 0 && LOG_RULE_RE.test(logs[i - 1].message || '');
+    const nextRule = i + 1 < logs.length && LOG_RULE_RE.test(logs[i + 1].message || '');
+    // A title between two rules (the script's print_header). Summary tables also sit between
+    // rules, but their column line starts with "#" and their rows with a number: keep those as text.
+    if (prevRule && nextRule && !/^\s*(?:❌|#|\d)/.test(text)) { items.push({ kind: 'head', key, l, text: text.trim() }); continue; }
+    if (LOG_TB_RE.test(text)) {
+      const lines = [text];
+      while (i + 1 < logs.length && /^\s/.test(logs[i + 1].message || '')) lines.push(logs[++i].message);
+      if (i + 1 < logs.length && logs[i + 1].type !== 'separator' && !LOG_RULE_RE.test(logs[i + 1].message || '')) lines.push(logs[++i].message);
+      items.push({ kind: 'fold', key, l, tone: 'bad', title: `Error details: ${lines[lines.length - 1].trim()}`, lines });
+      continue;
+    }
+    if (LOG_PYWARN_RE.test(text)) {
+      const lines = [text];
+      if (i + 1 < logs.length && LOG_CODE_RE.test(logs[i + 1].message || '')) lines.push(logs[++i].message);
+      const what = (text.match(/: (\w*Warning): (.*)$/) || []);
+      items.push({ kind: 'fold', key, l, tone: 'dim', title: `${what[1] || 'Warning'} from a library: ${(what[2] || '').slice(0, 90)}…`, lines });
+      continue;
+    }
+    const m = text.match(LOG_ROW_RE);
+    if (m) {
+      const [tone, label] = ROW_TONE(m[4]);
+      items.push({ kind: 'row', key, l, text, tone, label, idx: m[1], n: m[2], name: m[3].trim(), detail: /^(Timed out|Table does)/.test(m[4]) ? m[4] : '' });
+      continue;
+    }
+    items.push({ kind: 'line', key, l, text, tone: lineTone(l, text) });
+  }
+  return items;
+}
+
+const LOG_FILTERS = [['all', 'All'], ['bad', 'Errors'], ['warn', 'Warnings'], ['row', 'Tables']];
+
+function LogView({ logs, open }) {
+  const [filter, setFilter] = useState('all');
+  const [q, setQ] = useState('');
+  const [unfolded, setUnfolded] = useState(() => new Set());
+  const boxRef = useRef(null);
+  const stick = useRef(true); // follow new lines only while the reader is at the bottom
+  const jump = useRef(-1);
+  const items = useMemo(() => parseLog(logs), [logs]);
+  const counts = useMemo(() => {
+    const c = { all: 0, bad: 0, warn: 0, row: 0 };
+    items.forEach((it) => {
+      if (it.kind === 'sep' || it.kind === 'head') return;
+      c.all++;
+      if (it.tone === 'bad') c.bad++;
+      if (it.tone === 'warn') c.warn++;
+      if (it.kind === 'row') c.row++;
+    });
+    return c;
+  }, [items]);
+  const ql = q.trim().toLowerCase();
+  const shown = useMemo(() => items.filter((it) => {
+    if (it.kind === 'sep' || it.kind === 'head') return filter === 'all' && !ql;
+    if (filter === 'row' ? it.kind !== 'row' : filter !== 'all' && it.tone !== filter) return false;
+    if (!ql) return true;
+    return (it.lines ? it.lines.join('\n') : it.text).toLowerCase().includes(ql);
+  }), [items, filter, ql]);
+
+  useEffect(() => {
+    const box = boxRef.current;
+    if (open && box && stick.current) box.scrollTop = box.scrollHeight;
+  }, [shown, open]);
+  useEffect(() => { jump.current = -1; }, [filter, ql]);
+
+  const onScroll = () => {
+    const b = boxRef.current;
+    if (b) stick.current = b.scrollHeight - b.scrollTop - b.clientHeight < 24;
+  };
+  const nextError = () => {
+    const els = boxRef.current?.querySelectorAll('[data-bad]');
+    if (!els?.length) return;
+    jump.current = (jump.current + 1) % els.length;
+    stick.current = false;
+    els[jump.current].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    els[jump.current].classList.remove('flash'); void els[jump.current].offsetWidth; els[jump.current].classList.add('flash');
+  };
+  const ts = (s) => { const d = new Date(s); return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-US', { hour12: false }); };
+  const toggle = (k) => setUnfolded((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+
+  return (
+    <>
+      {open && (
+        <div className="log-bar">
+          <div className="seg-ctl sm">
+            {LOG_FILTERS.map(([k, label]) => (
+              <button type="button" key={k} className={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>
+                {label}<span className={`n${k === 'bad' && counts.bad ? ' bad' : k === 'warn' && counts.warn ? ' warn' : ''}`}>{fmt(counts[k])}</span>
+              </button>
+            ))}
+          </div>
+          <label className="log-q">
+            <Ico n="search" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search log" aria-label="Search log" />
+            {q && <button type="button" className="clr" onClick={() => setQ('')} aria-label="Clear search"><Ico n="x" /></button>}
+          </label>
+          {counts.bad > 0 && (
+            <button type="button" className="btn sm log-jump" onClick={nextError} title="Scroll to the next error">
+              <Ico n="down" />{counts.bad === 1 ? '1 error' : `${fmt(counts.bad)} errors`}
+            </button>
+          )}
+        </div>
+      )}
+      <div className={`log${open ? ' open' : ''}`} ref={boxRef} onScroll={onScroll}>
+        {logs.length === 0 && <div className="lg"><span className="ts">Connecting…</span></div>}
+        {logs.length > 0 && shown.length === 0 && <div className="lg"><span className="dim">Nothing matches.</span></div>}
+        {shown.map((it) => {
+          if (it.kind === 'sep') return <hr key={it.key} />;
+          if (it.kind === 'head') return <div key={it.key} className="lg-head"><span>{it.text}</span></div>;
+          const bad = it.tone === 'bad' ? { 'data-bad': '' } : {};
+          if (it.kind === 'row') {
+            return (
+              <div key={it.key} className={`lg lg-row ${it.tone}`} {...bad}>
+                <span className="ts">{ts(it.l.timestamp)}</span>
+                <span className="lg-r">
+                  <span className={`pill ${it.tone}`}>{it.label}</span>
+                  <b>{it.name}</b>
+                  {it.detail && <span className="dim">{it.detail}</span>}
+                  {it.idx && <span className="of">{it.idx}/{it.n}</span>}
+                </span>
+              </div>
+            );
+          }
+          if (it.kind === 'fold') {
+            const isOpen = unfolded.has(it.key);
+            return (
+              <div key={it.key} className={`lg lg-fold ${it.tone}`} {...bad}>
+                <span className="ts">{ts(it.l.timestamp)}</span>
+                <span>
+                  <button type="button" className={`fold-t${isOpen ? ' open' : ''}`} onClick={() => toggle(it.key)}>
+                    <Ico n="right" />{it.title}
+                  </button>
+                  {isOpen && <span className="fold-b">{it.lines.join('\n')}</span>}
+                </span>
+              </div>
+            );
+          }
+          return (
+            <div key={it.key} className={`lg ${it.tone}`} {...bad}>
+              <span className="ts">{ts(it.l.timestamp)}</span><span>{it.text}</span>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
 
 function RunJob({ db, runId, watch, onDone, openLog = false }) {
   const [logs, setLogs] = useState([]);
   const [code, setCode] = useState(null);
   const [stopped, setStopped] = useState(false);
   const [prog, setProg] = useState(null); // { done, total } pipelines
-  const [tally, setTally] = useState({ pass: 0, fail: 0 });
+  const [tally, setTally] = useState({ pass: 0, warn: 0, fail: 0 });
   // single pipeline runs only print "Completed pipeline 1/1" at the very end,
   // so until then count table results against that pipeline's table total
   const [pipeCount, setPipeCount] = useState(null);
   const [tblTotal, setTblTotal] = useState(null);
   const [logOpen, setLogOpen] = useState(openLog);
-  const logRef = useRef(null);
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
 
@@ -846,16 +1110,16 @@ function RunJob({ db, runId, watch, onDone, openLog = false }) {
     let es = null, finished = false, published = true, total = null;
     let id = runId, lastSeq = 0, tries = 0, retryTimer = null;
     // lines arrive in bursts (a replay can be thousands); render once per frame, not once per line
-    let pend = [], pass = 0, fail = 0, raf = 0;
+    let pend = [], pass = 0, warn = 0, fail = 0, raf = 0;
     const paint = () => {
       raf = 0;
       if (pend.length) {
         const add = pend; pend = [];
         setLogs((prev) => { const next = prev.concat(add); return next.length > 1500 ? next.slice(-1200) : next; });
       }
-      if (pass || fail) {
-        const p = pass, f = fail; pass = 0; fail = 0;
-        setTally((tl) => ({ pass: tl.pass + p, fail: tl.fail + f }));
+      if (pass || warn || fail) {
+        const p = pass, w = warn, f = fail; pass = 0; warn = 0; fail = 0;
+        setTally((tl) => ({ pass: tl.pass + p, warn: tl.warn + w, fail: tl.fail + f }));
       }
     };
     const queue = (line) => { pend.push(line); if (!raf) raf = requestAnimationFrame(paint); };
@@ -879,7 +1143,7 @@ function RunJob({ db, runId, watch, onDone, openLog = false }) {
       let m;
       if ((m = msg.match(ROW_RE))) {
         setTblTotal(+m[1]);
-        if (/^PASSED\b/.test(m[2])) pass++; else fail++;
+        if (/^PASSED\b/.test(m[2])) pass++; else if (/^WARNING\b/.test(m[2])) warn++; else fail++;
       } else if ((m = msg.match(PIPE_COUNT_RE))) {
         setPipeCount(+m[1]);
       } else if ((m = msg.match(PIPE_DONE_RE))) {
@@ -888,8 +1152,10 @@ function RunJob({ db, runId, watch, onDone, openLog = false }) {
         total = +m[1];
       } else if ((m = msg.match(PASSED_RE)) && total != null) {
         if (raf) { cancelAnimationFrame(raf); paint(); }
-        pass = 0; fail = 0;
-        setTally({ pass: +m[1], fail: Math.max(0, total - m[1]) });
+        pass = 0; warn = 0; fail = 0;
+        setTally({ pass: +m[1], warn: 0, fail: Math.max(0, total - m[1]) });
+      } else if ((m = msg.match(WARN_SUM_RE)) && total != null) {
+        setTally((tl) => ({ ...tl, warn: +m[1], fail: Math.max(0, tl.fail - m[1]) }));
       } else if (msg.includes('CORE not updated')) {
         published = false;
       }
@@ -921,18 +1187,13 @@ function RunJob({ db, runId, watch, onDone, openLog = false }) {
     return () => { finished = true; clearTimeout(retryTimer); if (raf) cancelAnimationFrame(raf); es?.close(); };
   }, [db, runId, watch]);
 
-  useEffect(() => {
-    if (logOpen && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs, logOpen]);
-
   const running = code === null;
-  const tblDone = tally.pass + tally.fail;
+  const tblDone = tally.pass + tally.warn + tally.fail;
   const byTables = !prog && pipeCount === 1 && tblTotal > 0;
   const pct = prog ? Math.round((prog.done / prog.total) * 100)
     : byTables ? Math.min(99, Math.round((tblDone / tblTotal) * 100)) : 0;
   const hasPct = !!prog || byTables;
   const label = RUN_DBS.find((d) => d.id === db)?.label || db;
-  const ts = (s) => { const d = new Date(s); return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-US', { hour12: false }); };
 
   return (
     <div className={`job${running ? '' : code === 0 ? ' done' : ' fail'}`}>
@@ -946,17 +1207,13 @@ function RunJob({ db, runId, watch, onDone, openLog = false }) {
         {prog && <span><b>{prog.done}</b>/{prog.total} pipelines</span>}
         {byTables && <span><b>{Math.min(tblDone, tblTotal)}</b>/{tblTotal} tables</span>}
         <span className="ok-t"><b>{tally.pass}</b> passed</span>
+        {tally.warn > 0 && <span className="warn-t"><b>{tally.warn}</b> warning{tally.warn === 1 ? '' : 's'}</span>}
         <span className="bad-t"><b>{tally.fail}</b> failing</span>
       </div>
       <button type="button" className={`log-toggle${logOpen ? ' open' : ''}`} onClick={() => setLogOpen((o) => !o)}>
         <Ico n="right" />{logOpen ? 'Hide' : 'Show'} log
       </button>
-      <div className={`log${logOpen ? ' open' : ''}`} ref={logRef}>
-        {logs.length === 0 && <div className="ts">Connecting…</div>}
-        {logs.map((l, i) => (l.type === 'separator' ? <hr key={l.seq || `x${i}`} /> : (
-          <div key={l.seq || `x${i}`}><span className="ts">{ts(l.timestamp)}</span><span className={l.type}>{l.message}</span></div>
-        )))}
-      </div>
+      <LogView logs={logs} open={logOpen} />
     </div>
   );
 }
@@ -973,13 +1230,13 @@ export default function ITChecksView({
     if (!reportData?.pipeline_results) return [];
     return reportData.pipeline_results.flatMap((pipeline) =>
       (pipeline?.validation_results?.table_validations || []).map((table) => {
-        const rc = table.row_counts || { oracle: 0, snowflake: 0, match: false };
+        const rc = table.row_counts || { source: 0, snowflake: 0, match: false };
         const t = {
           ...table,
           pipeline_name: pipeline.pipeline_name || 'Unknown',
           source_db: table._source_db || '',
           // per-table annotation from multi-run merge wins over the pipeline value
-          source_schema: table._oracle_schema || pipeline.oracle_schema || 'Unknown',
+          source_schema: table._source_schema || pipeline.source_schema || 'Unknown',
           target_database: table._snowflake_database || pipeline.snowflake_database || 'Unknown',
           target_schema: table._snowflake_schema || pipeline.snowflake_schema || 'Unknown',
           table_name: table.table_name || 'Unknown',
@@ -991,9 +1248,11 @@ export default function ITChecksView({
         // db + schema are part of the key: the same table name can exist in several of each
         t._key = `${t.source_db}|${t.source_schema}|${t.pipeline_name}|${t.table_name}`;
         t._src = sourceOf(t.source_db);
+        // database type of the source: written by the run since source_type was added, else from the name
+        t._engine = table._source_type || pipeline.source_type || engineOf(t._src);
         t._t = toTime(t.Last_Checked);
         t._hasRows = !!table.row_counts; // absent on ERROR / TIMEOUT / NOT FOUND rows
-        t._rs = Number(rc.oracle) || 0;
+        t._rs = Number(rc.source) || 0;
         t._rt = Number(rc.snowflake) || 0;
         t._match = !!rc.match;
         return t;
@@ -1082,7 +1341,9 @@ export default function ITChecksView({
   const [pendingRuns, setPendingRuns] = useState([]);
   const [runModal, setRunModal] = useState(false);
   const [runSel, setRunSel] = useState({ insight7: false, rimdocs: false });
-  const [hist, setHist] = useState(null); // null = closed; { runs, sel, loading, error }
+  // Run history lives in the URL (?history=all for the list, ?history=<run id> for one log), so
+  // Back closes it and a run log can be shared as a link. histData holds what was fetched.
+  const [histData, setHistData] = useState(null); // { runs, loading, error }
   const [run, setRun] = useState(null); // { id, dbs, codes: {db: code|null}, unpublished: [db], min, full, watch: {db: true}, by: {db: status}, stopping, stopped }
   const runSeq = useRef(0);
   const searchRef = useRef(null);
@@ -1186,7 +1447,7 @@ export default function ITChecksView({
 
   // ── summary ──
   const counts = useMemo(() => {
-    const c = { ALL: base.length, PASSED: 0, CRITICAL: 0, FAULTY: 0, ERROR: 0, MISSING: 0 };
+    const c = { ALL: base.length, PASSED: 0, CRITICAL: 0, WARNING: 0, FAULTY: 0, ERROR: 0, MISSING: 0 };
     base.forEach((t) => { const k = tileOf(t.status); if (k in c) c[k]++; });
     return c;
   }, [base]);
@@ -1206,11 +1467,17 @@ export default function ITChecksView({
     base.forEach((t) => { c[t._src] = (c[t._src] || 0) + 1; });
     return c;
   }, [base]);
-  const allSrcCounts = useMemo(() => {
+  // Tables in the newest run of each database started from this page (Pipeline Studio runs,
+  // PIPE_*, are a different job). availableRuns is newest first.
+  const lastRunTables = useMemo(() => {
     const c = {};
-    allTables.forEach((t) => { c[t._src] = (c[t._src] || 0) + 1; });
+    availableRuns.forEach((r) => {
+      if (!r.database || /^PIPE_/i.test(r.database) || r.tables == null) return;
+      const src = sourceOf(r.database);
+      if (!(src in c)) c[src] = r.tables;
+    });
     return c;
-  }, [allTables]);
+  }, [availableRuns]);
   const lastChecked = useMemo(() => allTables.reduce((m, t) => Math.max(m, t._t), 0), [allTables]);
   const rowsCompared = useMemo(() => base.reduce((a, t) => a + t._rs, 0), [base]);
   const worst = useMemo(() => base
@@ -1230,24 +1497,25 @@ export default function ITChecksView({
     setBusy((b) => new Set([...b, ...todo.map((t) => t._key)]));
     if (todo.length > 1) toast('info', `Re-validating ${todo.length} tables`, 'Results stream in as each one finishes.');
 
-    let passed = 0, failed = 0;
+    let passed = 0, warnedN = 0, failed = 0;
     const queue = [...todo];
     const one = async (t) => {
       let result = null, err = null;
       try { result = await onRevalidateTable(t); } catch (e) { err = e; }
       const ok = result?.status === 'PASSED';
-      if (ok) passed++; else failed++;
+      const warned = result?.status === 'WARNING';
+      if (ok) passed++; else if (warned) warnedN++; else failed++;
       setBusy((b) => { const n = new Set(b); n.delete(t._key); return n; });
-      setFlash((fl) => ({ ...fl, [t._key]: ok ? 'ok' : 'bad' }));
+      setFlash((fl) => ({ ...fl, [t._key]: ok ? 'ok' : warned ? 'warn' : 'bad' }));
       setTimeout(() => setFlash((fl) => { const n = { ...fl }; delete n[t._key]; return n; }), 1700);
       if (todo.length === 1) {
         if (err) {
           toast('bad', `Couldn't validate ${t.table_name}`, cleanIssue(err.message || 'Unknown error'));
         } else if (ok) {
-          toast('ok', `${t.table_name} passed`, 'Row counts, nulls and constraints all match.');
+          toast('ok', `${t.table_name} passed`, 'Rows, columns, nulls, duplicates and distinct counts all match.');
         } else {
           const issues = result?.validation_issues || [];
-          toast('bad', `${t.table_name} ${(LABEL[result?.status] || result?.status || 'failed').toLowerCase()}`,
+          toast(warned ? 'warn' : 'bad', warned ? `${t.table_name} passed with warnings` : `${t.table_name} ${(LABEL[result?.status] || result?.status || 'failed').toLowerCase()}`,
             `${cleanIssue(issues[0] || 'See details for issues.')}${issues.length > 1 ? ` (+${issues.length - 1} more)` : ''}`,
             () => setOpenKey(t._key));
         }
@@ -1256,7 +1524,7 @@ export default function ITChecksView({
     // three at a time so we don't hammer Oracle; leaving the page stops the queue
     const worker = async () => { while (queue.length && aliveRef.current) await one(queue.shift()); };
     await Promise.all([worker(), worker(), worker()]);
-    if (todo.length > 1 && aliveRef.current) toast(failed ? 'bad' : 'ok', 'Re-validation finished', `${passed} passed · ${failed} still failing`);
+    if (todo.length > 1 && aliveRef.current) toast(failed ? 'bad' : warnedN ? 'warn' : 'ok', 'Re-validation finished', `${passed} passed${warnedN ? ` · ${warnedN} with warnings` : ''} · ${failed} still failing`);
   }, [canRefreshTable, onRevalidateTable, toast, setOpenKey]);
 
   const revalidateMany = (list, what) => {
@@ -1322,12 +1590,23 @@ export default function ITChecksView({
     }
   };
 
-  const openHistory = () => {
-    setHist((h) => ({ runs: h?.runs || [], sel: null, loading: true }));
+  const histParam = sp.get('history');
+  const loadHistory = useCallback(() => {
+    setHistData((h) => ({ runs: h?.runs || [], loading: true, error: null }));
     apiJson('/api/it-runs?limit=100')
-      .then((runs) => setHist((h) => (h ? { ...h, runs, loading: false } : h)))
-      .catch((e) => setHist((h) => (h ? { ...h, loading: false, error: e.message || 'Could not load run history' } : h)));
-  };
+      .then((runs) => setHistData({ runs: Array.isArray(runs) ? runs : [], loading: false, error: null }))
+      .catch((e) => setHistData((h) => ({ runs: h?.runs || [], loading: false, error: e.message || 'Could not load run history' })));
+  }, []);
+  useEffect(() => { if (histParam && !histData) loadHistory(); }, [histParam, histData, loadHistory]);
+  const hist = histParam ? {
+    runs: histData?.runs || [], loading: !histData || histData.loading, error: histData?.error,
+    selId: histParam !== 'all' ? histParam : null,
+    sel: histParam !== 'all' ? (histData?.runs || []).find((r) => String(r.id) === histParam) || null : null,
+  } : null;
+  const openHistory = () => { loadHistory(); write((p) => p.set('history', 'all'), { push: true }); };
+  const pickHistoryRun = (r) => write((p) => p.set('history', String(r.id)), { push: true });
+  const historyList = () => write((p) => p.set('history', 'all'));
+  const closeHistory = () => write((p) => p.delete('history'));
 
   // show runs started by anyone (or by us before a refresh)
   useEffect(() => {
@@ -1399,14 +1678,18 @@ export default function ITChecksView({
     // Enter/space on a focused button or checkbox already activates it; don't also open a row
     const onControl = !!document.activeElement?.closest?.('button, [role="checkbox"], a');
     if (e.key === 'Escape') {
-      if (typing) { document.activeElement.blur(); return; }
+      if (typing) {
+        if (openMs && document.activeElement.closest('.ms-pop')) setOpenMs(null); // one Esc closes a filter dropdown
+        document.activeElement.blur(); return;
+      }
+      if (hist) { if (hist.selId) historyList(); else closeHistory(); return; } // log → list → closed
       if (runModal) { setRunModal(false); return; }
       if (openKey) { setOpenKey(null); return; }
       if (openMs || pickerOpen) { setOpenMs(null); setPickerOpen(false); return; }
       if (selected.size) setSelected(new Set());
       return;
     }
-    if (typing || e.metaKey || e.ctrlKey || e.altKey || runModal) return;
+    if (typing || e.metaKey || e.ctrlKey || e.altKey || runModal || hist) return;
     const move = (d) => {
       e.preventDefault();
       const nf = Math.max(0, Math.min(rows.length - 1, focus + d));
@@ -1500,6 +1783,7 @@ export default function ITChecksView({
     <div className={`itc${compactRows ? ' compact' : ''}${selected.size || run ? ' has-float' : ''}`}>
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true" dangerouslySetInnerHTML={{ __html: SPRITE }} />
       <div className="itc-bg" />
+      <HoverTips />
 
       <div className="scroll">
         {/* ── header ── */}
@@ -1511,8 +1795,8 @@ export default function ITChecksView({
                 <div className="crumbs">Data Quality Engine <Ico n="right" style={{ width: 10, height: 10 }} /> <b>Source → Snowflake</b></div>
                 <h1>IT Checks</h1>
               </div>
-              <span className={`live${busy.size || runActive || isLoading ? ' running' : ''}`}>
-                <i /><span>{runActive ? 'Validation running' : isLoading ? 'Loading results' : busy.size ? `Validating ${busy.size} table${busy.size > 1 ? 's' : ''}` : 'Up to date'}</span>
+              <span className={`live${busy.size || runActive || isLoading ? ' running' : loadError && !isLoading ? ' bad' : ''}`}>
+                <i /><span>{runActive ? 'Validation running' : isLoading ? 'Loading results' : busy.size ? `Validating ${busy.size} table${busy.size > 1 ? 's' : ''}` : loadError ? "Couldn't load" : 'Up to date'}</span>
               </span>
             </div>
             <div className="spacer" />
@@ -1520,7 +1804,7 @@ export default function ITChecksView({
               {availableRuns.length > 0 && (
                 <div className="picker">
                   <button type="button" className="btn" onClick={() => { if (!pickerOpen) setPendingRuns(appliedRuns); setPickerOpen((o) => !o); }}>
-                    <Ico n="clock" /><span className="lbl">{pickerLabel}</span><Ico n="down" style={{ width: 14, height: 14 }} />
+                    <Ico n="clock" /><span className="lbl" title={pickerLabel}>{pickerLabel}</span><Ico n="down" style={{ width: 14, height: 14 }} />
                   </button>
                   {pickerOpen && (
                     <div className="pop">
@@ -1574,9 +1858,18 @@ export default function ITChecksView({
         <main className="page">
           {/* ── hero ── */}
           <section className="stage reveal">
+            {/* the summary line spans the whole hero, so it stays on one line when there's room */}
+            {booting ? <div className="eyebrow"><span className="sk" style={{ width: 260 }} /></div> : (
+              <div className="eyebrow">
+                <span>{runsMerged > 1 ? `${runsMerged} runs merged` : 'Single run'}</span>
+                {oldestDate && newestDate && runsMerged > 1 && (<><span className="dotsep" /><span>{shortDate(oldestDate)} → {shortDate(newestDate)}</span></>)}
+                {!(runsMerged > 1) && reportData?.report_metadata?.generated_timestamp && (<><span className="dotsep" /><span>{stamp(toTime(reportData.report_metadata.generated_timestamp))}</span></>)}
+                <span className="dotsep" /><span>last validated {ago(lastChecked)}</span>
+                <span className="dotsep" /><span>{compact(rowsCompared)} rows compared</span>
+              </div>
+            )}
             {booting ? (
               <div>
-                <div className="eyebrow"><span className="sk" style={{ width: 260 }} /></div>
                 <h2 className="headline" aria-busy="true">
                   <span className="sk sk-h" style={{ width: '82%' }} /><br />
                   <span className="sk sk-h red" style={{ width: '64%' }} />
@@ -1592,23 +1885,17 @@ export default function ITChecksView({
               </div>
             ) : (
             <div>
-              <div className="eyebrow">
-                <span>{runsMerged > 1 ? `${runsMerged} runs merged` : 'Single run'}</span>
-                {oldestDate && newestDate && runsMerged > 1 && (<><span className="dotsep" /><span>{shortDate(oldestDate)} → {shortDate(newestDate)}</span></>)}
-                {!(runsMerged > 1) && reportData?.report_metadata?.generated_timestamp && (<><span className="dotsep" /><span>{stamp(toTime(reportData.report_metadata.generated_timestamp))}</span></>)}
-                <span className="dotsep" /><span>last validated {ago(lastChecked)}</span>
-                <span className="dotsep" /><span>{compact(rowsCompared)} rows compared</span>
-              </div>
               <h2 className="headline">
                 <CountText n={total} /> tables watched.<br />
                 <span className={`grad${pct < 80 ? ' warn' : ''}`}>
-                  {!total ? 'Nothing in view.' : failing === 0 ? 'All in perfect sync.' : `${fmt(counts.PASSED)} in perfect sync.`}
+                  {!allTables.length ? 'No results yet.' : !total ? 'Nothing in view.' : failing === 0 ? 'All in perfect sync.' : `${fmt(counts.PASSED)} in perfect sync.`}
                 </span>
               </h2>
               <p className="lede">
-                {!total ? 'Loosen a filter to bring tables back into view.'
-                  : failing === 0 ? 'Every source table matches Snowflake on rows, nulls, duplicates and constraints.'
-                    : <><b>{fmt(failing)} table{failing > 1 ? 's' : ''}</b> need attention — {counts.CRITICAL} critical, {counts.ERROR} erroring, {counts.FAULTY} faulty and {counts.MISSING} missing or timed out.</>}
+                {!allTables.length ? 'Run a validation to compare your source tables with Snowflake.'
+                  : !total ? 'Loosen a filter to bring tables back into view.'
+                  : failing === 0 ? 'Every source table matches Snowflake on rows, columns, nulls, duplicates and distinct counts.'
+                    : <><b>{fmt(failing)} table{failing > 1 ? 's' : ''}</b> need attention: {counts.CRITICAL} critical, {counts.WARNING} with warnings, {counts.ERROR} erroring, {counts.FAULTY} faulty and {counts.MISSING} missing or timed out.</>}
               </p>
               <Spectrum counts={counts} total={total} onPick={pickStatus} />
               <div className="cta">
@@ -1628,8 +1915,8 @@ export default function ITChecksView({
             </div>
             )}
             <FlowZone sources={sources} health={health} srcCounts={srcCounts} activeDb={db} onPickDb={setDb}
-              sfSub={booting ? 'Connecting…' : `${sfDbs} database${sfDbs === 1 ? '' : 's'} · ${compact(sfRows)} rows`}>
-              <Orb counts={counts} total={total} pct={pct} loading={booting} />
+              sfSub={bootFailed ? 'Not reachable' : booting ? 'Connecting…' : `${sfDbs} database${sfDbs === 1 ? '' : 's'} · ${compact(sfRows)} rows`}>
+              <Orb counts={counts} total={total} pct={pct} loading={booting && !bootFailed} failed={bootFailed} />
             </FlowZone>
           </section>
 
@@ -1682,9 +1969,10 @@ export default function ITChecksView({
                 <div className="legend">
                   <span><i style={{ background: 'var(--green-light)' }} />Passed</span>
                   <span><i style={{ background: 'var(--red)' }} />Critical</span>
+                  <span><i style={{ background: 'var(--warn)' }} />Warning</span>
                   <span><i style={{ background: 'var(--orange)' }} />Faulty</span>
                   <span><i style={{ background: 'var(--violet)' }} />Error</span>
-                  <span><i style={{ background: 'var(--yellow)' }} />Not found</span>
+                  <span><i style={{ background: 'var(--slate-light)' }} />Not found</span>
                 </div>
               </div>
               <TableMap groups={groups} visibleKeys={visibleKeys} busy={busy} openKey={openKey} onOpen={setOpenKey} />
@@ -1776,7 +2064,7 @@ export default function ITChecksView({
                   </tr>
                 </thead>
                 <tbody>
-                  {isLoading || booting ? Array.from({ length: 8 }, (_, i) => (
+                  {(isLoading || booting) && !bootFailed ? Array.from({ length: 8 }, (_, i) => (
                     <tr className="skel" key={i}>{Array.from({ length: 9 }, (__, j) => <td key={j}><div /></td>)}</tr>
                   )) : rows.map((t, i) => (
                     <Row key={t._key} t={t} i={i} sel={selected.has(t._key)} focused={focus === i} flash={flash[t._key]}
@@ -1787,6 +2075,14 @@ export default function ITChecksView({
               </table>
             </div>
 
+            {bootFailed && (
+              <div className="empty">
+                <div className="art bad"><Ico n="alert" /></div>
+                <h3>Couldn&apos;t load results</h3>
+                <p>{loadError}</p>
+                <button type="button" className="btn" onClick={() => onLoadRuns(appliedRuns.length ? appliedRuns : null)}><Ico n="refresh" />Try again</button>
+              </div>
+            )}
             {!isLoading && !booting && !visible.length && (
               <div className="empty">
                 <div className="art"><Ico n="search" /></div>
@@ -1839,7 +2135,7 @@ export default function ITChecksView({
       </div>
 
       {/* ── drawer ── */}
-      <div className={`scrim${openTable || runModal || hist ? ' show' : ''}`} onClick={() => { setOpenKey(null); setRunModal(false); setHist(null); }} />
+      <div className={`scrim${openTable || runModal || hist ? ' show' : ''}`} onClick={() => { setOpenKey(null); setRunModal(false); if (hist) closeHistory(); }} />
       <aside className={`drawer${openTable ? ' show' : ''}`} aria-hidden={!openTable} inert={!openTable}>
         {drawerTable && (
           <Drawer t={drawerTable} tab={tab} setTab={setTab} busy={busy.has(drawerTable._key)} canRefresh={canRefreshTable(drawerTable)}
@@ -1864,7 +2160,7 @@ export default function ITChecksView({
             {RUN_DBS.map((d) => (
               <button type="button" key={d.id} className={`dbopt${runSel[d.id] ? ' on' : ''}`} onClick={() => setRunSel((s) => ({ ...s, [d.id]: !s[d.id] }))}>
                 <SrcIco src={d.label} />
-                <div className="tx"><b>{d.label}</b><span>{engineOf(d.label)} → Snowflake{allSrcCounts[d.label] ? ` · ${fmt(allSrcCounts[d.label])} tables last run` : ''}</span></div>
+                <div className="tx"><b>{d.label}</b><span>{engineOf(d.label)} → Snowflake{lastRunTables[d.label] ? ` · ${fmt(lastRunTables[d.label])} tables last run` : ''}</span></div>
                 <Tick on={runSel[d.id]} />
               </button>
             ))}
@@ -1889,7 +2185,7 @@ export default function ITChecksView({
       <div className="modal-wrap">
         <div className={`modal wide${hist ? ' show' : ''}`} role="dialog" aria-modal="true" aria-hidden={!hist} inert={!hist}>
           <div className="modal-head">
-            {hist?.sel && <button type="button" className="btn sm icon ghost" onClick={() => setHist((h) => ({ ...h, sel: null }))} aria-label="Back to all runs"><Ico n="left" /></button>}
+            {hist?.selId && <button type="button" className="btn sm icon ghost" onClick={historyList} aria-label="Back to all runs"><Ico n="left" /></button>}
             <div style={{ flex: 1 }}>
               <h3>{hist?.sel ? `${RUN_DBS.find((x) => x.id === hist.sel.db)?.label || hist.sel.db} run log` : 'Run history'}</h3>
               <p>{hist?.sel ? `Started by ${cleanName(hist.sel.started_by)}${hist.sel.started_by_email ? ` (${hist.sel.started_by_email})` : ''} · ${runStamp(hist.sel.started_at)}${hist.sel.finished_at ? ` → ${runStamp(hist.sel.finished_at)}` : ''} · ${hist.sel.host}` : 'Every IT validation run, from any server. Click one to see its log.'}</p>
@@ -1899,25 +2195,31 @@ export default function ITChecksView({
                 <Ico n="download" />Download
               </button>
             ) : (
-              <button type="button" className="btn sm icon ghost" onClick={openHistory} aria-label="Refresh"><Ico n="refresh" className={hist?.loading ? 'spin' : ''} /></button>
+              <button type="button" className="btn sm icon ghost" onClick={loadHistory} disabled={hist?.loading} aria-label="Refresh"><Ico n="refresh" className={hist?.loading ? 'spin' : ''} /></button>
             )}
-            <button type="button" className="btn sm icon ghost" onClick={() => setHist(null)} aria-label="Close"><Ico n="x" /></button>
+            <button type="button" className="btn sm icon ghost" onClick={closeHistory} aria-label="Close"><Ico n="x" /></button>
           </div>
           <div className="modal-body hist">
             {hist?.sel ? (
               <RunJob key={hist.sel.id} db={hist.sel.db} runId={hist.sel.id} watch openLog onDone={() => {}} />
             ) : hist?.error ? (
-              <p className="bad-t">{hist.error}</p>
+              <div className="state-msg bad"><Ico n="alert" /><div><b>Couldn&apos;t load run history.</b> {hist.error}</div>
+                <button type="button" className="btn sm" onClick={loadHistory}><Ico n="refresh" />Try again</button></div>
+            ) : hist?.loading ? (
+              <div className="hist-sk">{Array.from({ length: 6 }, (_, i) => <span key={i} className="sk" />)}</div>
+            ) : hist?.selId ? (
+              <div className="state-msg"><Ico n="search" /><div><b>That run isn&apos;t in the last 100.</b> It may be older, or the link is wrong.</div>
+                <button type="button" className="btn sm" onClick={historyList}>See all runs</button></div>
             ) : !hist?.runs.length ? (
-              <p style={{ color: 'var(--ink-3)' }}>{hist?.loading ? 'Loading…' : 'No runs yet.'}</p>
+              <div className="state-msg"><Ico n="clock" /><div><b>No runs yet.</b> Runs started from this page show up here.</div></div>
             ) : (
               <table className="hist-t">
                 <colgroup><col style={{ width: '12%' }} /><col style={{ width: '17%' }} /><col /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /><col style={{ width: '10%' }} /></colgroup>
                 <thead><tr><th>Database</th><th>Status</th><th>Started by</th><th>Started</th><th>Finished</th><th className="r">Duration</th></tr></thead>
                 <tbody>
                   {hist.runs.map((h) => (
-                    <tr key={h.id} tabIndex={0} onClick={() => setHist((x) => ({ ...x, sel: h }))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') setHist((x) => ({ ...x, sel: h })); }}>
+                    <tr key={h.id} tabIndex={0} onClick={() => pickHistoryRun(h)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') pickHistoryRun(h); }}>
                       <td>{RUN_DBS.find((x) => x.id === h.db)?.label || h.db}</td>
                       <td>
                         <span className={`hs ${h.status}`}>{h.status}</span>
@@ -1990,7 +2292,7 @@ export default function ITChecksView({
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}${t.onClick ? ' click' : ''}`} onClick={() => { if (t.onClick) { t.onClick(); dismissToast(t.id); } }}>
-            <span className="ic"><Ico n={t.kind === 'ok' ? 'checkc' : t.kind === 'bad' ? 'xc' : 'clock'} /></span>
+            <span className="ic"><Ico n={t.kind === 'ok' ? 'checkc' : t.kind === 'bad' ? 'xc' : t.kind === 'warn' ? 'alert' : 'clock'} /></span>
             <div className="tx"><b>{t.title}</b>{t.sub && <span>{t.sub}</span>}</div>
             <button type="button" className="btn sm icon ghost" onClick={(e) => { e.stopPropagation(); dismissToast(t.id); }} aria-label="Dismiss"><Ico n="x" /></button>
             <span className="life" />
@@ -2049,7 +2351,7 @@ const Row = React.memo(function Row({ t, i, sel, focused, flash, isBusy, refresh
         <div className={`row-acts${isBusy ? ' busy' : ''}`}>
           {refresh !== 'hidden' && (
             <button type="button" className="iconbtn go" disabled={isBusy || refresh !== 'active'} onClick={() => onRevalidate([t])}
-              data-tip={refresh === 'no-connection' ? `No ${engineOf(t._src)} connection` : isBusy ? 'Validating…' : 'Re-validate (V)'} aria-label="Re-validate">
+              data-tip={refresh === 'no-connection' ? `No ${t._engine} connection` : isBusy ? 'Validating…' : 'Re-validate (V)'} aria-label="Re-validate">
               <Ico n="refresh" className={isBusy ? 'spin' : ''} />
             </button>
           )}
@@ -2066,12 +2368,15 @@ const Row = React.memo(function Row({ t, i, sel, focused, flash, isBusy, refresh
 // doesn't re-render the whole page.
 const TableMap = React.memo(function TableMap({ groups, visibleKeys, busy, openKey, onOpen }) {
   const [tip, setTip] = useState(null);
-  const showTip = (e, t) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.max(120, Math.min(window.innerWidth - 120, r.left + r.width / 2));
-    const below = r.top < 140;
-    setTip({ t, x, y: below ? r.bottom + 10 : r.top - 10, below });
-  };
+  const tipRef = useRef(null);
+  useFloating(tipRef, tip?.rect, 10);
+  const showTip = (e, t) => setTip({ t, rect: e.currentTarget.getBoundingClientRect() });
+  useEffect(() => {
+    if (!tip) return undefined;
+    const hide = () => setTip(null);
+    window.addEventListener('scroll', hide, true);
+    return () => window.removeEventListener('scroll', hide, true);
+  }, [tip]);
   let n = 0;
   return (
     <>
@@ -2111,12 +2416,12 @@ const TableMap = React.memo(function TableMap({ groups, visibleKeys, busy, openK
         })}
       </div>
       {tip && (
-        <div className="tip" style={{ left: tip.x, top: tip.y, transform: `translate(-50%, ${tip.below ? '0' : '-100%'})` }}>
+        <div className="tip" ref={tipRef}>
           <b>{tip.t.table_name}</b>
           <Status s={busy.has(tip.t._key) ? 'RUNNING' : tip.t.status} />
           {tip.t.status === 'TABLE_NOT_FOUND' ? (
             <>
-              <div className="r"><span>Found in</span><span>{engineOf(tip.t._src)} · {tip.t._src}</span></div>
+              <div className="r"><span>Found in</span><span>{tip.t._engine} · {tip.t._src}</span></div>
               <div className="r"><span>Missing in</span><span className="bad-t">Snowflake</span></div>
             </>
           ) : (

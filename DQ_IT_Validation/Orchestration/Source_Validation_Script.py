@@ -897,8 +897,8 @@ class SourceDataCollector:
                         null_val = result[i * 2 + 1] if result[i * 2 + 1] is not None else 0
                         column_stats.append({
                             'column_name': matched_name,
-                            'oracle_original_name': col['name'],
-                            'oracle_type': col.get('type', 'UNKNOWN'),
+                            'source_original_name': col['name'],
+                            'source_type': col.get('type', 'UNKNOWN'),
                             'is_lob': False,
                             'distinct_count': distinct_val,
                             'null_count': null_val
@@ -938,8 +938,8 @@ class SourceDataCollector:
                         null_val = result[i] if result[i] is not None else 0
                         column_stats.append({
                             'column_name': matched_name,
-                            'oracle_original_name': col['name'],
-                            'oracle_type': col.get('type', 'UNKNOWN'),
+                            'source_original_name': col['name'],
+                            'source_type': col.get('type', 'UNKNOWN'),
                             'is_lob': True,
                             'distinct_count': None,
                             'null_count': null_val
@@ -997,7 +997,7 @@ class SourceDataCollector:
             log_detailed_error("Source Collection Failed - Oracle Connection",
                                Exception(error_msg), {"Table": table})
             return {
-                'oracle_table': table, 'snowflake_table': None,
+                'source_table': table, 'snowflake_table': None,
                 'status': 'ERROR', 'error': error_msg,
                 'collection_time': round(time.time() - start_time, 2),
                 'Last_Checked': datetime.now(EASTERN).isoformat()
@@ -1046,15 +1046,15 @@ class SourceDataCollector:
             self.oracle_pool.return_connection(oracle_conn)
 
             return {
-                'oracle_table': oracle_table_display,
+                'source_table': oracle_table_display,
                 'snowflake_table': sf_table,
                 'status': 'COLLECTED',
                 'error': None,
-                'oracle_columns': oracle_columns,
-                'oracle_row_count': oracle_row_count,
-                'oracle_column_stats': oracle_column_stats,
-                'oracle_duplicate_count': oracle_duplicate_count,
-                'oracle_constraints': oracle_constraints,
+                'source_columns': oracle_columns,
+                'source_row_count': oracle_row_count,
+                'source_column_stats': oracle_column_stats,
+                'source_duplicate_count': oracle_duplicate_count,
+                'source_constraints': oracle_constraints,
                 'collection_time': round(time.time() - start_time, 2),
                 'Last_Checked': datetime.now(EASTERN).isoformat()
             }
@@ -1064,7 +1064,7 @@ class SourceDataCollector:
                                {"Table": oracle_table_display, "Snowflake Table": sf_table})
             self.oracle_pool.return_connection(oracle_conn)
             return {
-                'oracle_table': oracle_table_display,
+                'source_table': oracle_table_display,
                 'snowflake_table': sf_table,
                 'status': 'ERROR',
                 'error': str(e),
@@ -1099,7 +1099,7 @@ class SourceDataCollector:
             log_detailed_error(f"Source Collection Timeout - {table_name}", Exception(error_msg),
                                {"Source Table": table_name, "Snowflake Table": sf_table, "Timeout": f"{timeout}s"})
             return {
-                'oracle_table': table_name, 'snowflake_table': sf_table,
+                'source_table': table_name, 'snowflake_table': sf_table,
                 'status': 'TIMEOUT', 'error': error_msg,
                 'collection_time': timeout, 'Last_Checked': datetime.now(EASTERN).isoformat()
             }
@@ -1131,7 +1131,7 @@ class SourceDataCollector:
                         result['error'] = f'Collection consistently exceeded {self.table_timeout}s timeout after {self.max_retries} retries'
                         with self.results_lock:
                             self.results['faulty_tables'].append({
-                                'table_name': result.get('oracle_table', self.sf_target_table),
+                                'table_name': result.get('source_table', self.sf_target_table),
                                 'snowflake_table': result.get('snowflake_table', self.sf_target_table),
                                 'reason': f'Collection exceeded {self.table_timeout}s timeout',
                                 'retry_attempts': self.max_retries
@@ -1158,7 +1158,7 @@ class SourceDataCollector:
                             print_safe(f"    ⏱️  [{idx}/{len(self.tables)}] {table} - Timed out after {self.table_timeout}s")
                         else:
                             status_icon = "✅" if result['status'] == 'COLLECTED' else "❌"
-                            print_safe(f"    {status_icon} [{idx}/{len(self.tables)}] {result.get('oracle_table', 'Unknown')} - {result['status']}")
+                            print_safe(f"    {status_icon} [{idx}/{len(self.tables)}] {result.get('source_table', 'Unknown')} - {result['status']}")
                         with self.results_lock:
                             self.results['table_data'].append(result)
             else:
@@ -1169,7 +1169,7 @@ class SourceDataCollector:
                         print_safe(f"    ⏱️  [{idx}/{len(self.tables)}] {table} - Timed out after {self.table_timeout}s")
                     else:
                         status_icon = "✅" if result['status'] == 'COLLECTED' else "❌"
-                        print_safe(f"    {status_icon} [{idx}/{len(self.tables)}] {result.get('oracle_table', 'Unknown')} - {result['status']}")
+                        print_safe(f"    {status_icon} [{idx}/{len(self.tables)}] {result.get('source_table', 'Unknown')} - {result['status']}")
                     with self.results_lock:
                         self.results['table_data'].append(result)
 
@@ -1191,7 +1191,7 @@ class SourceDataCollector:
                             with self.results_lock:
                                 self.results['table_data'] = [
                                     r for r in self.results['table_data']
-                                    if r.get('oracle_table') != result.get('oracle_table')
+                                    if r.get('source_table') != result.get('source_table')
                                 ]
                                 self.results['table_data'].append(result)
                     timeout_tables = still_timeout
@@ -1202,7 +1202,7 @@ class SourceDataCollector:
                         for table in timeout_tables:
                             snowflake_table = None
                             for r in self.results['table_data']:
-                                if r.get('oracle_table') == table and r['status'] == 'TIMEOUT':
+                                if r.get('source_table') == table and r['status'] == 'TIMEOUT':
                                     r['status'] = 'FAULTY'
                                     r['error'] = f'Collection consistently exceeded {self.table_timeout}s timeout after {self.max_retries} retry attempts'
                                     snowflake_table = r.get('snowflake_table')
@@ -1376,13 +1376,14 @@ def collect_single_pipeline_source(pipeline_data: Dict, config: Dict, pipeline_i
                 'pipeline_name': pipeline_name,
                 'pipeline_number': pipeline_number,
                 'status': 'SUCCESS',
-                'oracle_schema': oracle_schema,
+                'source_schema': oracle_schema,
+                'source_type': 'Oracle',
                 'snowflake_database': sf_database,
                 'snowflake_schema': sf_schema,
                 'format_type': format_type,
                 'sql_query': sql_query,
                 'sf_target_table': sf_target_table,
-                'oracle_table_from_query': oracle_table_from_query,
+                'source_table_from_query': oracle_table_from_query,
                 'table_prefix': table_prefix_from_report if format_type == 'table_list' else "",
                 'use_prefix': use_prefix,
                 'table_mapping': table_mapping,

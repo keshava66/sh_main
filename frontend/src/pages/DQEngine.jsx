@@ -425,6 +425,8 @@ function DataQualityEngine() {
   // A table can be refreshed only if its source Oracle connection is configured.
   const canRefreshTable = useCallback((table) => {
     if (!hasPermission('runITChecks')) return 'hidden';
+    // Re-validate only speaks Oracle; MariaDB sources (HAQ) would hit the Oracle default and fail.
+    if (/^haq/i.test(table.source_db || '')) return 'no-connection';
     if (oracleConnections.configured.length === 0 && !oracleConnections.has_default) return 'no-connection';
     if (oracleConnections.has_default) return 'active';
     const key = (table.source_db || table.target_database || '').toUpperCase();
@@ -533,11 +535,11 @@ function DataQualityEngine() {
               validation_results: {
                 ...pipeline.validation_results,
                 // Replace, don't merge: an old row_counts / error must not survive a fresh result.
-                // Keep only the merge annotations (_source_db, _oracle_schema, …).
+                // Keep only the merge annotations (_source_db, _source_schema, …).
                 table_validations: pipeline.validation_results.table_validations.map(t =>
                   t.table_name === table.table_name
                     && (t._source_db || '') === (table.source_db || '')
-                    && (t._oracle_schema || pipeline.oracle_schema || 'Unknown') === table.source_schema
+                    && (t._source_schema || pipeline.source_schema || 'Unknown') === table.source_schema
                     ? { ...Object.fromEntries(Object.entries(t).filter(([k]) => k.startsWith('_'))), ...data.validation_result }
                     : t
                 )

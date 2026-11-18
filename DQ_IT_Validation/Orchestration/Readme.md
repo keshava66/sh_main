@@ -120,6 +120,8 @@ Both scripts share a single `validation_config.json`:
 | `validation.connection_pool_size` | Oracle pool size, defaults to `max_parallel_tables + 2` |
 | `validation.table_timeout` | Seconds before a single table query is abandoned and retried (default 60) |
 | `validation.max_timeout_retries` | How many times a timed-out table is retried before being marked FAULTY (default 3) |
+| `validation.max_parallel_pipelines` | `Src_to_Trgt_Validation_Script.py` only: pipelines validated at the same time (default 3). Tables at once = this x `max_parallel_tables` |
+| `validation.oracle_parallel_degree` | `Src_to_Trgt_Validation_Script.py` and the portal's re-validate: Oracle `PARALLEL(n)` hint on the full scans (default 8). 0 or 1 = no hint, to go easy on a busy source |
 | `validation.excluded_columns` | Column names skipped everywhere, matched case-insensitively |
  
 This file is gitignored — keep your own copy out of the repo.

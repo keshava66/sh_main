@@ -25,6 +25,7 @@ from requests.auth import HTTPBasicAuth
 import pandas as pd
 from io import BytesIO
 import re
+import inspect
 import json
 import os
 import snowflake.connector
@@ -37,7 +38,7 @@ import pytz
 from typing import Optional, List, Dict, Any
 import oracledb
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel
 from dataclasses import dataclass
 
@@ -1299,7 +1300,8 @@ def get_validation_report_dates(auth: dict = Depends(require_permission("viewITC
     try:
         with it_report_pool.connection() as conn, conn.cursor() as cur:
             cur.execute(f"""
-                SELECT load_date, run_timestamp, database
+                SELECT load_date, run_timestamp, database,
+                       TRY_TO_NUMBER(report_data:overall_summary:total_tables_validated::STRING)
                 FROM {full_table_name}
                 ORDER BY load_date DESC
             """)
@@ -1309,6 +1311,7 @@ def get_validation_report_dates(auth: dict = Depends(require_permission("viewITC
                 "load_date": row[0].strftime('%Y-%m-%d %H:%M:%S.%f')[:23] if row[0] else None,
                 "run_timestamp": row[1].strftime('%Y-%m-%d %H:%M:%S.%f')[:23] if row[1] else None,
                 "database": row[2] or None,
+                "tables": int(row[3]) if row[3] is not None else None,  # tables that run validated
             }
             for row in rows
         ]
@@ -1336,12 +1339,6 @@ def get_validation_report(
     database = sf_config['database']
     full_table_name = f"{database}.{schema}.{table_name}"
 
-    def _fmt(dt):
-        return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:23] if dt else None
-
-    def _parse_report(raw):
-        return json.loads(raw) if isinstance(raw, str) else raw
-
     def _query(sql, params=None):
         # Holds a pooled connection only for the query itself, not the merge below.
         with it_report_pool.connection() as conn, conn.cursor() as cur:
@@ -1349,153 +1346,64 @@ def get_validation_report(
             return cur.fetchall()
 
     try:
-        fetch_specific = load_date and load_date.upper() != 'ALL'
-        fetch_subset   = load_dates and load_dates.strip()
-
-        if fetch_specific:
-            normalized = load_date.replace('T', ' ')
-            rows = _query(f"""
-                SELECT report_data, run_timestamp, load_date, database
-                FROM {full_table_name}
-                WHERE TO_CHAR(load_date, 'YYYY-MM-DD HH24:MI:SS.FF9') LIKE %s
-                LIMIT 1
-            """, (normalized[:23] + '%',))
-            if not rows:
-                raise HTTPException(status_code=404, detail=f"No report found for load_date={load_date}")
-
-            source_db   = rows[0][3] or ''
-            raw_rd      = _parse_report(rows[0][0])
-            # Annotate every table in this single run with its source db identifier
-            for pipeline in raw_rd.get('pipeline_results', []):
-                for table in pipeline.get('validation_results', {}).get('table_validations', []):
-                    table['_source_db'] = source_db
-            report_data = raw_rd
-            run_ts      = rows[0][1]
-            load_date_v = rows[0][2]
-            runs_merged = 1
-            oldest_date = _fmt(load_date_v)
-            newest_date = _fmt(load_date_v)
-
-        elif fetch_subset:
-            # ── Merge a user-selected SUBSET of runs ──────────────────────────
-            date_list = [d.strip().replace('T', ' ')[:23] for d in load_dates.split(',') if d.strip()]
+        if load_date and load_date.upper() != 'ALL':
+            date_list = [load_date.replace('T', ' ')[:23]]
+        elif load_dates and load_dates.strip():
+            date_list = sorted({d.strip().replace('T', ' ')[:23] for d in load_dates.split(',') if d.strip()})
             if not date_list:
                 raise HTTPException(status_code=400, detail="load_dates is empty")
-            like_clauses = ' OR '.join(
-                ["TO_CHAR(load_date, 'YYYY-MM-DD HH24:MI:SS.FF9') LIKE %s"] * len(date_list)
-            )
+        else:
+            date_list = []  # all runs
+
+        # The report table only changes when a run is saved or trimmed, so a merged response is
+        # kept until it does. Checking costs one tiny query instead of re-reading every report.
+        fp = _query(f"SELECT COUNT(*), MAX(load_date), MIN(load_date) FROM {full_table_name}")[0]
+        key = (full_table_name, tuple(date_list), tuple(str(v) for v in fp))
+        with _REPORT_CACHE_LOCK:
+            body = _REPORT_CACHE.get(key)
+            if body is not None:
+                _REPORT_CACHE.move_to_end(key)
+        if body is not None:
+            return Response(content=body, media_type="application/json")
+
+        if date_list:
+            where = ' OR '.join(["TO_CHAR(load_date, 'YYYY-MM-DD HH24:MI:SS.FF9') LIKE %s"] * len(date_list))
             rows = _query(f"""
                 SELECT report_data, run_timestamp, load_date, database
                 FROM {full_table_name}
-                WHERE {like_clauses}
+                WHERE {where}
                 ORDER BY load_date DESC
             """, [d + '%' for d in date_list])
-            if not rows:
-                raise HTTPException(status_code=404, detail="No reports found for the selected runs")
-
-            pipelines: Dict[str, dict] = {}
-            latest_rd = None  # newest run, rows are newest first
-            seen_tables: Dict[str, set] = {}
-            for row in rows:
-                rd        = _parse_report(row[0])
-                if latest_rd is None:
-                    latest_rd = rd
-                source_db = row[3] or ''
-                for pipeline in rd.get('pipeline_results', []):
-                    pname = pipeline.get('pipeline_name', 'Unknown')
-                    tables_this_row = list(
-                        pipeline.get('validation_results', {}).get('table_validations', [])
-                    )
-                    if pname not in pipelines:
-                        vr_meta = {k: v for k, v in pipeline.get('validation_results', {}).items() if k != 'table_validations'}
-                        vr_meta['table_validations'] = []
-                        pipelines[pname] = {k: v for k, v in pipeline.items() if k != 'validation_results'}
-                        pipelines[pname]['validation_results'] = vr_meta
-                        seen_tables[pname] = set()
-                    for table in tables_this_row:
-                        # same table name can exist in another database or another schema
-                        tkey = (source_db, pipeline.get('oracle_schema', ''), table.get('table_name', ''))
-                        if tkey not in seen_tables[pname]:
-                            seen_tables[pname].add(tkey)
-                            pipelines[pname]['validation_results']['table_validations'].append({
-                                **table,
-                                '_oracle_schema':      pipeline.get('oracle_schema', ''),
-                                '_snowflake_database': pipeline.get('snowflake_database', ''),
-                                '_snowflake_schema':   pipeline.get('snowflake_schema', ''),
-                                '_source_db':          source_db,
-                            })
-
-            report_data = {**latest_rd, 'pipeline_results': list(pipelines.values())}
-            run_ts      = rows[0][1]
-            load_date_v = rows[0][2]
-            runs_merged = len(rows)
-            newest_date = _fmt(rows[0][2])
-            oldest_date = _fmt(rows[-1][2])
-
         else:
-            # ── Merge ALL runs — newest result per table wins ─────────────────
             rows = _query(f"""
                 SELECT report_data, run_timestamp, load_date, database
                 FROM {full_table_name}
                 ORDER BY load_date DESC
             """)
-            if not rows:
-                raise HTTPException(status_code=404, detail="No reports found")
+        if not rows:
+            if len(date_list) == 1:
+                raise HTTPException(status_code=404, detail=f"No report found for load_date={load_date}")
+            raise HTTPException(status_code=404, detail="No reports found for the selected runs" if date_list
+                                else "No reports found")
+        if len(date_list) == 1:
+            rows = rows[:1]
 
-            pipelines: Dict[str, dict] = {}
-            latest_rd = None  # newest run, rows are newest first
-            seen_tables: Dict[str, set] = {}
-
-            for row in rows:
-                rd        = _parse_report(row[0])
-                if latest_rd is None:
-                    latest_rd = rd
-                source_db = row[3] or ''
-                for pipeline in rd.get('pipeline_results', []):
-                    pname = pipeline.get('pipeline_name', 'Unknown')
-                    tables_this_row = list(
-                        pipeline.get('validation_results', {}).get('table_validations', [])
-                    )
-                    if pname not in pipelines:
-                        vr_meta = {
-                            k: v for k, v in pipeline.get('validation_results', {}).items()
-                            if k != 'table_validations'
-                        }
-                        vr_meta['table_validations'] = []
-                        pipelines[pname] = {k: v for k, v in pipeline.items() if k != 'validation_results'}
-                        pipelines[pname]['validation_results'] = vr_meta
-                        seen_tables[pname] = set()
-                    for table in tables_this_row:
-                        # same table name can exist in another database or another schema
-                        tkey = (source_db, pipeline.get('oracle_schema', ''), table.get('table_name', ''))
-                        if tkey not in seen_tables[pname]:
-                            seen_tables[pname].add(tkey)
-                            pipelines[pname]['validation_results']['table_validations'].append({
-                                **table,
-                                '_oracle_schema':      pipeline.get('oracle_schema', ''),
-                                '_snowflake_database': pipeline.get('snowflake_database', ''),
-                                '_snowflake_schema':   pipeline.get('snowflake_schema', ''),
-                                '_source_db':          source_db,
-                            })
-
-            report_data = {**latest_rd, 'pipeline_results': list(pipelines.values())}
-            run_ts      = rows[0][1]
-            load_date_v = rows[0][2]
-            runs_merged = len(rows)
-            newest_date = _fmt(rows[0][2])
-            oldest_date = _fmt(rows[-1][2])
-
-        return _fast_json({
+        body = orjson.dumps({
             "table_name": table_name,
             "database": database,
             "schema": schema,
-            "report_data": report_data,
-            "run_timestamp": _fmt(run_ts),
-            "load_date": _fmt(load_date_v),
-            "runs_merged": runs_merged,
-            "newest_date": newest_date,
-            "oldest_date": oldest_date,
-        })
+            "report_data": _merge_reports(rows),
+            "run_timestamp": _fmt_ts(rows[0][1]),
+            "load_date": _fmt_ts(rows[0][2]),
+            "runs_merged": len(rows),
+            "newest_date": _fmt_ts(rows[0][2]),
+            "oldest_date": _fmt_ts(rows[-1][2]),
+        }, default=str)
+        with _REPORT_CACHE_LOCK:
+            _REPORT_CACHE[key] = body
+            while len(_REPORT_CACHE) > _REPORT_CACHE_MAX:
+                _REPORT_CACHE.popitem(last=False)
+        return Response(content=body, media_type="application/json")
     except HTTPException:
         raise  # keep 404 "no reports" as a 404, not a 500
     except snowflake.connector.errors.ProgrammingError as e:
@@ -1504,8 +1412,65 @@ def get_validation_report(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+from collections import OrderedDict as _OrderedDict
+_REPORT_CACHE: "_OrderedDict[tuple, bytes]" = _OrderedDict()
+_REPORT_CACHE_LOCK = threading.Lock()
+_REPORT_CACHE_MAX = 8  # merged responses kept (all runs + a few picked combinations)
+
+
+def _fmt_ts(dt):
+    return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:23] if dt else None
+
+
+def _load_report_json(raw):
+    if not isinstance(raw, (str, bytes)):
+        return raw or {}
+    try:
+        return orjson.loads(raw)  # several times faster on multi-MB reports
+    except orjson.JSONDecodeError:
+        return json.loads(raw)    # e.g. integers past 64 bits, which orjson refuses
+
+
+def _merge_reports(rows) -> dict:
+    """Merge report rows (newest first) into one report: the newest result per table wins.
+    Every table is tagged with the database, schemas and source db it came from, because
+    the same table name can exist in another database or schema."""
+    pipelines: Dict[str, dict] = {}
+    seen: Dict[str, set] = {}
+    latest = None
+    for raw, _run_ts, _load_date, source_db in rows:
+        rd = _load_report_json(raw)
+        if latest is None:
+            latest = rd
+        source_db = source_db or ''
+        for pipeline in rd.get('pipeline_results') or []:
+            pname = pipeline.get('pipeline_name', 'Unknown')
+            vr = pipeline.get('validation_results') or {}
+            if pname not in pipelines:
+                meta = {k: v for k, v in vr.items() if k != 'table_validations'}
+                meta['table_validations'] = []
+                pipelines[pname] = {**{k: v for k, v in pipeline.items() if k != 'validation_results'},
+                                    'validation_results': meta}
+                seen[pname] = set()
+            for table in vr.get('table_validations') or []:
+                tkey = (source_db, pipeline.get('source_schema', ''), table.get('table_name', ''))
+                if tkey in seen[pname]:
+                    continue
+                seen[pname].add(tkey)
+                pipelines[pname]['validation_results']['table_validations'].append({
+                    **table,
+                    '_source_schema': pipeline.get('source_schema', ''),
+                    '_source_type': pipeline.get('source_type', ''),
+                    '_snowflake_database': pipeline.get('snowflake_database', ''),
+                    '_snowflake_schema': pipeline.get('snowflake_schema', ''),
+                    '_source_db': source_db,
+                })
+    return {**(latest or {}), 'pipeline_results': list(pipelines.values())}
+
 # ============================================================================
-# SINGLE TABLE VALIDATION FUNCTIONS
+# SINGLE TABLE VALIDATION (IT Checks "Re-validate")
+# Grades one table exactly like DQ_IT_Validation/Src_to_Trgt_Validation_Script.py does in the
+# scheduled run, so a re-validated row means the same thing as one from the batch report.
 # ============================================================================
 
 def parse_streamsets_replaceall(expression: str):
@@ -1531,18 +1496,46 @@ def transform_column_name(column_name: str, transformations=None):
     return transformed
 
 
+# Logged-in Oracle sessions, one small pool per (user, dsn). Bulk re-validate calls the
+# endpoint once per table; a fresh Oracle login each time was most of the wait.
+_ORACLE_POOLS: dict = {}
+_ORACLE_POOLS_LOCK = threading.Lock()
+
+
+def _oracle_pool(oracle_config: dict):
+    key = (oracle_config['user'], oracle_config['dsn'])
+    with _ORACLE_POOLS_LOCK:
+        pool = _ORACLE_POOLS.get(key)
+        if pool is None:
+            pool = oracledb.create_pool(
+                user=oracle_config['user'], password=oracle_config['password'], dsn=oracle_config['dsn'],
+                min=0, max=int(oracle_config.get('pool_max', 6)), increment=1,
+                getmode=oracledb.POOL_GETMODE_TIMEDWAIT, wait_timeout=30000,  # ms
+                ping_interval=60,
+            )
+            _ORACLE_POOLS[key] = pool
+    return pool
+
+
 def create_oracle_connection(oracle_config: dict):
-    """Create Oracle connection using DSN."""
+    """Oracle session from the pool for this DSN. Returns (pool, connection)."""
     try:
-        conn = oracledb.connect(
-            user=oracle_config['user'],
-            password=oracle_config['password'],
-            dsn=oracle_config['dsn']
-        )
-        return conn
+        pool = _oracle_pool(oracle_config)
+        return pool, pool.acquire()
     except Exception as e:
         logger.error(f"Oracle connection error: {e}")
         raise HTTPException(status_code=500, detail=f"Oracle connection error: {e}")
+
+
+def close_oracle_pools():
+    with _ORACLE_POOLS_LOCK:
+        pools = list(_ORACLE_POOLS.values())
+        _ORACLE_POOLS.clear()
+    for pool in pools:
+        try:
+            pool.close(force=True)
+        except Exception as e:
+            logger.warning(f"Oracle pool close: {e}")
 
 
 def get_oracle_config(target_database: str = '') -> dict:
@@ -1600,23 +1593,354 @@ def get_oracle_connections(auth: dict = Depends(require_permission("viewITChecks
     }
 
 
-def validate_single_table_logic(
-        oracle_conn,
-        snowflake_conn,
-        table_config: dict,
-        transformations: list,
-        timeout: int = 60
-):
+# Field-name transformation rules per pipeline, read from the StreamSets report. The file
+# is only re-read when it changes (it can be several MB and bulk re-validate asks per table).
+_TRANSFORM_CACHE = {'key': None, 'rules': {}}
+_TRANSFORM_LOCK = threading.Lock()
+
+
+def _report_pipeline_rules(pipeline: dict):
+    """Same detection as the batch script (Field Mapper on FIELD_NAMES), then the older
+    'parameters' form some reports carry."""
+    stages = ((pipeline.get('pipeline_stages') or {}).get('stages') or {}).get('processors') or []
+    for proc in stages:
+        if 'FieldMapper' not in (proc.get('stageName') or ''):
+            continue
+        cfg = {c.get('name'): c.get('value') for c in proc.get('configuration') or [] if isinstance(c, dict)}
+        expr = cfg.get('fieldMapperConfig.mappingExpression')
+        if cfg.get('fieldMapperConfig.operateOn') == 'FIELD_NAMES' and expr:
+            rules = parse_streamsets_replaceall(expr)
+            if rules:
+                return rules
+    for param in pipeline.get('parameters') or []:
+        value = param.get('parameter', '') if isinstance(param, dict) else ''
+        if 'replaceAll' in value and 'f:name()' in value:
+            rules = parse_streamsets_replaceall(value)
+            if rules:
+                return rules
+    return None
+
+
+def _pipeline_transformations(pipeline_name: str):
+    path = ((CONFIG.get('validation') or {}).get('report_paths') or {}).get('path')
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+        with _TRANSFORM_LOCK:
+            if _TRANSFORM_CACHE['key'] != key:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                pipelines = data if isinstance(data, list) else data.get('pipelines', [])
+                _TRANSFORM_CACHE['rules'] = {p.get('pipeline_name'): _report_pipeline_rules(p)
+                                             for p in pipelines if isinstance(p, dict)}
+                _TRANSFORM_CACHE['key'] = key
+            return _TRANSFORM_CACHE['rules'].get(pipeline_name)
+    except Exception as e:
+        logger.warning(f"Could not load transformations from report {path}: {e}")
+        return None
+
+
+_LOB_TYPES = ('CLOB', 'BLOB', 'NCLOB', 'BFILE', 'LONG', 'LONG RAW')
+
+
+def _is_lob(col_type) -> bool:
+    t = (col_type or '').upper()
+    return any(lob in t for lob in _LOB_TYPES)
+
+
+def _scan_query(cols, stat_cols, source, hint=''):
+    """Row count, per-column distinct/null counts and total nulls in ONE pass over the table
+    (same query the batch script runs). Result: [rows, D0, N0, D1, N1, ..., total_nulls]."""
+    parts = ['COUNT(*)']
+    for i, c in enumerate(stat_cols):
+        parts.append(f'COUNT(DISTINCT "{c}") AS D{i}')
+        parts.append(f'SUM(CASE WHEN "{c}" IS NULL THEN 1 ELSE 0 END) AS N{i}')
+    nulls = ' + '.join(f'SUM(CASE WHEN "{c}" IS NULL THEN 1 ELSE 0 END)' for c in cols) or '0'
+    parts.append(f'{nulls} AS TOTAL_NULLS')
+    return f"SELECT {hint}{', '.join(parts)} FROM {source}"
+
+
+def _dupes_query(cols, source, hint=''):
+    col_list = ', '.join(f'"{c}"' for c in cols)
+    return (f"SELECT {hint}COUNT(*) FROM (SELECT {col_list}, COUNT(*) AS cnt FROM {source} "
+            f"GROUP BY {col_list} HAVING COUNT(*) > 1) duplicates")
+
+
+def _oracle_parallel_hint(degree) -> str:
+    """Oracle parallel query degree for the full scans (validation.oracle_parallel_degree,
+    same setting as the batch script). 0 or 1 = no hint."""
+    try:
+        degree = int(degree or 0)
+    except (TypeError, ValueError):
+        logger.warning(f"validation.oracle_parallel_degree {degree!r} is not a number; using no PARALLEL hint")
+        return ''
+    if degree < 0 or degree > 64:
+        logger.warning(f"validation.oracle_parallel_degree {degree} is outside 0-64; using no PARALLEL hint")
+        return ''
+    return f'/*+ PARALLEL({degree}) */ ' if degree >= 2 else ''
+
+
+class _Deadline:
+    """Time budget for one re-validation. Every query gets what is left, so nothing can
+    hold a worker thread (or a database session) past it."""
+    def __init__(self, seconds):
+        self.seconds = f"{seconds:g}"  # for messages: 900, not 900.0
+        self.end = time.monotonic() + seconds
+
+    @property
+    def passed(self):
+        return time.monotonic() >= self.end
+
+    def left(self):
+        s = self.end - time.monotonic()
+        if s <= 0:
+            raise TimeoutError(f"Validation exceeded {self.seconds}s timeout")
+        return s
+
+
+def _ora_q(conn, dl, sql, params=None, all_rows=False):
+    conn.call_timeout = max(1, int(dl.left() * 1000))  # ms; the session is dropped afterwards if it fires
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall() if all_rows else cur.fetchone()
+
+
+_SF_TIMEOUT_KW: dict = {}
+
+
+def _sf_takes_timeout(cur) -> bool:
+    """snowflake-connector-python 3.x has execute(timeout=) and cancels the query on the server
+    when it fires. 5.x accepts the argument but ignores it, so there the limit goes through
+    ALTER SESSION (undone before the connection goes back to the pool)."""
+    kind = type(cur)
+    if kind not in _SF_TIMEOUT_KW:
+        try:
+            _SF_TIMEOUT_KW[kind] = 'timeout' in inspect.signature(cur.execute).parameters
+        except (TypeError, ValueError):
+            _SF_TIMEOUT_KW[kind] = False
+    return _SF_TIMEOUT_KW[kind]
+
+
+def _sf_q(conn, dl, sql, params=None, all_rows=False, names=False):
+    cur = conn.cursor()
+    try:
+        seconds = max(1, int(dl.left()) + 1)
+        if _sf_takes_timeout(cur):
+            cur.execute(sql, params, timeout=seconds)  # server-side cancel when it runs out
+        else:
+            cur.execute(f'ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {seconds}')
+            cur.execute(sql, params)
+        rows = cur.fetchall() if all_rows or names else cur.fetchone()
+        if names:  # SHOW output: read columns by name, their order changes between releases
+            cols = [d[0].lower() for d in cur.description]
+            return [dict(zip(cols, r)) for r in rows]
+        return rows
+    finally:
+        cur.close()
+
+
+def _sf_reset_session_timeout(conn):
+    """Undo the ALTER SESSION limit (5.x driver) before the pooled connection is reused."""
+    cur = conn.cursor()
+    try:
+        if not _sf_takes_timeout(cur):
+            cur.execute('ALTER SESSION UNSET STATEMENT_TIMEOUT_IN_SECONDS')
+    except Exception as e:
+        logger.warning(f"Snowflake session reset failed, dropping the connection: {e}")
+        it_report_pool.discard(conn)
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _both(a, b):
+    """Run the Oracle side and the Snowflake side at the same time."""
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fa, fb = ex.submit(a), ex.submit(b)
+        return fa.result(), fb.result()
+
+
+def _oracle_constraints(conn, dl, owner, table, nn_columns):
+    """Same queries as the batch script's OracleConnector.get_constraints."""
+    out = {'primary_keys': [], 'unique_constraints': [], 'check_constraints': [],
+           'not_null_columns': list(nn_columns), 'foreign_keys': []}
+    try:
+        out['primary_keys'] = [r[0] for r in _ora_q(conn, dl, """
+            SELECT cols.column_name FROM all_constraints cons
+            JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name AND cons.owner = cols.owner
+            WHERE cons.constraint_type = 'P' AND cons.owner = :1 AND cons.table_name = :2
+            ORDER BY cols.position""", [owner, table], all_rows=True)]
+        uniques = {}
+        for name, col in _ora_q(conn, dl, """
+            SELECT cons.constraint_name, cols.column_name FROM all_constraints cons
+            JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name AND cons.owner = cols.owner
+            WHERE cons.constraint_type = 'U' AND cons.owner = :1 AND cons.table_name = :2
+            ORDER BY cons.constraint_name, cols.position""", [owner, table], all_rows=True):
+            uniques.setdefault(name, []).append(col)
+        out['unique_constraints'] = [{'name': n, 'columns': c} for n, c in uniques.items()]
+        for name, cond in _ora_q(conn, dl, r"""
+            SELECT constraint_name, search_condition FROM all_constraints
+            WHERE constraint_type = 'C' AND owner = :1 AND table_name = :2
+              AND constraint_name NOT LIKE 'SYS\_%' ESCAPE '\'""", [owner, table], all_rows=True):
+            cond = cond.read() if hasattr(cond, 'read') else cond
+            if cond and 'IS NOT NULL' not in cond.upper():  # NOT NULL is compared on its own
+                out['check_constraints'].append({'name': name, 'condition': cond})
+        fks = {}
+        for name, col, ref_table, ref_col in _ora_q(conn, dl, """
+            SELECT cons.constraint_name, cols.column_name, ref_cons.table_name, ref_cols.column_name
+            FROM all_constraints cons
+            JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name AND cons.owner = cols.owner
+            JOIN all_constraints ref_cons ON cons.r_constraint_name = ref_cons.constraint_name
+                                         AND cons.r_owner = ref_cons.owner
+            JOIN all_cons_columns ref_cols ON ref_cons.constraint_name = ref_cols.constraint_name
+                                          AND ref_cons.owner = ref_cols.owner AND cols.position = ref_cols.position
+            WHERE cons.constraint_type = 'R' AND cons.owner = :1 AND cons.table_name = :2
+            ORDER BY cons.constraint_name, cols.position""", [owner, table], all_rows=True):
+            fk = fks.setdefault(name, {'name': name, 'columns': [], 'referenced_table': ref_table,
+                                       'referenced_columns': []})
+            fk['columns'].append(col)
+            fk['referenced_columns'].append(ref_col)
+        out['foreign_keys'] = list(fks.values())
+    except Exception as e:
+        if dl.passed:  # out of time (the driver's own timeout error): not a constraint problem
+            raise
+        logger.warning(f"Oracle constraints for {owner}.{table}: {e}")  # batch script: logged, compared as empty
+    return out
+
+
+def _snowflake_constraints(conn, dl, fq_table, describe_rows):
+    """Same sources as the batch script's SnowflakeConnector.get_constraints."""
+    out = {'primary_keys': [], 'unique_constraints': [], 'check_constraints': [],
+           'not_null_columns': [], 'foreign_keys': []}
+    for row in describe_rows:
+        name = row[0]
+        if row[5] == 'Y':
+            out['primary_keys'].append(name)
+        if row[6] == 'Y':
+            out['unique_constraints'].append({'name': f'UNIQUE_{name}', 'columns': [name]})
+        if row[3] == 'N':
+            out['not_null_columns'].append(name)
+        if len(row) > 7 and row[7]:
+            out['check_constraints'].append({'name': f'CHECK_{name}', 'condition': row[7]})
+    try:
+        keys = {}
+        for r in sorted(_sf_q(conn, dl, f'SHOW UNIQUE KEYS IN TABLE {fq_table}', names=True),
+                        key=lambda r: (r.get('constraint_name') or '', r.get('key_sequence') or 0)):
+            keys.setdefault(r.get('constraint_name') or f"UNIQUE_{r.get('column_name')}", []).append(r.get('column_name'))
+        out['unique_constraints'] = [{'name': n, 'columns': c} for n, c in keys.items()]
+    except Exception:
+        if dl.passed:
+            raise
+        # keep the per-column list from DESCRIBE
+    try:
+        fks = {}
+        for r in sorted(_sf_q(conn, dl, f'SHOW IMPORTED KEYS IN TABLE {fq_table}', names=True),
+                        key=lambda r: (r.get('fk_name') or '', r.get('key_sequence') or 0)):
+            name = r.get('fk_name') or f"FK_{r.get('pk_table_name')}"
+            fk = fks.setdefault(name, {'name': name, 'columns': [], 'referenced_table': r.get('pk_table_name'),
+                                       'referenced_columns': []})
+            fk['columns'].append(r.get('fk_column_name'))
+            fk['referenced_columns'].append(r.get('pk_column_name'))
+        out['foreign_keys'] = list(fks.values())
+    except Exception:
+        if dl.passed:
+            raise
+        # no access to SHOW IMPORTED KEYS: report none, as the batch script does
+    return out
+
+
+def _compare_constraints(oc, sc, tf, nn_details):
+    """Statuses and warnings with the batch script's rules."""
+    counts = {k: {'source': 0, 'snowflake': 0} for k in
+              ('primary_keys', 'foreign_keys', 'unique_constraints', 'check_constraints', 'not_null_constraints')}
+    vr = {
+        'primary_keys': {'status': 'UNKNOWN', 'details': None},
+        'unique_constraints': {'status': 'UNKNOWN', 'details': None},
+        'check_constraints': {'status': 'UNKNOWN', 'details': None},
+        'not_null_constraints': {'status': 'UNKNOWN', 'details': nn_details},
+        'foreign_keys': {'status': 'UNKNOWN', 'details': None},
+    }
+    o_pk, s_pk = {tf(c) for c in oc['primary_keys']}, {c.upper() for c in sc['primary_keys']}
+    if o_pk == s_pk:
+        vr['primary_keys'] = {'status': 'MATCH', 'details': f"Primary keys match: {sorted(o_pk)}"}
+    else:
+        details = []
+        if o_pk - s_pk:
+            counts['primary_keys']['source'] = len(o_pk - s_pk)
+            details.append(f"Primary keys only in Source: {sorted(o_pk - s_pk)}")
+        if s_pk - o_pk:
+            counts['primary_keys']['snowflake'] = len(s_pk - o_pk)
+            details.append(f"Primary keys only in Snowflake: {sorted(s_pk - o_pk)}")
+        vr['primary_keys'] = {'status': 'MISMATCH', 'details': '; '.join(details)}
+
+    for key, label in (('unique_constraints', 'Unique constraint'), ('check_constraints', 'Check constraint')):
+        o, s = len(oc[key]), len(sc[key])
+        if o == s:
+            vr[key] = {'status': 'MATCH', 'details': f"{label} count matches: {o}"}
+        else:
+            vr[key] = {'status': 'MISMATCH', 'details': f"{label} count mismatch: Source={o}, Snowflake={s}"}
+            counts[key]['source' if o > s else 'snowflake'] = abs(o - s)
+
+    o_nn, s_nn = {tf(c) for c in oc['not_null_columns']}, {c.upper() for c in sc['not_null_columns']}
+    if o_nn - s_nn:
+        counts['not_null_constraints']['source'] = len(o_nn - s_nn)
+    if s_nn - o_nn:
+        counts['not_null_constraints']['snowflake'] = len(s_nn - o_nn)
+    if any(d.get('validation_status') == 'FAIL' for d in nn_details):
+        vr['not_null_constraints']['status'] = 'VALIDATION_FAILED'
+    elif o_nn != s_nn:
+        vr['not_null_constraints']['status'] = 'DEFINITION_MISMATCH'
+    elif not o_nn:
+        vr['not_null_constraints']['status'] = 'NONE'
+    else:
+        vr['not_null_constraints']['status'] = 'MATCH'
+
+    o, s = len(oc['foreign_keys']), len(sc['foreign_keys'])
+    if o == s == 0:
+        vr['foreign_keys'] = {'status': 'NONE', 'details': "No foreign keys in either system"}
+    elif o == s:
+        vr['foreign_keys'] = {'status': 'MATCH', 'details': f"Foreign key count matches: {o}"}
+    else:
+        vr['foreign_keys'] = {'status': 'MISMATCH', 'details': f"Foreign key count mismatch: Source={o}, Snowflake={s}"}
+        counts['foreign_keys']['source' if o > s else 'snowflake'] = abs(o - s)
+
+    warnings = {f"{k.replace('_', ' ').title()} mismatch": f"Source={c['source']}, Snowflake={c['snowflake']}"
+                for k, c in counts.items() if c['source'] or c['snowflake']}
+    return {
+        'constraint_analysis_performed': True,
+        'constraint_warnings': warnings,
+        'constraint_details': {'source': oc, 'snowflake': sc},
+        'validation_results': vr,
+        'summary': {k: v['status'] for k, v in vr.items()},
+    }
+
+
+def validate_single_table_logic(oracle_conn, snowflake_conn, table_config: dict, transformations: list,
+                                timeout: float = 900):
     """
-    Complete validation matching Final_validator_1.py logic.
-    Performs: row count, column analysis, column statistics (ALL columns),
-    overall null count, duplicate analysis, constraint analysis.
+    One table, same checks and grading as the batch script: row count, column statistics,
+    total nulls, duplicates and constraints. Oracle and Snowflake run side by side, and the
+    count, statistics and null total come from a single scan per side.
     """
+    started = time.monotonic()
+    dl = _Deadline(timeout)
     table_name = table_config['table_name']
     source_schema = table_config['source_schema']
     target_database = table_config['target_database']
     target_schema = table_config['target_schema']
     snowflake_table = table_config['snowflake_table']
+    ora_fq = f'"{source_schema}"."{table_name}"'
+    sf_fq = f'"{target_database}"."{target_schema}"."{snowflake_table}"'
+    vcfg = (CONFIG or {}).get('validation') or {}
+    excluded = {c.upper() for c in (vcfg.get('excluded_columns') or [])}
+    hint = _oracle_parallel_hint(vcfg.get('oracle_parallel_degree', 8))
+
+    def tf(name):
+        return (transform_column_name(name, transformations) if transformations else name).upper()
 
     result = {
         'table_name': table_name,
@@ -1625,748 +1949,185 @@ def validate_single_table_logic(
         'target_schema': target_schema,
         'snowflake_table': snowflake_table,
         'pipeline_name': table_config.get('pipeline_name', ''),
+        'source_type': 'Oracle',  # re-validate only connects to Oracle
         'status': 'PASSED',
+        'Snowflake_Last_Updated': None,
         'Last_Checked': datetime.now(EASTERN).isoformat(),
-        # row_counts is only added once both counts are measured (the UI reads its
-        # absence as "not measured", same as ERROR/TIMEOUT rows from the batch run)
-        'column_analysis': {},
-        'column_statistics': [],
-        'data_quality': {},
-        'constraint_analysis': {},
-        'validation_issues': []
     }
 
+    def fail(status, msg):
+        # Same shape as the batch script's ERROR / TIMEOUT / NOT FOUND rows: no measured
+        # sections, so the page shows "not measured" instead of empty numbers.
+        for k in ('row_counts', 'column_analysis', 'data_quality', 'column_statistics', 'constraint_analysis'):
+            result.pop(k, None)
+        result.update(status=status, error=msg, validation_issues=[msg],
+                      validation_time=round(time.monotonic() - started, 2),
+                      Last_Checked=datetime.now(EASTERN).isoformat())
+        return result
+
     try:
-        oracle_cursor = oracle_conn.cursor()
-        sf_cursor = snowflake_conn.cursor()
+        # ── columns (Oracle) | existence + DESCRIBE (Snowflake) ──
+        def ora_meta():
+            return _ora_q(oracle_conn, dl,
+                          "SELECT COLUMN_NAME, DATA_TYPE, NULLABLE FROM ALL_TAB_COLUMNS "
+                          "WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID",
+                          [source_schema, table_name], all_rows=True)
 
-        # ==================== GET COLUMNS ====================
-        # Oracle columns
-        oracle_cursor.execute(
-            "SELECT COLUMN_NAME, DATA_TYPE FROM ALL_TAB_COLUMNS WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID",
-            [source_schema, table_name]
-        )
-        oracle_columns = [{'name': row[0], 'type': row[1]} for row in oracle_cursor.fetchall()]
+        def sf_meta():
+            found = _sf_q(snowflake_conn, dl,
+                          f'SELECT LAST_ALTERED FROM "{target_database}".INFORMATION_SCHEMA.TABLES '
+                          f'WHERE UPPER(TABLE_SCHEMA) = UPPER(%s) AND UPPER(TABLE_NAME) = UPPER(%s)',
+                          (target_schema, snowflake_table))
+            if not found:
+                return None, None
+            return found, _sf_q(snowflake_conn, dl, f'DESCRIBE TABLE {sf_fq}', all_rows=True)
 
-        # Snowflake columns
-        sf_cursor.execute(f"""
-            SELECT COLUMN_NAME, DATA_TYPE 
-            FROM "{target_database}".INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = '{target_schema}' AND TABLE_NAME = '{snowflake_table}' 
-            ORDER BY ORDINAL_POSITION
-        """)
-        snowflake_columns = [{'name': row[0], 'type': row[1]} for row in sf_cursor.fetchall()]
+        ora_rows, (sf_found, describe) = _both(ora_meta, sf_meta)
+        if not sf_found:
+            return fail('TABLE_NOT_FOUND', f"Table '{snowflake_table}' does not exist in Snowflake")
+        if sf_found[0]:
+            result['Snowflake_Last_Updated'] = sf_found[0].isoformat()
 
-        # Same outcomes as the batch script for missing tables
-        if not snowflake_columns:
-            result['status'] = 'TABLE_NOT_FOUND'
-            result['validation_issues'].append("Table does not exist in Snowflake")
-            return result
-        if not oracle_columns:
-            result['status'] = 'ERROR'
-            result['validation_issues'].append("Unable to retrieve columns from source")
-            return result
+        oracle_nn = [r[0] for r in ora_rows if r[2] == 'N']
+        oracle_columns = [{'name': r[0], 'type': r[1]} for r in ora_rows if r[0].upper() not in excluded]
+        snowflake_columns = [{'name': r[0], 'type': r[1]} for r in describe if r[0].upper() not in excluded]
+        if not oracle_columns or not snowflake_columns:
+            return fail('ERROR', 'Unable to retrieve columns from source or target')
 
-        # ==================== FILTER EXCLUDED COLUMNS ====================
-        # Get excluded columns from config (global only)
-        excluded_columns = CONFIG.get('validation', {}).get('excluded_columns', [])
-        all_excluded_columns = set([col.upper() for col in excluded_columns])
+        oracle_names = {tf(c['name']) for c in oracle_columns}
+        sf_by_name = {}
+        for c in snowflake_columns:
+            sf_by_name.setdefault(c['name'].upper(), c)
+        common = oracle_names & set(sf_by_name)
+        oracle_only = oracle_names - set(sf_by_name)
+        snowflake_only = set(sf_by_name) - oracle_names
 
-        if all_excluded_columns:
-            logger.info(f"Excluding columns: {list(all_excluded_columns)}")
-
-            # Filter Oracle columns
-            oracle_columns_before = len(oracle_columns)
-            oracle_columns = [col for col in oracle_columns if col['name'].upper() not in all_excluded_columns]
-            logger.info(
-                f"Oracle columns: {oracle_columns_before} -> {len(oracle_columns)} (excluded {oracle_columns_before - len(oracle_columns)})")
-
-            # Filter Snowflake columns
-            snowflake_columns_before = len(snowflake_columns)
-            snowflake_columns = [col for col in snowflake_columns if col['name'].upper() not in all_excluded_columns]
-            logger.info(
-                f"Snowflake columns: {snowflake_columns_before} -> {len(snowflake_columns)} (excluded {snowflake_columns_before - len(snowflake_columns)})")
-
-        # Transform Oracle column names if transformations exist
-        if transformations:
-            oracle_col_names = {transform_column_name(col['name'], transformations).upper() for col in oracle_columns}
-        else:
-            oracle_col_names = {col['name'].upper() for col in oracle_columns}
-
-        snowflake_col_names = {col['name'].upper() for col in snowflake_columns}
-        common_columns = oracle_col_names & snowflake_col_names
-        oracle_only = oracle_col_names - snowflake_col_names
-        snowflake_only = snowflake_col_names - oracle_col_names
-
-        # Get common columns for analysis
-        if transformations:
-            oracle_common_cols = []
-            sf_common_cols = []
-            for col in oracle_columns:
-                transformed_name = transform_column_name(col['name'], transformations).upper()
-                if transformed_name in common_columns:
-                    oracle_common_cols.append(col)
-                    sf_col = next((c for c in snowflake_columns if c['name'].upper() == transformed_name), None)
-                    if sf_col:
-                        sf_common_cols.append(sf_col)
-        else:
-            oracle_common_cols = [col for col in oracle_columns if col['name'].upper() in common_columns]
-            sf_common_cols = [col for col in snowflake_columns if col['name'].upper() in common_columns]
+        oracle_common_cols, sf_common_cols, matched, seen = [], [], [], set()
+        for col in oracle_columns:
+            name = tf(col['name'])
+            if name in common:
+                oracle_common_cols.append(col)
+                sf_common_cols.append(sf_by_name[name])
+                if name not in seen:
+                    seen.add(name)
+                    matched.append({'oracle_col': col, 'sf_col': sf_by_name[name], 'matched_name': name})
+        stat_matches = [m for m in matched if not _is_lob(m['oracle_col']['type'])]
 
         result['column_analysis'] = {
-            'oracle_columns': len(oracle_columns),
+            'source_columns': len(oracle_columns),
             'snowflake_columns': len(snowflake_columns),
-            'common_columns': len(common_columns),
-            'oracle_only_columns': list(sorted(oracle_only)),
-            'snowflake_only_columns': list(sorted(snowflake_only)),
-            'excluded_columns': list(sorted(all_excluded_columns)) if all_excluded_columns else []
+            'common_columns': len(common),
+            'source_only_columns': sorted(oracle_only),
+            'snowflake_only_columns': sorted(snowflake_only),
+            'excluded_columns': sorted(excluded),
         }
 
-        # ==================== ROW COUNT (PARALLEL) ====================
-        def get_oracle_count():
-            try:
-                query = f'SELECT /*+ PARALLEL(8) */ COUNT(*) FROM "{source_schema}"."{table_name}"'
-                cursor = oracle_conn.cursor()
-                cursor.execute(query)
-                count = cursor.fetchone()[0]
-                cursor.close()
-                return count
-            except Exception as e:
-                logger.error(f"Oracle row count error: {e}")
-                return None
+        # ── one scan per side: row count + column statistics + total nulls ──
+        o_row, s_row = _both(
+            lambda: _ora_q(oracle_conn, dl, _scan_query([c['name'] for c in oracle_common_cols],
+                                                        [m['oracle_col']['name'] for m in stat_matches],
+                                                        ora_fq, hint)),
+            lambda: _sf_q(snowflake_conn, dl, _scan_query([c['name'] for c in sf_common_cols],
+                                                          [m['sf_col']['name'] for m in stat_matches], sf_fq)))
+        oracle_count, sf_count = o_row[0], s_row[0]
+        oracle_nulls = o_row[-1] if o_row[-1] is not None else 0
+        sf_nulls = s_row[-1] if s_row[-1] is not None else 0
+        column_statistics = []
+        for i, m in enumerate(stat_matches):
+            od, on, sd, sn = (v if v is not None else 0 for v in
+                              (o_row[1 + 2 * i], o_row[2 + 2 * i], s_row[1 + 2 * i], s_row[2 + 2 * i]))
+            stat = {
+                'column_name': m['matched_name'],
+                'source_type': m['oracle_col']['type'],
+                'snowflake_type': m['sf_col']['type'],
+                'source_stats': {'distinct_count': od, 'null_count': on},
+                'snowflake_stats': {'distinct_count': sd, 'null_count': sn},
+                'stats_match': {'distinct_count': od == sd, 'null_count': on == sn},
+            }
+            if transformations:
+                stat['source_original_name'] = m['oracle_col']['name']
+                stat['snowflake_name'] = m['sf_col']['name']
+            column_statistics.append(stat)
 
-        def get_sf_count():
-            try:
-                query = f'SELECT COUNT(*) FROM "{target_database}"."{target_schema}"."{snowflake_table}"'
-                cursor = snowflake_conn.cursor()
-                cursor.execute(query)
-                count = cursor.fetchone()[0]
-                cursor.close()
-                return count
-            except Exception as e:
-                logger.error(f"Snowflake row count error: {e}")
-                return None
-
-        # No `with` here: its exit waits for the threads, which would defeat the timeout.
-        executor = ThreadPoolExecutor(max_workers=2)
-        future_oracle = executor.submit(get_oracle_count)
-        future_sf = executor.submit(get_sf_count)
-        try:
-            oracle_count = future_oracle.result(timeout=timeout)
-            sf_count = future_sf.result(timeout=timeout)
-        except FuturesTimeoutError:
-            result['status'] = 'TIMEOUT'
-            result['validation_issues'].append(f"Query timeout after {timeout}s")
-            return result
-        finally:
-            executor.shutdown(wait=False)
-
-        if oracle_count is None or sf_count is None:
-            result['status'] = 'ERROR'
-            result['validation_issues'].append("Failed to get row counts")
-            return result
-
-        result['row_counts'] = {
-            'oracle': oracle_count,
-            'snowflake': sf_count,
-            'match': oracle_count == sf_count
-        }
-
-        if oracle_count != sf_count:
-            result['validation_issues'].append(f"Row count mismatch: Oracle={oracle_count}, Snowflake={sf_count}")
-
-        # ==================== COLUMN STATISTICS (ALL COLUMNS) ====================
-        # Filter out LOB columns
-        lob_types = {'CLOB', 'BLOB', 'NCLOB', 'BFILE', 'LONG', 'LONG RAW'}
-
-        # Build matched columns list
-        matched_cols = []
-        for oracle_col in oracle_common_cols:
-            oracle_type = oracle_col.get('type', '').upper()
-            is_lob = any(lob in oracle_type for lob in lob_types)
-            if not is_lob:
-                if transformations:
-                    transformed_name = transform_column_name(oracle_col['name'], transformations).upper()
-                else:
-                    transformed_name = oracle_col['name'].upper()
-
-                sf_col = next((c for c in sf_common_cols if c['name'].upper() == transformed_name), None)
-                if sf_col:
-                    matched_cols.append({
-                        'oracle_col': oracle_col,
-                        'sf_col': sf_col,
-                        'matched_name': transformed_name
-                    })
-
-        # Build combined Oracle query for statistics
-        if matched_cols:
-            # Positional aliases: column-derived ones break on long names (Oracle 30-char limit)
-            # or names starting with a digit. Results are read by position anyway.
-            oracle_stat_parts = []
-            for i, match in enumerate(matched_cols):
-                oracle_col_name = match['oracle_col']['name']
-                oracle_stat_parts.append(f'COUNT(DISTINCT "{oracle_col_name}") AS D{i}')
-                oracle_stat_parts.append(f'SUM(CASE WHEN "{oracle_col_name}" IS NULL THEN 1 ELSE 0 END) AS N{i}')
-
-            oracle_stats_query = f'SELECT /*+ PARALLEL(8) */ {", ".join(oracle_stat_parts)} FROM "{source_schema}"."{table_name}"'
-
-            # Build combined Snowflake query
-            sf_stat_parts = []
-            for i, match in enumerate(matched_cols):
-                sf_col_name = match['sf_col']['name']
-                sf_stat_parts.append(f'COUNT(DISTINCT "{sf_col_name}") AS D{i}')
-                sf_stat_parts.append(f'SUM(CASE WHEN "{sf_col_name}" IS NULL THEN 1 ELSE 0 END) AS N{i}')
-
-            sf_stats_query = f'SELECT {", ".join(sf_stat_parts)} FROM "{target_database}"."{target_schema}"."{snowflake_table}"'
-
-            # Run in parallel
-            def run_oracle_stats():
-                try:
-                    cursor = oracle_conn.cursor()
-                    cursor.execute(oracle_stats_query)
-                    result = cursor.fetchone()
-                    cursor.close()
-                    return result
-                except Exception as e:
-                    logger.error(f"Oracle stats error: {e}")
-                    return None
-
-            def run_sf_stats():
-                try:
-                    cursor = snowflake_conn.cursor()
-                    cursor.execute(sf_stats_query)
-                    result = cursor.fetchone()
-                    cursor.close()
-                    return result
-                except Exception as e:
-                    logger.error(f"Snowflake stats error: {e}")
-                    return None
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_oracle_stats = executor.submit(run_oracle_stats)
-                future_sf_stats = executor.submit(run_sf_stats)
-                oracle_stats_result = future_oracle_stats.result()
-                sf_stats_result = future_sf_stats.result()
-
-            if not oracle_stats_result or not sf_stats_result:
-                raise RuntimeError("Column statistics query failed (see server log)")
-
-            # Parse results
-            if oracle_stats_result and sf_stats_result:
-                for i, match in enumerate(matched_cols):
-                    oracle_distinct = oracle_stats_result[i * 2] if oracle_stats_result[i * 2] is not None else 0
-                    oracle_nulls = oracle_stats_result[i * 2 + 1] if oracle_stats_result[i * 2 + 1] is not None else 0
-                    sf_distinct = sf_stats_result[i * 2] if sf_stats_result[i * 2] is not None else 0
-                    sf_nulls = sf_stats_result[i * 2 + 1] if sf_stats_result[i * 2 + 1] is not None else 0
-
-                    column_stat = {
-                        'column_name': match['matched_name'],
-                        'oracle_type': match['oracle_col']['type'],
-                        'snowflake_type': match['sf_col']['type'],
-                        'oracle_stats': {
-                            'distinct_count': oracle_distinct,
-                            'null_count': oracle_nulls
-                        },
-                        'snowflake_stats': {
-                            'distinct_count': sf_distinct,
-                            'null_count': sf_nulls
-                        },
-                        'stats_match': {
-                            'distinct_count': oracle_distinct == sf_distinct,
-                            'null_count': oracle_nulls == sf_nulls
-                        }
-                    }
-
-                    result['column_statistics'].append(column_stat)
-
-                    # Add to issues if mismatch
-                    if oracle_distinct != sf_distinct:
-                        result['validation_issues'].append(
-                            f"Column {match['matched_name']}: distinct count mismatch (Oracle={oracle_distinct}, Snowflake={sf_distinct})"
-                        )
-
-        # ==================== OVERALL NULL COUNT ====================
-        def count_oracle_nulls():
-            if not oracle_common_cols:
-                return 0
-            try:
-                null_checks = [f'SUM(CASE WHEN "{col["name"]}" IS NULL THEN 1 ELSE 0 END)' for col in
-                               oracle_common_cols]
-                query = f'SELECT /*+ PARALLEL(8) */ {" + ".join(null_checks)} as TOTAL_NULLS FROM "{source_schema}"."{table_name}"'
-                cursor = oracle_conn.cursor()
-                cursor.execute(query)
-                result = cursor.fetchone()[0]
-                cursor.close()
-                return result if result is not None else 0
-            except Exception as e:
-                logger.error(f"Oracle null count error: {e}")
-                return None
-
-        def count_sf_nulls():
-            if not sf_common_cols:
-                return 0
-            try:
-                null_checks = [f'SUM(CASE WHEN "{col["name"]}" IS NULL THEN 1 ELSE 0 END)' for col in sf_common_cols]
-                query = f'SELECT {" + ".join(null_checks)} as TOTAL_NULLS FROM "{target_database}"."{target_schema}"."{snowflake_table}"'
-                cursor = snowflake_conn.cursor()
-                cursor.execute(query)
-                result = cursor.fetchone()[0]
-                cursor.close()
-                return result if result is not None else 0
-            except Exception as e:
-                logger.error(f"Snowflake null count error: {e}")
-                return None
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_oracle_nulls = executor.submit(count_oracle_nulls)
-            future_sf_nulls = executor.submit(count_sf_nulls)
-            oracle_nulls = future_oracle_nulls.result()
-            sf_nulls = future_sf_nulls.result()
-
-        if oracle_nulls is None or sf_nulls is None:
-            raise RuntimeError("Null count query failed (see server log)")
-        if oracle_nulls is not None and sf_nulls is not None:
-            result['data_quality']['oracle_nulls'] = oracle_nulls
-            result['data_quality']['snowflake_nulls'] = sf_nulls
-            result['data_quality']['null_match'] = oracle_nulls == sf_nulls
-
-            if oracle_nulls != sf_nulls:
-                result['validation_issues'].append(f"Null count mismatch: Oracle={oracle_nulls}, Snowflake={sf_nulls}")
-
-        # ==================== DUPLICATE ANALYSIS ====================
-        # Filter out LOB columns for GROUP BY
-        filtered_oracle_cols = [col for col in oracle_common_cols if
-                                not any(lob in col.get('type', '').upper() for lob in lob_types)]
-        filtered_sf_cols = [col for col in sf_common_cols if
-                            not any(lob in col.get('type', '').upper() for lob in lob_types)]
-
-        def count_oracle_duplicates():
-            try:
-                if not filtered_oracle_cols:
-                    return 0
-                col_list = ', '.join([f'"{col["name"]}"' for col in filtered_oracle_cols])
-                query = f"""
-                    SELECT /*+ PARALLEL(8) */ COUNT(*) FROM (
-                        SELECT {col_list}, COUNT(*) as cnt
-                        FROM "{source_schema}"."{table_name}"
-                        GROUP BY {col_list}
-                        HAVING COUNT(*) > 1
-                    ) duplicates
-                """
-                cursor = oracle_conn.cursor()
-                cursor.execute(query)
-                result = cursor.fetchone()[0]
-                cursor.close()
-                return result if result is not None else 0
-            except Exception as e:
-                logger.error(f"Oracle duplicate count error: {e}")
-                return None
-
-        def count_sf_duplicates():
-            try:
-                if not filtered_sf_cols:
-                    return 0
-                col_list = ', '.join([f'"{col["name"]}"' for col in filtered_sf_cols])
-                query = f"""
-                    SELECT COUNT(*) FROM (
-                        SELECT {col_list}, COUNT(*) as cnt
-                        FROM "{target_database}"."{target_schema}"."{snowflake_table}"
-                        GROUP BY {col_list}
-                        HAVING COUNT(*) > 1
-                    ) AS duplicates
-                """
-                cursor = snowflake_conn.cursor()
-                cursor.execute(query)
-                result = cursor.fetchone()[0]
-                cursor.close()
-                return result if result is not None else 0
-            except Exception as e:
-                logger.error(f"Snowflake duplicate count error: {e}")
-                return None
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_oracle_dupes = executor.submit(count_oracle_duplicates)
-            future_sf_dupes = executor.submit(count_sf_duplicates)
-            oracle_dupes = future_oracle_dupes.result()
-            sf_dupes = future_sf_dupes.result()
-
-        if oracle_dupes is None or sf_dupes is None:
-            raise RuntimeError("Duplicate count query failed (see server log)")
-        if oracle_dupes is not None and sf_dupes is not None:
-            result['data_quality']['oracle_duplicates'] = oracle_dupes
-            result['data_quality']['snowflake_duplicates'] = sf_dupes
-            result['data_quality']['duplicate_match'] = oracle_dupes == sf_dupes
-
-            if oracle_dupes != sf_dupes:
-                result['validation_issues'].append(
-                    f"Duplicate count mismatch: Oracle={oracle_dupes}, Snowflake={sf_dupes}")
-
-        # ==================== CONSTRAINT ANALYSIS ====================
-        constraint_analysis = {
-            'constraint_analysis_performed': True,
-            'constraint_warnings': {},
-            'constraint_details': {
-                'oracle': {
-                    'primary_keys': [],
-                    'unique_constraints': [],
-                    'check_constraints': [],
-                    'not_null_columns': [],
-                    'foreign_keys': []
-                },
-                'snowflake': {
-                    'primary_keys': [],
-                    'unique_constraints': [],
-                    'check_constraints': [],
-                    'not_null_columns': [],
-                    'foreign_keys': []
-                }
-            },
-            'validation_results': {
-                'primary_keys': {'status': 'UNKNOWN', 'details': None},
-                'unique_constraints': {'status': 'UNKNOWN', 'details': None},
-                'check_constraints': {'status': 'UNKNOWN', 'details': None},
-                'not_null_constraints': {'status': 'UNKNOWN', 'details': []},
-                'foreign_keys': {'status': 'UNKNOWN', 'details': None}
-            },
-            'summary': {}
-        }
+        # ── duplicates, then constraints (Oracle metadata | Snowflake keys + NOT NULL scan) ──
+        o_dupe_cols = [c['name'] for c in oracle_common_cols if not _is_lob(c['type'])]
+        s_dupe_cols = [c['name'] for c in sf_common_cols if not _is_lob(c['type'])]
+        oracle_dupes, sf_dupes = _both(
+            lambda: (_ora_q(oracle_conn, dl, _dupes_query(o_dupe_cols, ora_fq, hint))[0] or 0)
+            if o_dupe_cols else 0,
+            lambda: (_sf_q(snowflake_conn, dl, _dupes_query(s_dupe_cols, sf_fq))[0] or 0) if s_dupe_cols else 0)
 
         try:
-            # ==================== GET ORACLE PRIMARY KEYS ====================
-            oracle_cursor.execute("""
-                                  SELECT cols.COLUMN_NAME
-                                  FROM ALL_CONSTRAINTS cons
-                                           JOIN ALL_CONS_COLUMNS cols ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME
-                                      AND cons.OWNER = cols.OWNER
-                                  WHERE cons.CONSTRAINT_TYPE = 'P'
-                                    AND cons.OWNER = :1
-                    AND cons.TABLE_NAME = :2
-                                  ORDER BY cols.POSITION
-                                  """, [source_schema, table_name])
-            oracle_pk_columns = [row[0] for row in oracle_cursor.fetchall()]
-            constraint_analysis['constraint_details']['oracle']['primary_keys'] = oracle_pk_columns
-
-            # Transform PK column names for comparison
-            if transformations:
-                oracle_pk_set = {transform_column_name(col, transformations).upper() for col in oracle_pk_columns}
-            else:
-                oracle_pk_set = {col.upper() for col in oracle_pk_columns}
-
-            # ==================== GET ORACLE UNIQUE CONSTRAINTS ====================
-            oracle_cursor.execute("""
-                                  SELECT cons.CONSTRAINT_NAME,
-                                         LISTAGG(cols.COLUMN_NAME, ', ') WITHIN GROUP (ORDER BY cols.POSITION) as COLUMNS
-                                  FROM ALL_CONSTRAINTS cons
-                                      JOIN ALL_CONS_COLUMNS cols
-                                  ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME
-                                      AND cons.OWNER = cols.OWNER
-                                  WHERE cons.CONSTRAINT_TYPE = 'U'
-                                    AND cons.OWNER = :1
-                                    AND cons.TABLE_NAME = :2
-                                  GROUP BY cons.CONSTRAINT_NAME
-                                  """, [source_schema, table_name])
-            oracle_unique_constraints = [{'name': row[0], 'columns': row[1]} for row in oracle_cursor.fetchall()]
-            constraint_analysis['constraint_details']['oracle']['unique_constraints'] = oracle_unique_constraints
-
-            # ==================== GET ORACLE CHECK CONSTRAINTS ====================
-            oracle_cursor.execute("""
-                                  SELECT cons.CONSTRAINT_NAME, cons.SEARCH_CONDITION
-                                  FROM ALL_CONSTRAINTS cons
-                                  WHERE cons.CONSTRAINT_TYPE = 'C'
-                                    AND cons.OWNER = :1
-                    AND cons.TABLE_NAME = :2
-                    AND cons.CONSTRAINT_NAME NOT LIKE 'SYS%'
-                                  ORDER BY cons.CONSTRAINT_NAME
-                                  """, [source_schema, table_name])
-            oracle_check_constraints = []
-            for row in oracle_cursor.fetchall():
-                # Read SEARCH_CONDITION as CLOB if it exists
-                search_condition = row[1].read() if hasattr(row[1], 'read') else str(row[1]) if row[1] else ''
-                oracle_check_constraints.append({
-                    'name': row[0],
-                    'condition': search_condition
-                })
-            constraint_analysis['constraint_details']['oracle']['check_constraints'] = oracle_check_constraints
-
-            # ==================== GET ORACLE NOT NULL COLUMNS ====================
-            oracle_cursor.execute("""
-                                  SELECT COLUMN_NAME
-                                  FROM ALL_TAB_COLUMNS
-                                  WHERE OWNER = :1 AND TABLE_NAME = :2 AND NULLABLE = 'N'
-                                  ORDER BY COLUMN_ID
-                                  """, [source_schema, table_name])
-            oracle_nn_columns = [row[0] for row in oracle_cursor.fetchall()]
-            constraint_analysis['constraint_details']['oracle']['not_null_columns'] = oracle_nn_columns
-
-            # ==================== GET ORACLE FOREIGN KEYS ====================
-            oracle_cursor.execute("""
-                                  SELECT cons.CONSTRAINT_NAME,
-                                         LISTAGG(cols.COLUMN_NAME, ', ') WITHIN GROUP (ORDER BY cols.POSITION) as COLUMNS,
-                    cons.R_CONSTRAINT_NAME,
-                    r_cons.TABLE_NAME as REFERENCED_TABLE
-                                  FROM ALL_CONSTRAINTS cons
-                                      JOIN ALL_CONS_COLUMNS cols
-                                  ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME
-                                      AND cons.OWNER = cols.OWNER
-                                      LEFT JOIN ALL_CONSTRAINTS r_cons ON cons.R_CONSTRAINT_NAME = r_cons.CONSTRAINT_NAME
-                                      AND cons.R_OWNER = r_cons.OWNER
-                                  WHERE cons.CONSTRAINT_TYPE = 'R'
-                                    AND cons.OWNER = :1
-                                    AND cons.TABLE_NAME = :2
-                                  GROUP BY cons.CONSTRAINT_NAME, cons.R_CONSTRAINT_NAME, r_cons.TABLE_NAME
-                                  """, [source_schema, table_name])
-            oracle_foreign_keys = []
-            for row in oracle_cursor.fetchall():
-                oracle_foreign_keys.append({
-                    'name': row[0],
-                    'columns': row[1],
-                    'referenced_constraint': row[2],
-                    'referenced_table': row[3]
-                })
-            constraint_analysis['constraint_details']['oracle']['foreign_keys'] = oracle_foreign_keys
-
-            # ==================== GET SNOWFLAKE CONSTRAINTS USING DESCRIBE TABLE ====================
-            sf_cursor.execute(f'DESCRIBE TABLE "{target_database}"."{target_schema}"."{snowflake_table}"')
-            describe_results = sf_cursor.fetchall()
-
-            # Parse DESCRIBE TABLE results
-            sf_pk_columns = []
-            sf_unique_columns = []
-            sf_nn_columns = []
-
-            for row in describe_results:
-                col_name = row[0]  # Column name (keep original case)
-                is_nullable = row[3]  # null? column
-                is_primary = row[5]  # primary key column
-                is_unique = row[6]  # unique key column
-
-                # Primary key columns
-                if is_primary == 'Y':
-                    sf_pk_columns.append(col_name)
-
-                # Unique constraint columns
-                if is_unique == 'Y':
-                    sf_unique_columns.append(col_name)
-
-                # NOT NULL columns
-                if is_nullable == 'N':
-                    sf_nn_columns.append(col_name)
-
-            constraint_analysis['constraint_details']['snowflake']['primary_keys'] = sf_pk_columns
-            constraint_analysis['constraint_details']['snowflake']['not_null_columns'] = sf_nn_columns
-
-            # For unique constraints in Snowflake, create constraint objects
-            if sf_unique_columns:
-                sf_unique_constraints = [{'columns': ', '.join(sf_unique_columns)}]
-            else:
-                sf_unique_constraints = []
-            constraint_analysis['constraint_details']['snowflake']['unique_constraints'] = sf_unique_constraints
-
-            # ==================== GET SNOWFLAKE CHECK AND FOREIGN KEY CONSTRAINTS ====================
-            # Try to get check constraints and foreign keys from INFORMATION_SCHEMA
-            try:
-                # Check constraints
-                sf_cursor.execute(f"""
-                    SELECT CONSTRAINT_NAME, CHECK_CLAUSE
-                    FROM "{target_database}".INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-                    WHERE CONSTRAINT_TYPE = 'CHECK'
-                        AND TABLE_SCHEMA = '{target_schema}'
-                        AND TABLE_NAME = '{snowflake_table}'
-                """)
-                sf_check_constraints = []
-                for row in sf_cursor.fetchall():
-                    sf_check_constraints.append({
-                        'name': row[0],
-                        'condition': row[1] if row[1] else ''
-                    })
-                constraint_analysis['constraint_details']['snowflake']['check_constraints'] = sf_check_constraints
-
-                # Foreign keys
-                sf_cursor.execute(f"""
-                    SELECT 
-                        tc.CONSTRAINT_NAME,
-                        kcu.COLUMN_NAME,
-                        rc.UNIQUE_CONSTRAINT_NAME,
-                        kcu2.TABLE_NAME as REFERENCED_TABLE
-                    FROM "{target_database}".INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-                    LEFT JOIN "{target_database}".INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
-                        ON tc.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
-                        AND tc.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
-                    LEFT JOIN "{target_database}".INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
-                        ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
-                        AND tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
-                    LEFT JOIN "{target_database}".INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu2
-                        ON rc.UNIQUE_CONSTRAINT_NAME = kcu2.CONSTRAINT_NAME
-                        AND rc.UNIQUE_CONSTRAINT_SCHEMA = kcu2.CONSTRAINT_SCHEMA
-                    WHERE tc.CONSTRAINT_TYPE = 'FOREIGN KEY'
-                        AND tc.TABLE_SCHEMA = '{target_schema}'
-                        AND tc.TABLE_NAME = '{snowflake_table}'
-                """)
-                sf_foreign_keys = []
-                for row in sf_cursor.fetchall():
-                    sf_foreign_keys.append({
-                        'name': row[0],
-                        'columns': row[1],
-                        'referenced_constraint': row[2],
-                        'referenced_table': row[3]
-                    })
-                constraint_analysis['constraint_details']['snowflake']['foreign_keys'] = sf_foreign_keys
-            except Exception:
-                # If INFORMATION_SCHEMA queries fail, leave as empty lists
-                constraint_analysis['constraint_details']['snowflake']['check_constraints'] = []
-                constraint_analysis['constraint_details']['snowflake']['foreign_keys'] = []
-
-            # ==================== COMPARE AND SET STATUSES ====================
-            # Primary Keys
-            sf_pk_set = {col.upper() for col in sf_pk_columns}
-            if oracle_pk_set == sf_pk_set:
-                constraint_analysis['validation_results']['primary_keys']['status'] = 'MATCH'
-                constraint_analysis['validation_results']['primary_keys'][
-                    'details'] = f"Primary keys match: {list(oracle_pk_set)}"
-            elif len(oracle_pk_set) == 0 and len(sf_pk_set) == 0:
-                constraint_analysis['validation_results']['primary_keys']['status'] = 'NONE'
-                constraint_analysis['validation_results']['primary_keys'][
-                    'details'] = "No primary keys in either system"
-            else:
-                constraint_analysis['validation_results']['primary_keys']['status'] = 'MISMATCH'
-                pk_only_oracle = oracle_pk_set - sf_pk_set
-                pk_only_sf = sf_pk_set - oracle_pk_set
-                details = []
-                if pk_only_oracle:
-                    details.append(f"Primary keys only in Oracle: {list(pk_only_oracle)}")
-                if pk_only_sf:
-                    details.append(f"Primary keys only in Snowflake: {list(pk_only_sf)}")
-                if not details:
-                    details.append(f"Oracle PK: {list(oracle_pk_set)}, Snowflake PK: {list(sf_pk_set)}")
-                constraint_analysis['validation_results']['primary_keys']['details'] = '; '.join(details)
-
-            # Unique Constraints
-            oracle_unique_count = len(oracle_unique_constraints)
-            sf_unique_count = len(sf_unique_constraints)
-            if oracle_unique_count == sf_unique_count:
-                constraint_analysis['validation_results']['unique_constraints']['status'] = 'MATCH'
-                constraint_analysis['validation_results']['unique_constraints'][
-                    'details'] = f"Unique constraint count matches: {oracle_unique_count}"
-            elif oracle_unique_count == 0 and sf_unique_count == 0:
-                constraint_analysis['validation_results']['unique_constraints']['status'] = 'NONE'
-                constraint_analysis['validation_results']['unique_constraints'][
-                    'details'] = "No unique constraints in either system"
-            else:
-                constraint_analysis['validation_results']['unique_constraints']['status'] = 'MISMATCH'
-                constraint_analysis['validation_results']['unique_constraints'][
-                    'details'] = f"Unique constraint count mismatch: Oracle={oracle_unique_count}, Snowflake={sf_unique_count}"
-
-            # Check Constraints
-            oracle_check_count = len(oracle_check_constraints)
-            sf_check_count = len(constraint_analysis['constraint_details']['snowflake']['check_constraints'])
-            if oracle_check_count == sf_check_count:
-                constraint_analysis['validation_results']['check_constraints']['status'] = 'MATCH'
-                constraint_analysis['validation_results']['check_constraints'][
-                    'details'] = f"Check constraint count matches: {oracle_check_count}"
-            elif oracle_check_count == 0 and sf_check_count == 0:
-                constraint_analysis['validation_results']['check_constraints']['status'] = 'NONE'
-                constraint_analysis['validation_results']['check_constraints'][
-                    'details'] = "No check constraints in either system"
-            else:
-                constraint_analysis['validation_results']['check_constraints']['status'] = 'MISMATCH'
-                constraint_analysis['validation_results']['check_constraints'][
-                    'details'] = f"Check constraint count mismatch: Oracle={oracle_check_count}, Snowflake={sf_check_count}"
-
-            # Foreign Keys
-            oracle_fk_count = len(oracle_foreign_keys)
-            sf_fk_count = len(constraint_analysis['constraint_details']['snowflake']['foreign_keys'])
-            if oracle_fk_count == sf_fk_count == 0:
-                constraint_analysis['validation_results']['foreign_keys']['status'] = 'NONE'
-                constraint_analysis['validation_results']['foreign_keys'][
-                    'details'] = "No foreign keys in either system"
-            elif oracle_fk_count == sf_fk_count:
-                constraint_analysis['validation_results']['foreign_keys']['status'] = 'MATCH'
-                constraint_analysis['validation_results']['foreign_keys'][
-                    'details'] = f"Foreign key count matches: {oracle_fk_count}"
-            else:
-                constraint_analysis['validation_results']['foreign_keys']['status'] = 'MISMATCH'
-                constraint_analysis['validation_results']['foreign_keys'][
-                    'details'] = f"Foreign key count mismatch: Oracle={oracle_fk_count}, Snowflake={sf_fk_count}"
-
-            # NOT NULL - Transform column names for comparison
-            if transformations:
-                transformed_nn_columns = [transform_column_name(col, transformations).upper() for col in
-                                          oracle_nn_columns]
-            else:
-                transformed_nn_columns = [col.upper() for col in oracle_nn_columns]
-
-            # Validate each NOT NULL column in Snowflake, all in one scan. Use the real
-            # Snowflake column name: it may not be upper case.
             sf_name = {c['name'].upper(): c['name'] for c in snowflake_columns}
-            nn_cols = [sf_name[c] for c in transformed_nn_columns if c in sf_name]
-            if nn_cols:
-                parts = ', '.join(f'COUNT(*) - COUNT("{c}")' for c in nn_cols)
-                sf_cursor.execute(
-                    f'SELECT COUNT(*), {parts} FROM "{target_database}"."{target_schema}"."{snowflake_table}"')
-                total_rows, *null_counts = sf_cursor.fetchone()
-                for col, null_count in zip(nn_cols, null_counts):
-                    # Not added to validation_issues: the batch script doesn't either, and a
-                    # re-validate must grade a table the same way the scheduled run does.
-                    constraint_analysis['validation_results']['not_null_constraints']['details'].append({
-                        'column': col,
-                        'exists_in_oracle': True,
-                        'exists_in_snowflake': col.upper() in {c.upper() for c in sf_nn_columns},
-                        'snowflake_total_rows': total_rows,
-                        'snowflake_null_count': null_count,
-                        'validation_status': 'PASS' if null_count == 0 else 'FAIL'
-                    })
+            nn_check = [sf_name[c] for c in dict.fromkeys(tf(c) for c in oracle_nn) if c in sf_name]
 
-            # Set NOT NULL overall status (same rules as the batch script)
-            failed_nn = sum(1 for d in constraint_analysis['validation_results']['not_null_constraints']['details']
-                            if d.get('validation_status') == 'FAIL')
-            sf_nn_set = {c.upper() for c in sf_nn_columns}
-            if failed_nn > 0:
-                constraint_analysis['validation_results']['not_null_constraints']['status'] = 'VALIDATION_FAILED'
-            elif set(transformed_nn_columns) != sf_nn_set:
-                constraint_analysis['validation_results']['not_null_constraints']['status'] = 'DEFINITION_MISMATCH'
-            elif not transformed_nn_columns:
-                constraint_analysis['validation_results']['not_null_constraints']['status'] = 'NONE'
-            else:
-                constraint_analysis['validation_results']['not_null_constraints']['status'] = 'MATCH'
+            def sf_side():
+                sc = _snowflake_constraints(snowflake_conn, dl, sf_fq, describe)
+                s_nn = {c.upper() for c in sc['not_null_columns']}
+                details = []
+                if nn_check:
+                    parts = ', '.join(f'COUNT(*) - COUNT("{c}")' for c in nn_check)
+                    total_rows, *null_counts = _sf_q(snowflake_conn, dl, f'SELECT COUNT(*), {parts} FROM {sf_fq}')
+                    details = [{'column': c, 'exists_in_source': True, 'exists_in_snowflake': c.upper() in s_nn,
+                                'snowflake_total_rows': total_rows, 'snowflake_null_count': n,
+                                'validation_status': 'PASS' if n == 0 else 'FAIL'}
+                               for c, n in zip(nn_check, null_counts)]
+                return sc, details
 
-            # ==================== SUMMARY ====================
-            constraint_analysis['summary'] = {
-                'primary_keys': constraint_analysis['validation_results']['primary_keys']['status'],
-                'unique_constraints': constraint_analysis['validation_results']['unique_constraints']['status'],
-                'check_constraints': constraint_analysis['validation_results']['check_constraints']['status'],
-                'not_null_constraints': constraint_analysis['validation_results']['not_null_constraints']['status'],
-                'foreign_keys': constraint_analysis['validation_results']['foreign_keys']['status']
+            oc, (sc, nn_details) = _both(
+                lambda: _oracle_constraints(oracle_conn, dl, source_schema, table_name, oracle_nn), sf_side)
+            constraint_analysis = _compare_constraints(oc, sc, tf, nn_details)
+        except Exception as e:
+            if isinstance(e, TimeoutError) or dl.passed:
+                raise
+            logger.error(f"Constraint analysis error for {table_name}: {e}")
+            constraint_analysis = {
+                'constraint_analysis_performed': True,
+                'constraint_warnings': {'error': f"Error during constraint analysis: {e}"},
+                'constraint_details': {'source': {}, 'snowflake': {}},
+                'validation_results': {},
+                'summary': {},
             }
 
-        except Exception as e:
-            logger.error(f"Constraint analysis error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            constraint_analysis['constraint_warnings']['error'] = f"Error during constraint analysis: {str(e)}"
-
-        result['constraint_analysis'] = constraint_analysis
-
-        # Add column mismatch issues
+        # ── grade (batch script order) ──
+        issues = []
+        if oracle_count != sf_count:
+            issues.append(f"Row count mismatch: Source={oracle_count}, Snowflake={sf_count}")
         if oracle_only:
-            result['validation_issues'].append(f"Columns only in Oracle: {', '.join(sorted(oracle_only))}")
+            issues.append(f"Columns only in Source: {', '.join(sorted(oracle_only))}")
         if snowflake_only:
-            result['validation_issues'].append(f"Columns only in Snowflake: {', '.join(sorted(snowflake_only))}")
+            issues.append(f"Columns only in Snowflake: {', '.join(sorted(snowflake_only))}")
+        if oracle_nulls != sf_nulls:
+            issues.append(f"Null count mismatch: Source={oracle_nulls}, Snowflake={sf_nulls}")
+        if oracle_dupes != sf_dupes:
+            issues.append(f"Duplicate count mismatch: Source={oracle_dupes}, Snowflake={sf_dupes}")
+        for c in column_statistics:
+            if not c['stats_match']['distinct_count']:
+                issues.append(f"Column {c['column_name']}: distinct count mismatch "
+                              f"(Source={c['source_stats']['distinct_count']}, "
+                              f"Snowflake={c['snowflake_stats']['distinct_count']})")
 
-        # ==================== DETERMINE STATUS ====================
-        if result['validation_issues']:
-            result['status'] = 'CRITICAL'
-        else:
-            result['status'] = 'PASSED'
-
-        oracle_cursor.close()
-        sf_cursor.close()
+        result.update(
+            # same grading as the batch script: CRITICAL only when the row counts differ
+            status='CRITICAL' if oracle_count != sf_count else 'WARNING' if issues else 'PASSED',
+            row_counts={'source': oracle_count, 'snowflake': sf_count, 'match': oracle_count == sf_count},
+            data_quality={'source_nulls': oracle_nulls, 'snowflake_nulls': sf_nulls,
+                          'null_match': oracle_nulls == sf_nulls, 'source_duplicates': oracle_dupes,
+                          'snowflake_duplicates': sf_dupes, 'duplicate_match': oracle_dupes == sf_dupes},
+            column_statistics=column_statistics,
+            constraint_analysis=constraint_analysis,
+            validation_issues=issues,
+            validation_time=round(time.monotonic() - started, 2),
+            Last_Checked=datetime.now(EASTERN).isoformat(),
+        )
+        return result
 
     except Exception as e:
+        if isinstance(e, TimeoutError) or dl.passed:
+            logger.warning(f"Re-validation of {table_name} timed out after {dl.seconds}s")
+            return fail('TIMEOUT', f"Validation exceeded {dl.seconds}s timeout")
         logger.error(f"Error validating table {table_name}: {e}")
-        result['status'] = 'ERROR'
-        result['validation_issues'].append(f"Validation error: {str(e)}")
-
-    return result
+        return fail('ERROR', f"Validation error: {e}")
 
 
 @app.post("/dq/validate_single_table")
@@ -2405,107 +2166,58 @@ def validate_single_table(  # sync on purpose: FastAPI runs it in a worker threa
                 detail=f"Invalid {_field}: must be a plain table/schema identifier",
             )
 
-    oracle_conn = None
+    # Route to the correct Oracle connection using the DATABASE column value
+    # from DQ_IT_VALIDATION_REPORT (source_db), falling back to target_database.
+    db_key = source_db or target_database
+    oracle_config = get_oracle_config(db_key)
+    transformations = _pipeline_transformations(pipeline_name)
+    vcfg = CONFIG.get('validation', {}) or {}
+    # Whole-table budget. Each query gets what's left and is cancelled on the server when it runs out.
+    timeout = float(vcfg.get('revalidate_timeout') or 900)
+    table_config = {
+        'table_name': table_name,
+        'source_schema': source_schema,
+        'target_database': target_database,
+        'target_schema': target_schema,
+        'snowflake_table': snowflake_table,
+        'pipeline_name': pipeline_name,
+    }
+
+    logger.info(f"Re-validating {source_schema}.{table_name} (source_db={db_key}, dsn={oracle_config.get('dsn')}, "
+                f"transformations={'yes' if transformations else 'no'})")
+    pool, oracle_conn = create_oracle_connection(oracle_config)
+    result = None
     try:
-        logger.info(f"Starting validation for table: {table_name}")
-
-        # Route to the correct Oracle connection using the DATABASE column value
-        # from DQ_IT_VALIDATION_REPORT (source_db), falling back to target_database.
-        db_key = source_db or target_database
-        oracle_config = get_oracle_config(db_key)
-        logger.info(f"Using Oracle DSN: {oracle_config['dsn']} for source_db: {db_key}")
-
-        # Load transformation rules from StreamSets report (optional)
-        transformations = None
-        report_paths = CONFIG.get('validation', {}).get('report_paths', {})
-
-        report_path = report_paths.get("path") if report_paths else None
-        if report_path:
-            logger.info(f"Using report path: {report_path}")
-        if report_path:
-
-            try:
-                with open(report_path, 'r') as f:
-                    report_data = json.load(f)
-
-                # Report is a direct array of pipelines
-                if isinstance(report_data, list):
-                    pipelines = report_data
-                else:
-                    pipelines = report_data.get('pipelines', [])
-
-                # Find the specific pipeline for transformation rules
-                for pipeline in pipelines:
-                    if pipeline.get('pipeline_name') == pipeline_name:
-                        parameters = pipeline.get('parameters', [])
-                        for param in parameters:
-                            param_value = param.get('parameter', '')
-                            if 'replaceAll' in param_value and 'f:name()' in param_value:
-                                transformations = parse_streamsets_replaceall(param_value)
-                                logger.info(f"Found transformations: {transformations}")
-                                break
-                        break
-            except Exception as e:
-                logger.warning(f"Could not load transformations from report: {e}")
-
-        if not transformations:
-            logger.info("No field name transformations found, comparing column names as-is")
-
-        # Get timeout setting
-        timeout = CONFIG.get('validation', {}).get('table_timeout', 60)
-
-        # Create connections
-        logger.info("Creating database connections...")
-        oracle_conn = create_oracle_connection(oracle_config)
-
-        # Build table config
-        table_config = {
-            'table_name': table_name,
-            'source_schema': source_schema,
-            'target_database': target_database,
-            'target_schema': target_schema,
-            'snowflake_table': snowflake_table,
-            'pipeline_name': pipeline_name
-        }
-
-        # Run validation. The Snowflake login is reused from the pool: bulk
-        # re-validation calls this once per table.
-        logger.info(f"Running validation for {table_name}...")
         with it_report_pool.connection() as snowflake_conn:
-            result = None
             try:
-                result = validate_single_table_logic(
-                    oracle_conn,
-                    snowflake_conn,
-                    table_config,
-                    transformations,
-                    timeout
-                )
+                result = validate_single_table_logic(oracle_conn, snowflake_conn, table_config, transformations, timeout)
             finally:
-                # A timed-out or failed query can still be running on this connection
-                # in an abandoned thread, so it must not be handed to the next request.
+                # A timed-out or failed query can leave the session unusable: don't reuse it.
                 if not isinstance(result, dict) or result.get('status') in ('TIMEOUT', 'ERROR'):
                     it_report_pool.discard(snowflake_conn)
-
-        logger.info(f"Validation complete for {table_name}: {result['status']}")
-        return {
-            'success': True,
-            'validation_result': result
-        }
-
+                else:
+                    _sf_reset_session_timeout(snowflake_conn)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in validate_single_table: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # A timed-out query may still be running in an abandoned thread: break it, then close.
-        if oracle_conn is not None:
-            for step in (oracle_conn.cancel, oracle_conn.close):
-                try:
-                    step()
-                except Exception as e:
-                    logger.warning(f"Oracle cleanup: {e}")
+        broken = not isinstance(result, dict) or result.get('status') in ('TIMEOUT', 'ERROR')
+        try:
+            if broken:
+                pool.drop(oracle_conn)
+            else:
+                oracle_conn.call_timeout = 0
+                pool.release(oracle_conn)
+        except Exception as e:
+            logger.warning(f"Oracle session cleanup: {e}")
+
+    logger.info(f"Validation complete for {table_name}: {result['status']} in {result.get('validation_time')}s")
+    return {
+        'success': True,
+        'validation_result': result
+    }
 
 
 # ============================================================================
@@ -5474,6 +5186,7 @@ class _ItWake:
     lands while they're reading still counts (the old event stays set)."""
     def __init__(self):
         self.ev = asyncio.Event()
+        self.watchers = 0  # streams on this server using it; dropped from the table at 0
 
     def fire(self):
         old, self.ev = self.ev, asyncio.Event()
@@ -5657,12 +5370,17 @@ async def _it_run_task(run_id: str, db_name: str, cmd: list, log: _ItLog):
                 last = now
                 await flush()
 
+    unpublished = False  # the script saved to STG only (some pipeline failed), so the page won't show it
+
     def read_output():
+        nonlocal unpublished
         try:
             for line in iter(process.stdout.readline, b""):
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 if decoded:
                     log.add("output", decoded)
+                    if "CORE not updated" in decoded:
+                        unpublished = True
             code = process.wait()
         except Exception as e:  # pragma: no cover - pipe errors
             code = process.wait()
@@ -5683,8 +5401,11 @@ async def _it_run_task(run_id: str, db_name: str, cmd: list, log: _ItLog):
         log.add("separator")
         if stopped_by:
             log.add("error", f"{label} validation stopped by {stopped_by}.")
+        elif rc == 0 and unpublished:
+            log.add("error", f"{label} validation finished, but some pipelines failed, so the results were "
+                             "saved to staging only and are not shown on IT Checks. See the errors above.")
         elif rc == 0:
-            log.add("success", f"{label} validation completed — results saved to Snowflake.")
+            log.add("success", f"{label} validation completed. Results saved to Snowflake.")
         else:
             log.add("error", f"{label} validation failed with exit code {rc}")
     except FileNotFoundError:
@@ -5720,9 +5441,10 @@ async def _it_watch(run_id: str, after: int = 0):
     so a browser that loses the connection can resume where it left off."""
     _it_start_listener()
     wake = _it_wake(_IT_LOG_WAKE, run_id)
+    wake.watchers += 1
     last, quiet = after, 0.0
-    yield _sse({"type": "run", "run_id": run_id})
     try:
+        yield _sse({"type": "run", "run_id": run_id})
         while True:
             ev = wake.ev  # before the read: a NOTIFY during the read still wakes us
             def read(conn):
@@ -5766,8 +5488,11 @@ async def _it_watch(run_id: str, after: int = 0):
                     quiet = 0.0
                     yield ": ping\n\n"
     finally:
-        if not wake.ev._waiters:  # last watcher on this server gone
-            _IT_LOG_WAKE.pop(run_id, None)
+        # Count watchers instead of peeking at the event: another stream may be between
+        # reads (not waiting) and would otherwise lose its wake-ups and fall back to polling.
+        wake.watchers -= 1
+        if wake.watchers <= 0 and _IT_LOG_WAKE.get(run_id) is wake:
+            del _IT_LOG_WAKE[run_id]
 
 
 @app.get("/api/run-it-validation")
@@ -5896,9 +5621,14 @@ async def download_it_run_log(run_id: str, auth: dict = Depends(require_permissi
     run, rows = await _it_db(read, read_only=True)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    head = f"{_IT_DB_LABEL.get(run['db'], run['db'])} IT validation · started by {run['started_by']} at {run['started_at']} · {run['status']}\n\n"
-    body = "\n".join("-" * 60 if r["type"] == "separator" else f"{r['ts']}  {r['message']}" for r in rows)
-    name = f"it_validation_{run['db']}_{str(run['started_at'])[:19].replace(':', '-').replace('T', '_')}.txt"
+    def et(ts, f='%Y-%m-%d %H:%M:%S'):
+        return ts.astimezone(EASTERN).strftime(f) if hasattr(ts, 'astimezone') else str(ts or '')
+    head = (f"{_IT_DB_LABEL.get(run['db'], run['db'])} IT validation · started by {run['started_by']} "
+            f"at {et(run['started_at'])} ET · {run['status']}"
+            + (f" (exit {run['returncode']})" if run['returncode'] is not None else "")
+            + (f" · stopped by {run['stop_requested_by']}" if run['stop_requested_by'] else "") + "\n\n")
+    body = "\n".join("-" * 60 if r["type"] == "separator" else f"{et(r['ts'])}  {r['message']}" for r in rows)
+    name = f"it_validation_{run['db']}_{et(run['started_at'], '%Y-%m-%d_%H-%M-%S')}.txt"
     return _PlainTextResponse(head + body + "\n",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
@@ -5910,6 +5640,8 @@ async def stop_it_validation(
 ):
     """Ask the server running this validation to stop it. NOTIFY wakes that server immediately;
     every watcher's stream then ends with done/stopped=true."""
+    if db_name not in _IT_DB_LABEL:
+        raise HTTPException(status_code=400, detail=f"Unknown database '{db_name}'. Must be one of: {', '.join(_IT_DB_LABEL)}")
     who = _it_user(auth)
     def ask(conn):
         row = conn.execute("""UPDATE it_runs SET stop_requested_by = COALESCE(stop_requested_by, ?)
@@ -5984,6 +5716,7 @@ def shutdown_event():
         it_report_pool.close_all()
     except Exception as e:
         logger.warning(f"IT report Snowflake pool shutdown: {e}")
+    close_oracle_pools()
 
     # Queued audit events go in (or to the spool) before the pool closes.
     from audit import flush_audit_queue

@@ -248,7 +248,8 @@ _ORACLE_WORD = re.compile(r"\bOracle\b")
 
 
 def _neutral(obj):
-    """The script names everything 'oracle'; the page shows 'source' (Oracle, MariaDB, ...)."""
+    """For this page: any leftover 'oracle' key or the word 'Oracle' in the script's text becomes 'source' /
+    'Source', since the source may be MariaDB. The report fields themselves are already source_*."""
     if isinstance(obj, dict):
         own = obj.get("_own_error")   # our own messages say "Oracle" on purpose; only the script's get renamed
         keep = lambda k: (own and k in ("error", "problems")) or k in ("type", "source_type")   # "Oracle" here names the database
@@ -544,7 +545,7 @@ def _consolidated(v, results, report_path, seconds):
                             "generated_by": "pipeline_validation"},
         "overall_summary": {"successful_pipelines": len(ok), "failed_pipelines": len(results) - len(ok),
                             "total_tables_validated": total("total_validations"), "total_passed": total("passed"),
-                            "total_critical": total("critical"), "total_errors": total("errors"),
+                            "total_critical": total("critical"), "total_warnings": total("warnings"), "total_errors": total("errors"),
                             "total_not_found": total("not_found"), "total_faulty": total("faulty")},
         "pipeline_results": results,
         "faulty_tables_summary": [{"pipeline_name": r["pipeline_name"], "pipeline_number": r.get("pipeline_number"),
@@ -639,7 +640,7 @@ def _runner_main():
 
     write = None
     if a.write:
-        # the saved report keeps the script's own field names (oracle_*): the IT Checks page reads those
+        # the saved report keeps the script's field names (source_*, as the IT Checks page reads them)
         try:
             write = _write_report(v, config, raw, a.database_name or None, a.report, time.time() - started)
         except Exception as e:   # validation results still go back to the page
@@ -793,7 +794,8 @@ def _overall(status: Optional[str], summary: Dict[str, Any]) -> str:
     """One word for a pipeline's run, worst first - the same order the IT Checks badges use."""
     if status and status != "SUCCESS":
         return "ERROR"
-    for key, word in (("critical", "CRITICAL"), ("errors", "ERROR"), ("faulty", "FAULTY"), ("not_found", "TABLE_NOT_FOUND")):
+    for key, word in (("critical", "CRITICAL"), ("errors", "ERROR"), ("faulty", "FAULTY"), ("warnings", "WARNING"),
+                      ("not_found", "TABLE_NOT_FOUND")):
         if summary.get(key):
             return word
     return "PASSED"

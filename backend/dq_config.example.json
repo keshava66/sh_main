@@ -69,9 +69,11 @@
     "dsn": "oracle-prd.example.com:1521/PRDPDB"
   },
 
-  "_comment_validation": "Optional. Columns skipped everywhere in source-to-target comparison (audit columns and the like).",
+  "_comment_validation": "Optional. Columns skipped everywhere in source-to-target comparison (audit columns and the like). revalidate_timeout: seconds one IT Checks re-validate may take before it reports TIMEOUT (default 900). oracle_parallel_degree: Oracle PARALLEL(n) hint for re-validate scans (default 8, 0 = no hint). report_paths.path: the StreamSets report, read for field-name transformations.",
   "validation": {
-    "excluded_columns": ["ETL_LOAD_DATE", "ETL_BATCH_ID", "DW_INSERT_TS"]
+    "excluded_columns": ["ETL_LOAD_DATE", "ETL_BATCH_ID", "DW_INSERT_TS"],
+    "revalidate_timeout": 900,
+    "oracle_parallel_degree": 8
   },
 
   "_comment_bdc": "Optional - Business Defined Checks. Snowflake connection plus the table/view names the DQ engine reads. 'schema' holds the rule registry and its views. 'core_schema' holds what a run produces - the per-rule failed-row tables and DQ_REVIEW_REGISTRY - and 'stg_schema' the archived snapshots of past runs; both were hard-coded as DQ_CORE and DQ_STG and still default to those names, so leaving them out changes nothing. The email report scripts read 'core_schema' from here too. 'business_defined_checks_write' is only needed when writes go to a different role/account; it falls back to the read section. 'date_input_table' is the table the Superuser DQ Date Input forms edit; 'date_range_table_fqn' (fully qualified) is where the page header reads the active range from. Point both at the same table if the header should change as soon as a range is saved.",
