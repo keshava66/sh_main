@@ -2677,7 +2677,8 @@ const STATUS = { // label, badge class, tile colour
 
 const PANEL_CSS = `
 /* Pipeline Studio panels. Lives inside .ss-root, so it uses the pane's colours (--red, --ink, --line...). */
-.pvs-pad { padding: 20px 26px 140px; max-width: 1240px; }
+.pvs-pad { padding: 18px 28px 140px; max-width: 1240px; }
+.pvs-pad.pvs-layout { padding-top: 16px; padding-bottom: 0; max-width: none; }
 .pvs-card { border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%); min-width: 0; box-shadow: 0 20px 40px -34px rgba(49, 44, 42, .7); }
 .pvs-card-h { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pvs-card-h b { font-size: 13.5px; }
@@ -2711,9 +2712,13 @@ const PANEL_CSS = `
 .pvs-js.failed .c { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 /* layout: settings column on the left, the run (progress, review, log, results) on the right */
-.pvs-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start; max-width: none; }
-.pvs-ctl { position: sticky; top: 0; display: grid; gap: 14px; }
+/* side by side, each column scrolls on its own, so a long settings column never leaves the run side empty */
+.pvs-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 20px; align-items: stretch; max-width: none;
+  height: 100%; padding-bottom: 0; }
+.pvs-ctl, .pvs-work { min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 2px 6px 28px; }
+.pvs-ctl { display: flex; flex-direction: column; gap: 14px; }
 .pvs-work { min-width: 0; }
+.ss-view:has(> .pvs-layout) { overflow: hidden; }
 .pvs-stack { display: grid; gap: 16px; }
 .pvs-go { flex: 0 0 240px; padding-left: 22px; border-left: 1px solid var(--line); }
 .pvs-go-btn { width: 100%; height: 40px; justify-content: center; font-size: 13.5px; border-radius: 8px; }
@@ -2727,7 +2732,7 @@ const PANEL_CSS = `
 .pvs-confirmbar { margin: 0 0 16px; }
 .pvs-confirmbar b { display: block; font-size: 14px; margin-bottom: 2px; }
 .pvs-grid2.is-after { opacity: .96; }
-@container ss-pane (max-width: 1180px) { .pvs-layout { grid-template-columns: 1fr; } .pvs-ctl { position: static; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); } .pvs-runbar { flex-wrap: wrap; } .pvs-go { flex-basis: 100%; padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--line); } }
+@container ss-pane (max-width: 1180px) { .ss-view:has(> .pvs-layout) { overflow-y: auto; } .pvs-layout { grid-template-columns: 1fr; grid-template-rows: none; height: auto; padding-bottom: 140px; } .pvs-ctl, .pvs-work { overflow: visible; margin: 0; padding: 0; } .pvs-ctl { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); } .pvs-runbar { flex-wrap: wrap; } .pvs-go { flex-basis: 100%; padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--line); } }
 
 /* settings */
 .pvs-input { height: 36px; border: 1px solid var(--line-2); border-radius: 8px; padding: 0 10px; width: 100%; background: #fff; font: inherit; color: inherit; }
