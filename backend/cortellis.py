@@ -56,6 +56,7 @@ _cortellis = lambda table, label, blurb: {  # noqa: E731  RWE + approval package
     "search": ["title", "products", "keywords", "indication", "number"],
     "cross": ("docTypes", "country"),
     "leaders": ("products", "Top products", True),
+    "extract": "externalUrl",   # link column that has extracted text in Postgres
 }
 
 TABLES: Dict[str, Dict[str, Any]] = {
@@ -493,6 +494,7 @@ def get_meta(tid: str, bypass_cache: bool = Query(False), auth: dict = Depends(P
         "columns": cols, "labels": labels,
         "title": spec["title"], "text": spec.get("text"), "url": spec.get("url"), "key": spec.get("key"),
         "search": spec["search"],
+        "extract": spec.get("extract"),
         "has_years": bool(_year_sql(spec)),
         "year_label": _label(spec, spec.get("year") or (spec.get("date") or [None])[0]) or "Year",
     }
@@ -963,3 +965,116 @@ def get_record(tid: str, key: str = Query(..., min_length=1, max_length=100), au
     if not res.rows:
         raise HTTPException(status_code=404, detail="Record not found")
     return {"columns": [str(c) for c in res.columns], "row": [_to_json_safe(v) for v in res.rows[0]]}
+
+# ------------------------------------------------------------------ extracted content
+# Approval package / RWE externalUrl looks like /api/v1/no-token/cortellis-download/425512.
+# PILLAR_DOCS_STATUS_S3 maps that URL to the S3 pdf, and the chunker wrote that pdf's
+# text to Postgres regulatory.rimdocs_extracts_core.doc_chunks_cortellis (file_path = S3 path).
+
+STATUS_TABLE = f"{DB}.{SCHEMA}.PILLAR_DOCS_STATUS_S3"
+PG_DATABASE = "regulatory"
+PG_TABLE = "rimdocs_extracts_core.doc_chunks_cortellis"
+MAX_CHUNKS = 1000
+
+_pg_config: Dict[str, Any] | None = None
+_pg_pool = None
+_pg_cols: List[str] | None = None
+
+
+def set_cortellis_pg(config):
+    """app.py hands over the postgres_query_runner section, database is forced to regulatory."""
+    global _pg_config
+    _pg_config = config
+    if not config:
+        logger.warning("postgres_query_runner config missing - Cortellis extracted content is off")
+
+
+def _pg_connect():
+    import psycopg2
+    c = _pg_config or {}
+    try:
+        return psycopg2.connect(
+            host=c.get("host"), port=int(c.get("port") or 5432), user=c.get("user"),
+            password=c.get("password") or "", dbname=PG_DATABASE,
+            sslmode=c.get("sslmode") or "prefer",
+            connect_timeout=int(c.get("connect_timeout_seconds") or 10),
+            application_name="dqe_cortellis_extract",
+        )
+    except Exception as e:
+        logger.error(f"Cortellis extract Postgres connect failed: {e}")
+        raise HTTPException(status_code=502, detail="Couldn't reach the extracted content database.")
+
+
+def _pg_run(sql, params=None):
+    global _pg_pool
+    if not _pg_config:
+        raise HTTPException(status_code=503, detail="Extracted content isn't set up on this server.")
+    if _pg_pool is None:
+        from postgres_query_runner import PgConnectionPool
+        _pg_pool = PgConnectionPool(_pg_connect, "CORTELLIS_EXTRACT")
+    try:
+        return _pg_pool.run(sql, params)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cortellis extract query failed: {e}")
+        raise HTTPException(status_code=500, detail="Couldn't load the extracted content.")
+
+
+def _pg_columns() -> List[str]:
+    # everything but the embedding, that's ~1k floats per chunk nobody reads
+    global _pg_cols
+    if _pg_cols is None:
+        schema, table = PG_TABLE.split(".")
+        _, rows = _pg_run(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = %s "
+            "AND udt_name <> 'vector' AND column_name NOT ILIKE '%%vector%%' AND column_name NOT ILIKE '%%embedding%%' "
+            "ORDER BY ordinal_position", (schema, table))
+        _pg_cols = [r[0] for r in rows]
+    return _pg_cols
+
+
+def _pg_json(v):
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, (list, dict)):
+        return v
+    return str(v)
+
+
+@cortellis_router.get("/extract/{tid}")
+def get_extract(tid: str, url: str = Query(..., min_length=1, max_length=500),
+                bypass_cache: bool = Query(False), auth: dict = Depends(PERM)):
+    """Extracted chunks for one Cortellis document, looked up by its externalUrl."""
+    spec = _spec(tid)
+    if not spec.get("extract"):
+        raise HTTPException(status_code=400, detail="This table has no extracted content")
+    url = url.strip()
+    key = _cache_key("cortellis-extract", {"u": url})
+    hit = None if bypass_cache else _cache_get(key)
+    if hit is not None:
+        return {**hit, "cached": True}
+
+    res = _run_or_fail(f"SELECT S3_PATH, STATUS FROM {STATUS_TABLE} WHERE URL = %(u)s LIMIT 1", {"u": url}, "extract status")
+    if not res.rows:
+        return {"url": url, "found": False, "reason": "This document hasn't been downloaded yet.", "chunks": []}
+    s3_path, status = res.rows[0][0], res.rows[0][1]
+    out = {"url": url, "s3_path": s3_path, "status": status, "chunks": [], "columns": []}
+    if not s3_path:
+        return {**out, "found": False, "reason": f"Download status is {status or 'unknown'}, no file to read."}
+
+    cols = _pg_columns()
+    select = ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
+    order = ' ORDER BY "chunk_index"' if "chunk_index" in cols else ""
+    names, rows = _pg_run(f"SELECT {select} FROM {PG_TABLE} WHERE file_path = %s{order} LIMIT {MAX_CHUNKS}", (s3_path,))
+    if not rows and "file_name" in cols:
+        # path prefix can differ between envs, the file name is a uuid so it's safe on its own
+        names, rows = _pg_run(f"SELECT {select} FROM {PG_TABLE} WHERE file_name = %s{order} LIMIT {MAX_CHUNKS}",
+                              (s3_path.rsplit("/", 1)[-1],))
+    out["columns"] = list(names)
+    out["chunks"] = [{n: _pg_json(v) for n, v in zip(names, r)} for r in rows]
+    out["found"] = bool(rows)
+    if not rows:
+        out["reason"] = "Downloaded, but not extracted yet."
+    _cache_set(key, out)
+    return out

@@ -751,7 +751,9 @@ set_immbot_dependencies(CONFIG.get("unstructured") if CONFIG else None)
 from vr_external import vr_external_router, set_vr_external_dependencies
 
 set_vr_external_dependencies(CONFIG.get("unstructured") if CONFIG else None)
-from cortellis import cortellis_router
+from cortellis import cortellis_router, set_cortellis_pg
+
+set_cortellis_pg(CONFIG.get("postgres_query_runner") if CONFIG else None)
 for _router, _perms in ((virtual_regulator_router, ("viewUnstructuredVR", "viewUnstructuredVRInternal")),
                         (vr_external_router, ("viewUnstructuredVR", "viewUnstructuredVRExternal")),
                         (cortellis_router, ("viewUnstructuredVR", "viewUnstructuredVRCortellis")),

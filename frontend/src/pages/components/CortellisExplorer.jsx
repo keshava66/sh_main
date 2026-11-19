@@ -2397,6 +2397,122 @@ function MirrorForms({ meta, record, title, smiles, status, onOpen, onFound, onS
   );
 }
 
+// Text pulled out of a Cortellis pdf (approval package / RWE). /extract maps the
+// externalUrl to its S3 file, then reads the chunks from Postgres doc_chunks_cortellis.
+const TEXT_COLS = ['chunk_text', 'text', 'content', 'chunk_content', 'page_content'];
+
+function ExtractViewer({ meta, url, title, onClose }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [q, setQ] = useState('');
+  const [tries, setTries] = useState(0);
+
+  useEffect(() => {
+    setData(null); setError(null);
+    const ctl = new AbortController();
+    apiJson(`/api/cortellis/extract/${meta.id}?url=${encodeURIComponent(url)}${tries ? '&bypass_cache=true' : ''}`, { signal: ctl.signal })
+      .then(setData)
+      .catch(e => { if (!isAbort(e)) setError(e.message || String(e)); });
+    return () => ctl.abort();
+  }, [meta.id, url, tries]);
+
+  const cols = data?.columns || [];
+  const textCol = TEXT_COLS.find(c => cols.includes(c))
+    || cols.find(c => /text|content/i.test(c) && !/type/i.test(c));
+  const typeCol = cols.find(c => /^content_?type/i.test(c));
+  const chunks = data?.chunks || [];
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? chunks.filter(ch => String(ch[textCol] ?? '').toLowerCase().includes(needle)
+    || String(ch.section_title ?? '').toLowerCase().includes(needle)) : chunks;
+  const pages = (ch) => {
+    const a = ch.page_start, b = ch.page_end;
+    if (a == null) return null;
+    return b != null && b !== a ? `Pages ${a}–${b}` : `Page ${a}`;
+  };
+  const types = (v) => {
+    if (isEmpty(v)) return [];
+    if (Array.isArray(v)) return v.map(String);
+    return String(v).replace(/[{}[\]"]/g, '').split(',').map(x => x.trim()).filter(Boolean);
+  };
+  const mark = (t) => {
+    if (!needle) return t;
+    const out = []; let i = 0; const low = t.toLowerCase();
+    for (let j = low.indexOf(needle); j >= 0; j = low.indexOf(needle, i)) {
+      out.push(t.slice(i, j), <mark key={j} className="bg-[#ffe7a3] rounded-sm">{t.slice(j, j + needle.length)}</mark>);
+      i = j + needle.length;
+    }
+    out.push(t.slice(i));
+    return out;
+  };
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-6" onClick={onClose}>
+      <div className="w-full max-w-[960px] h-full max-h-[92vh] bg-white rounded-[18px] shadow-[0_24px_60px_rgba(49,44,42,.25)] flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()} role="dialog" aria-label={`Extracted content: ${title}`}>
+        <header className="px-6 pt-4 pb-3 border-b border-jj-gray-02 flex flex-col gap-2.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11.5px] font-johnson-text font-bold tracking-wider text-jj-gray-07">EXTRACTED CONTENT</div>
+              <h3 className="font-johnson-display font-bold text-[20px] leading-tight text-jj-gray-08 break-words">{title}</h3>
+              <div className="mt-1 text-[11.5px] font-johnson-text text-jj-gray-07 flex flex-wrap gap-x-3 gap-y-0.5">
+                <span className="font-mono">{url}</span>
+                {data?.status && <span>Download: {data.status}</span>}
+                {data?.found && <span className="tabular-nums">{fmtNum(chunks.length)} chunk{chunks.length === 1 ? '' : 's'}</span>}
+              </div>
+            </div>
+            <button autoFocus onClick={onClose} aria-label="Close" title="Close (Esc)"
+              className="w-8 h-8 flex-shrink-0 rounded-[9px] border border-jj-gray-03 bg-white flex items-center justify-center hover:bg-jj-gray-01">
+              <Icon src={closeIcon} alt="" tint="ink" className="w-3 h-3" />
+            </button>
+          </div>
+          {data?.found && (
+            <div className="flex items-center gap-2 border border-jj-gray-03 rounded-full px-3 py-1.5">
+              <Icon src={searchIcon} tint="gray" className="w-3.5 h-3.5" />
+              <input value={q} onChange={e => setQ(e.target.value)} placeholder="Find in this document…"
+                className="flex-1 min-w-0 text-[13px] font-johnson-text outline-none bg-transparent" />
+              {needle && <span className="text-[11.5px] font-johnson-text text-jj-gray-07 tabular-nums">{shown.length} match{shown.length === 1 ? '' : 'es'}</span>}
+            </div>
+          )}
+        </header>
+
+        <div className="flex-1 overflow-y-auto ct-scroll px-6 py-4">
+          {error && <LoadFailed what="the extracted content" error={error} onRetry={() => setTries(t => t + 1)} />}
+          {!data && !error && <div className="text-[13px] font-johnson-text text-jj-gray-07">Loading extracted content…</div>}
+          {data && !data.found && (
+            <div className="flex flex-col items-center justify-center text-center gap-2 py-16">
+              <div className="text-[15px] font-johnson-text font-bold text-jj-gray-08">No extracted content</div>
+              <div className="text-[13px] font-johnson-text text-jj-gray-07 max-w-[420px]">{data.reason}</div>
+              {data.s3_path && <div className="text-[11.5px] font-mono text-jj-gray-06 break-all">{data.s3_path}</div>}
+            </div>
+          )}
+          {data?.found && shown.length === 0 && <div className="text-[13px] font-johnson-text text-jj-gray-07">Nothing matches "{q}".</div>}
+          {data?.found && (
+            <ol className="flex flex-col gap-3">
+              {shown.map((ch, i) => (
+                <li key={ch.chunk_id || i} className="border border-jj-gray-02 rounded-[12px] px-4 py-3">
+                  <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                    {ch.chunk_index != null && <span className="text-[10.5px] font-mono bg-[#f4f2f0] rounded px-1.5 text-jj-gray-07">#{ch.chunk_index + 1}{ch.chunk_total ? ` / ${ch.chunk_total}` : ''}</span>}
+                    {!isEmpty(ch.section_title) && <span className="text-[13px] font-johnson-text font-bold text-jj-gray-08 break-words">{mark(txt(ch.section_title))}</span>}
+                    <span className="ml-auto flex items-center gap-1.5 text-[11px] font-johnson-text text-jj-gray-07">
+                      {pages(ch) && <span>{pages(ch)}</span>}
+                      {!isEmpty(ch.chunk_level) && <span className="rounded-full border border-jj-gray-03 px-2">{ch.chunk_level}</span>}
+                      {typeCol && types(ch[typeCol]).map(t => <span key={t} className="rounded-full bg-[#eef4fa] text-jj-blue-03 px-2">{t}</span>)}
+                    </span>
+                  </div>
+                  <p className="text-[13px] font-johnson-text text-jj-gray-08 leading-relaxed whitespace-pre-wrap break-words">
+                    {textCol ? mark(txt(ch[textCol])) : <span className="text-jj-gray-04">No text column</span>}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, labelOf, facetColors }) {
   const canDownload = useRBAC().hasPermission('downloadUnstructuredData');
   const [full, setFull] = useState(null);
@@ -2407,6 +2523,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
   const [drawFailed, setDrawFailed] = useState(false);
   const [zoom, setZoom] = useState(false);
   const [mirrorFound, setMirrorFound] = useState(false);
+  const [extract, setExtract] = useState(false);
   const scroller = useRef(null);
   const list = record.list || [];
   const at = record.index ?? -1;
@@ -2415,18 +2532,18 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape') return zoom ? setZoom(false) : onClose();
-      if (zoom) return;
+      if (e.key === 'Escape') return zoom ? setZoom(false) : extract ? setExtract(false) : onClose();
+      if (zoom || extract) return;
       if (/input|textarea|select/i.test(e.target?.tagName || '')) return;
       if (e.key === 'ArrowLeft' && prev != null) onNavigate?.(prev);
       if (e.key === 'ArrowRight' && next != null) onNavigate?.(next);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, onNavigate, prev, next, zoom]);
+  }, [onClose, onNavigate, prev, next, zoom, extract]);
 
   useEffect(() => {
-    setFull(null); setError(null); setDrawFailed(false); setZoom(false); setMirrorFound(false);
+    setFull(null); setError(null); setDrawFailed(false); setZoom(false); setMirrorFound(false); setExtract(false);
     scroller.current?.scrollTo({ top: 0 });
     if (!record.key) return;
     let dead = false;
@@ -2443,6 +2560,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
   const title = niceName(get(meta.title)) || niceName(record.title) || 'Record';
   const text = meta.text ? get(meta.text) : null;
   const link = meta.url ? get(meta.url) : null;
+  const extractUrl = meta.extract && !isEmpty(get(meta.extract)) ? String(get(meta.extract)) : null;
   const tags = meta.facets.map(c => [c, get(c)]).filter(([, v]) => !isEmpty(v));
   const info = useMemo(() => readRecord(cols, vals, meta, labelOf), [cols, vals, meta, labelOf]);
   const { journey, events, smiles, chemCols, indicationCols, indication } = info;
@@ -2719,6 +2837,10 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
                       <div className="w-[36%] text-jj-gray-07 flex-shrink-0 break-words">{labelOf(c)}</div>
                       <div className="w-[64%] text-jj-gray-08 break-words whitespace-pre-wrap max-h-[180px] overflow-y-auto ct-scroll">
                         {isEmpty(v) ? <span className="text-jj-gray-04">—</span>
+                          : c === meta.extract ? (
+                            <button onClick={() => setExtract(true)} title="Show the text extracted from this document"
+                              className="text-left text-jj-blue-03 underline break-all hover:opacity-80">{show(v)}</button>
+                          )
                           : isUrl(v) ? <a href={v} target="_blank" rel="noreferrer" className="text-jj-blue-03 underline break-all">{v}</a>
                           : looksLikeDate(v) ? `${fmtDate(v)} · ${v}`
                           : show(v)}
@@ -2732,6 +2854,12 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
         </div>
 
         <div className="flex-shrink-0 px-6 py-3 border-t border-jj-gray-02 flex items-center gap-2 bg-white">
+          {extractUrl && (
+            <button onClick={() => setExtract(true)}
+              className="flex-1 text-center px-[18px] py-[10px] rounded-full bg-jj-red text-white text-[13px] font-johnson-text font-medium hover:bg-[#c91400] transition-colors shadow-[0_6px_16px_rgba(235,23,0,.25)]">
+              View extracted content
+            </button>
+          )}
           {isUrl(link) && (
             <a href={link} target="_blank" rel="noreferrer"
               className="flex-1 text-center px-[18px] py-[10px] rounded-full bg-jj-red text-white text-[13px] font-johnson-text font-medium hover:bg-[#c91400] transition-colors shadow-[0_6px_16px_rgba(235,23,0,.25)]">
@@ -2744,13 +2872,16 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
             </button>
           )}
           {canDownload && (
-            <button onClick={exportJson} className={`${isUrl(link) ? '' : 'ml-auto '}px-[18px] py-[10px] rounded-full border border-jj-gray-03 text-[13px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01`}>
+            <button onClick={exportJson} className={`${isUrl(link) || extractUrl ? '' : 'ml-auto '}px-[18px] py-[10px] rounded-full border border-jj-gray-03 text-[13px] font-johnson-text text-jj-gray-08 hover:bg-jj-gray-01`}>
               Export
             </button>
           )}
           {copied === 'fail' && <span className="text-[11.5px] font-johnson-text text-jj-maroon-05">Copy blocked by the browser</span>}
         </div>
       </div>
+      {extract && extractUrl && (
+        <ExtractViewer meta={meta} url={extractUrl} title={title} onClose={() => setExtract(false)} />
+      )}
       {zoom && structure && (
         <StructureViewer title={title} smiles={smiles} code={String(get(info.smilesCol))} canDownload={canDownload}
           facts={chemTiles.map(([k, v]) => [k, v])} onClose={() => setZoom(false)}
