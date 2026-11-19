@@ -232,18 +232,18 @@ const PANE_CSS = `
 
 /* -------------------------------- board -------------------------------- */
 .ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: auto; background: var(--wash); }
-.ss-board { display: flex; align-items: flex-start; gap: 16px; padding: 20px 24px 140px; min-height: 100%; width: max-content; min-width: 100%; }
-.ss-lane { flex: 1 1 0; min-width: 272px; max-width: 560px; display: flex; flex-direction: column; border-radius: 12px; transition: box-shadow .3s; }
+.ss-board { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px 16px; padding: 20px 24px 140px; min-height: 100%; }
+.ss-lane { flex: 1 1 0; min-width: 236px; max-width: 560px; display: flex; flex-direction: column; border-radius: 12px; transition: box-shadow .3s; }
 .ss-lane.is-flash { animation: ss-flash 1.1s var(--ease); }
 @keyframes ss-flash { 0%, 60% { box-shadow: 0 0 0 2px var(--lane); } 100% { box-shadow: 0 0 0 2px transparent; } }
 .ss-lane-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 2px 2px 10px; background: var(--wash); border-top: 3px solid var(--lane); padding-top: 10px; }
-.ss-lane-btn { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 2px 4px 2px 2px; border-radius: 6px; }
+.ss-lane-btn { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 2px 4px 2px 2px; border-radius: 6px; }
 .ss-lane-btn:hover b { color: var(--ink-2); }
 .ss-lane-dot { display: none; }
 .ss-lane-h b { font-size: 13px; white-space: nowrap; }
 .ss-lane-n { font-size: 11.5px; font-weight: 700; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 0 7px; font-variant-numeric: tabular-nums; }
 .ss-lane-h small { color: var(--mute); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ss-lane-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ss-lane-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .ss-lane-empty { margin: 0; padding: 18px 14px; border: 1px dashed var(--line-2); border-radius: 10px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
 .ss-lane-more { width: 100%; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink-2); font-size: 12.5px; font-weight: 700; }
 .ss-lane-more:hover { border-color: var(--line-2); }
