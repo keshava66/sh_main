@@ -21,7 +21,7 @@ const TECH = {
   Elasticsearch: ['#00a9a5', 'ES'], Salesforce: ['#00a1e0', 'SA'], SFTP: ['#81766f', 'FT'], FTP: ['#81766f', 'FT'],
   HTTP: ['#0f68b2', 'API'], Directory: ['#81766f', 'DR'], Jython: ['#d99a00', 'PY'], Groovy: ['#4298b8', 'GV'],
   JavaScript: ['#c9a400', 'JS'], Fragment: ['#8c3bbb', 'FR'], 'Pipeline Finisher': ['#6e6259', 'PF'], Trash: ['#a39992', 'TR'],
-  StreamSets: ['#52525b', 'SS'],
+  StreamSets: ['#eb1700', 'SS'],
 };
 export const techMeta = (tech) => { const [color, mark] = TECH[tech] || TECH.StreamSets; return { color, mark }; };
 
