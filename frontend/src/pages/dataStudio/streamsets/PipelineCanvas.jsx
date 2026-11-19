@@ -47,7 +47,7 @@ function FragmentNode({ data }) {
       <div className="ss-node-in ss-node-in-frag">
         <Tile tech="Fragment" />
         <div className="ss-node-txt">
-          <div className="ss-klabel">Fragment{frag.version ? ` · v${frag.version}` : ''}</div>
+          <div className="ss-klabel">Fragment{frag.version ? ` · v${String(frag.version).replace(/^v/i, '')}` : ''}</div>
           <div className="ss-node-lb">{stage.label}</div>
           <div className="ss-node-sub">{frag.name}</div>
         </div>

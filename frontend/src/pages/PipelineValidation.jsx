@@ -36,12 +36,10 @@ const VIEWS = [
 ];
 const ENGINES = { DATACOLLECTOR: 'Data Collector', TRANSFORMER: 'Transformer', TRANSFORMER_SNOWPARK: 'Transformer for Snowflake' };
 const SELECTION_KEY = 'pipelineStudio.selection';   // own picks, separate from Data Studio's
-const MAX_ROWS = 500;          // pipeline rows painted at once; search narrows the rest
 const MAX_LOG_LINES = 5000;    // the run log keeps the newest lines
 const LOG_SHOWN = 400;         // ...and paints the last few hundred, so a chatty run stays smooth
 const LOG_FLUSH_MS = 200;      // log lines are batched rather than re-rendering per line
 const SECRET_SHOWN_MS = 30_000;   // a revealed secret hides itself again after this long
-const ROW_CV = { contentVisibility: 'auto', containIntrinsicSize: 'auto 78px' };
 
 const readSelection = () => {
   try {
@@ -60,7 +58,6 @@ const shortDate = (iso) => {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 };
 const initials = (name) => String(name || '?').split(/[\s._@-]+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase();
-const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 /** A callback that never changes identity but always runs the latest code - keeps memo'd parts from re-rendering. */
 function useStable(fn) {
@@ -96,6 +93,13 @@ const PANE_CSS = `
   background: #fff; color: var(--ink); font-family: 'JohnsonText', Arial, sans-serif; font-size: 13px; line-height: 1.45;
 }
 .ss-root *, .ss-root *::before, .ss-root *::after { box-sizing: border-box; }
+.ss-root ::selection { background: #ffd5ce; color: var(--ink); }
+.ss-root * { scrollbar-width: thin; scrollbar-color: #cbc4bc transparent; }
+.ss-root ::-webkit-scrollbar { width: 10px; height: 10px; }
+.ss-root ::-webkit-scrollbar-thumb { background: #cbc4bc; border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; }
+.ss-root ::-webkit-scrollbar-thumb:hover { background-color: #a39992; }
+.ss-root ::-webkit-scrollbar-track { background: transparent; }
+.ss-root input, .ss-root textarea { caret-color: var(--red); }
 .ss-root button { cursor: pointer; }
 .ss-root button:disabled { cursor: not-allowed; }
 .ss-root :focus-visible { outline: 2px solid var(--red); outline-offset: 2px; border-radius: 6px; }
@@ -151,64 +155,131 @@ const PANE_CSS = `
 .ss-seg button { height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; color: var(--ink-3); }
 .ss-seg button.is-on { background: #fff; color: var(--ink); font-weight: 700; box-shadow: var(--sh-1); }
 
-/* ------------------------------ top bar ------------------------------ */
-.ss-bar { flex-shrink: 0; height: 52px; display: flex; align-items: center; gap: 14px; padding: 0 18px; border-bottom: 1px solid var(--line); background: #fff; }
-.ss-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.ss-brand-mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #fff; flex-shrink: 0; background: var(--red); }
-.ss-brand b { font-size: 14px; font-weight: 700; }
-.ss-brand small { display: block; color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-pills { display: flex; gap: 8px; min-width: 0; }
-.ss-pill { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line); background: var(--wash); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
-.ss-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex-shrink: 0; box-shadow: 0 0 0 3px rgba(31, 143, 78, .15); }
-.ss-dot.is-warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(163, 95, 0, .15); }
-.ss-jump { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--wash); color: var(--ink-3); min-width: 250px; flex-shrink: 0; }
-.ss-jump:hover { border-color: var(--line-2); background: #fff; color: var(--ink-2); }
-.ss-jump span { flex: 1; text-align: left; }
-@container ss-pane (max-width: 1250px) { .ss-pills .ss-pill + .ss-pill { display: none; } .ss-brand small { display: none; } }
-@container ss-pane (max-width: 1000px) { .ss-pills { display: none; } .ss-jump { min-width: 0; } .ss-jump span { display: none; } }
+/* ------------------------------ top band ------------------------------ */
+/* Ink band: brand, the controls that scope the board, and the ribbon (the board's health as one line). */
+.ss-band { flex-shrink: 0; position: relative; z-index: 25; background: var(--ink); color: #fff; padding: 14px 22px 0; }
+.ss-band-top { display: flex; align-items: center; gap: 16px; min-height: 40px; }
+.ss-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ss-brand-mark { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; color: #fff; flex-shrink: 0; background: var(--red); box-shadow: 0 6px 16px -6px rgba(235, 23, 0, .7); }
+.ss-brand h1 { margin: 0; font: 700 20px/1.15 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.01em; }
+.ss-brand small { display: block; margin-top: 2px; color: rgba(255, 255, 255, .62); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-pills { display: flex; gap: 8px; min-width: 0; margin-left: 8px; }
+.ss-pill { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px; border-radius: 99px; border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .06); font-size: 12px; color: rgba(255, 255, 255, .82); white-space: nowrap; }
+.ss-dot { width: 7px; height: 7px; border-radius: 50%; background: #6ad08c; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(106, 208, 140, .18); }
+.ss-dot.is-warn { background: #ffb547; box-shadow: 0 0 0 3px rgba(255, 181, 71, .18); }
+.ss-jump { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 8px 0 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .06); color: rgba(255, 255, 255, .7); min-width: 260px; flex-shrink: 0; transition: background-color .15s, border-color .15s; }
+.ss-jump:hover { border-color: rgba(255, 255, 255, .32); background: rgba(255, 255, 255, .1); color: #fff; }
+.ss-jump span { flex: 1; text-align: left; font-size: 12.5px; }
+.ss-band kbd { background: rgba(255, 255, 255, .1); color: rgba(255, 255, 255, .85); border-color: rgba(255, 255, 255, .2); }
 
-.ss-body { flex: 1; min-height: 0; display: flex; }
+.ss-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.ss-search { position: relative; flex: 0 1 460px; min-width: 240px; }
+.ss-search > .ss-i { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--ink-3); }
+.ss-search input { width: 100%; height: 40px; padding: 0 42px 0 38px; border-radius: 11px; border: 1px solid transparent; background: #fff; outline: none; font-size: 13.5px; color: var(--ink); box-shadow: 0 1px 0 rgba(0, 0, 0, .2); }
+.ss-search input::placeholder { color: var(--ink-3); }
+.ss-search input:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(235, 23, 0, .35); }
+.ss-search .ss-search-kbd { background: var(--wash); color: var(--ink-2); border-color: var(--line-2); }
+.ss-search-kbd, .ss-search-clear { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); }
+.ss-search-clear { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; color: var(--ink-3); }
+.ss-search-clear:hover { background: var(--wash-2); color: var(--ink); }
+.ss-select { position: relative; display: inline-flex; align-items: center; height: 34px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .06); color: rgba(255, 255, 255, .85); }
+.ss-select:hover { border-color: rgba(255, 255, 255, .32); }
+.ss-select .ss-i { position: absolute; left: 10px; pointer-events: none; }
+.ss-select select { appearance: none; height: 100%; padding: 0 30px 0 31px; background: transparent; border: 0; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; outline: none; max-width: 220px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px; background-size: 5px 5px; background-repeat: no-repeat; }
+.ss-select select option { color: var(--ink); background: #fff; }
+.ss-select:focus-within { border-color: #fff; }
+.ss-chip { flex-shrink: 0; height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .06); font-size: 12.5px; color: rgba(255, 255, 255, .85); display: inline-flex; align-items: center; gap: 6px; }
+.ss-chip:hover { border-color: rgba(255, 255, 255, .32); color: #fff; }
+.ss-chip.is-on { background: #fff; border-color: #fff; color: var(--ink); font-weight: 700; }
+.ss-chip em { font-style: normal; opacity: .65; font-variant-numeric: tabular-nums; }
+.ss-band .ss-seg { background: rgba(255, 255, 255, .08); padding: 3px; border-radius: 10px; }
+.ss-band .ss-seg button { height: 28px; padding: 0 11px; font-size: 12.5px; border-radius: 7px; color: rgba(255, 255, 255, .7); }
+.ss-band .ss-seg button:hover:not(.is-on) { color: #fff; }
+.ss-band .ss-seg button.is-on { background: #fff; color: var(--ink); }
+.ss-tools-end { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.ss-fetched { font-size: 12px; color: rgba(255, 255, 255, .7); white-space: nowrap; font-variant-numeric: tabular-nums; margin-right: 4px; }
+.ss-band .ss-link { color: rgba(255, 255, 255, .85); }
+.ss-band .ss-link:hover:not(:disabled) { color: #fff; background: rgba(255, 255, 255, .1); }
+.ss-band .ss-ibtn { color: rgba(255, 255, 255, .75); }
+.ss-band .ss-ibtn:hover:not(:disabled) { background: rgba(255, 255, 255, .1); color: #fff; }
+.ss-band :focus-visible { outline-color: #fff; }
 
-/* -------------------------------- rail -------------------------------- */
-.ss-rail { width: 340px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--wash); }
-.ss-rail-head { flex-shrink: 0; padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 10px; }
-.ss-rail-title { display: flex; align-items: center; gap: 8px; }
-.ss-rail-title h2 { margin: 0; font-size: 15px; font-weight: 700; }
-.ss-count { font-size: 11.5px; font-weight: 700; color: var(--ink-2); background: var(--wash-2); border-radius: 99px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
-.ss-fetched { margin-left: auto; font-size: 11.5px; color: var(--mute); white-space: nowrap; }
-.ss-search { position: relative; }
-.ss-search > .ss-i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--mute); }
-.ss-search input { width: 100%; height: 38px; padding: 0 40px 0 34px; border-radius: 10px; border: 1px solid var(--line-2); background: #fff; outline: none; font-size: 13px; color: var(--ink); }
-.ss-search input::placeholder { color: var(--mute); }
-.ss-search input:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(235, 23, 0, .12); }
-.ss-search-kbd, .ss-search-clear { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); }
-.ss-search-clear { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-3); }
-.ss-search-clear:hover { background: var(--wash-2); }
-.ss-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
-.ss-chips::-webkit-scrollbar { display: none; }
-.ss-chip { flex-shrink: 0; height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line-2); background: #fff; font-size: 12px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 5px; }
-.ss-chip:hover { border-color: var(--ink-3); color: var(--ink); }
-.ss-chip.is-on { background: var(--ink); border-color: var(--ink); color: #fff; }
-.ss-chip em { font-style: normal; opacity: .6; font-variant-numeric: tabular-nums; }
-.ss-listbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.ss-list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 10px 12px; }
-.ss-list-ul { list-style: none; margin: 0; padding: 0; animation: ss-fade .3s var(--ease); }
-.ss-card { position: relative; display: flex; gap: 10px; padding: 11px 12px 11px 10px; border-radius: 12px; border: 1px solid transparent; margin-bottom: 3px; transition: background-color .15s, border-color .15s; }
-.ss-card:hover { background: #fff; border-color: var(--line); }
-.ss-card.is-open { background: #fff; border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-card.is-open::before { content: ''; position: absolute; left: -1px; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--red); }
+/* the ribbon: lanes as one line, widths by count; click a part to jump to its lane */
+.ss-ribbon { display: flex; gap: 3px; padding: 16px 0 14px; min-height: 58px; }
+.ss-rib { min-width: 128px; flex-basis: 0; text-align: left; color: #fff; padding: 0; position: relative; }
+.ss-rib::before { content: ''; display: block; height: 7px; border-radius: 4px; background: var(--lane); transform-origin: left; animation: ss-grow .7s var(--ease) var(--d, 0ms) both; }
+.ss-rib span { display: flex; align-items: baseline; gap: 6px; margin-top: 7px; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
+.ss-rib em { font-style: normal; font-weight: 400; font-size: 12px; color: rgba(255, 255, 255, .65); overflow: hidden; text-overflow: ellipsis; }
+.ss-rib:hover em { color: #fff; }
+.ss-rib:hover::before { filter: brightness(1.15); }
+.ss-rib-empty { color: rgba(255, 255, 255, .6); font-size: 12px; padding-top: 4px; }
+@keyframes ss-grow { from { transform: scaleX(0); } }
+.ss-root.has-sheet .ss-ribbon { display: none; }
+.ss-root.has-sheet .ss-band { padding-bottom: 14px; }
+@container ss-pane (max-width: 1250px) { .ss-pills { display: none; } .ss-brand small { display: none; } }
+@container ss-pane (max-width: 1000px) { .ss-jump { min-width: 0; } .ss-jump span { display: none; } .ss-search { flex-basis: 100%; } }
+
+.ss-body { flex: 1; min-height: 0; display: flex; position: relative; }
+
+/* -------------------------------- board -------------------------------- */
+.ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: auto; background: var(--wash-2); }
+.ss-board { display: flex; align-items: flex-start; gap: 14px; padding: 18px 22px 140px; min-height: 100%; width: max-content; min-width: 100%; }
+.ss-lane { flex: 1 1 0; min-width: 268px; max-width: 440px; display: flex; flex-direction: column; border-radius: 16px; transition: box-shadow .3s; }
+.ss-lane.is-flash { animation: ss-flash 1.1s var(--ease); }
+@keyframes ss-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--lane); } 100% { box-shadow: 0 0 0 3px transparent; } }
+.ss-lane-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 4px 4px 10px; background: var(--wash-2); }
+.ss-lane-btn { display: inline-flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 6px 4px 2px; border-radius: 8px; }
+.ss-lane-btn:hover b { color: var(--red-d); }
+.ss-lane-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--lane); flex-shrink: 0; }
+.ss-lane-h b { font-size: 13.5px; white-space: nowrap; }
+.ss-lane-n { font-size: 11.5px; font-weight: 700; color: var(--ink-2); background: #fff; border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; font-variant-numeric: tabular-nums; }
+.ss-lane-h small { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ss-lane-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ss-lane-empty { margin: 0; padding: 18px 14px; border: 1.5px dashed var(--line-2); border-radius: 12px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
+.ss-lane-more { width: 100%; height: 34px; border-radius: 10px; border: 1px dashed var(--line-2); color: var(--ink-2); font-size: 12.5px; font-weight: 700; }
+.ss-lane-more:hover { border-color: var(--ink-3); background: #fff; }
+.ss-lane.is-collapsed { flex: 0 0 48px; min-width: 48px; }
+.ss-lane.is-collapsed .ss-lane-h { padding: 0; }
+.ss-lane.is-collapsed .ss-lane-btn { flex-direction: column; gap: 10px; width: 48px; padding: 14px 0; border-radius: 14px; border: 1px solid var(--line); background: #fff; }
+.ss-lane.is-collapsed .ss-lane-btn b { writing-mode: vertical-rl; transform: rotate(180deg); }
+.ss-lane.is-collapsed .ss-lane-btn:hover { border-color: var(--line-2); box-shadow: var(--sh-2); }
+
+/* cards: name, what it does, and its route line - source to Snowflake, coloured by the last result */
+.ss-card { position: relative; border-radius: 13px; border: 1px solid var(--line); background: #fff; box-shadow: 0 1px 2px rgba(49, 44, 42, .05);
+  transition: border-color .15s, box-shadow .2s, transform .2s var(--ease); animation: ss-rise .4s var(--ease) var(--d, 0ms) both;
+  content-visibility: auto; contain-intrinsic-size: auto 118px; }
+.ss-card:hover { border-color: var(--line-2); box-shadow: 0 6px 18px -8px rgba(49, 44, 42, .28); transform: translateY(-1px); }
+.ss-card.is-open { border-color: var(--red); box-shadow: 0 0 0 3px rgba(235, 23, 0, .14), 0 6px 18px -8px rgba(49, 44, 42, .28); }
 .ss-card.is-picked { background: var(--red-wash); border-color: var(--red-line); }
-.ss-check { width: 20px; height: 20px; margin-top: 1px; flex-shrink: 0; border-radius: 6px; border: 1.6px solid var(--line-2); background: #fff; display: grid; place-items: center; transition: background-color .15s, border-color .15s; }
+.ss-card.is-muted { background: var(--wash); }
+.ss-card.is-muted .ss-card-nm { color: var(--ink-2); }
+.ss-card-sk { padding: 14px; display: flex; animation: none; }
+.ss-card-open { display: block; width: 100%; text-align: left; padding: 12px 40px 11px 14px; border-radius: 13px; }
+.ss-card-nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13.5px; font-weight: 700; line-height: 1.35; color: var(--ink); overflow-wrap: anywhere; }
+.ss-card-open:hover .ss-card-nm { color: var(--red-d); }
+.ss-card.is-open .ss-card-nm { color: var(--red-d); }
+.ss-card-ds { display: block; margin-top: 3px; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-card-route { display: flex; align-items: center; gap: 0; margin: 10px 0 8px; }
+.ss-card-route .pvs-badge { width: 32px; height: 20px; margin: 0; border-radius: 6px; font-size: 9.5px; }
+.ss-card-route i { flex: 1; height: 2px; margin: 0 -1px; background: var(--tone); position: relative; overflow: hidden; }
+.ss-card.is-muted .ss-card-route i { background: none; border-top: 2px dashed var(--line-2); height: 0; }
+.ss-card-route i::after { content: ''; position: absolute; top: -2px; left: 0; width: 18px; height: 6px; border-radius: 3px; background: var(--tone); filter: brightness(1.25); opacity: 0; }
+.ss-card:hover .ss-card-route i::after { animation: ss-run 1.1s var(--ease) 1; }
+@keyframes ss-run { 0% { opacity: 0; transform: translateX(-20px); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateX(var(--w, 260px)); } }
+.ss-card-end { min-width: 24px; height: 20px; padding: 0 5px; border-radius: 6px; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; background: var(--wash-2); color: var(--ink-3); }
+.ss-card-end.is-sf { background: #29b5e8; color: #fff; }
+.ss-card-tail { position: absolute; right: 12px; bottom: 10px; font-size: 11.5px; }
+.ss-vtag { font-weight: 700; color: var(--ink-2); }
+.ss-check { position: absolute; top: 11px; right: 11px; width: 22px; height: 22px; border-radius: 7px; border: 1.6px solid var(--line-2); background: #fff; display: grid; place-items: center; opacity: 0; transition: opacity .15s, background-color .15s, border-color .15s; }
+.ss-card:hover .ss-check, .ss-check:focus-visible, .ss-check[aria-checked="true"], .ss-root.has-picks .ss-check { opacity: 1; }
 .ss-check:hover:not(:disabled) { border-color: var(--red); }
 .ss-check svg { width: 12px; height: 12px; fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset .25s var(--ease); }
 .ss-check[aria-checked="true"] { background: var(--red); border-color: var(--red); }
 .ss-check[aria-checked="true"] svg { stroke-dashoffset: 0; }
-.ss-check:disabled { opacity: .35; }
-.ss-card-open { flex: 1; min-width: 0; text-align: left; }
-.ss-card-nm { font-size: 13px; font-weight: 700; line-height: 1.35; word-break: break-word; }
-.ss-card.is-open .ss-card-nm { color: var(--red-d); }
-.ss-card-ds { font-size: 12px; color: var(--ink-3); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; font-size: 11.5px; color: var(--mute); }
+.ss-check:disabled { opacity: .35 !important; }
+.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; padding-right: 58px; font-size: 11.5px; color: var(--ink-3); }
 .ss-tag { padding: 0 7px; height: 18px; display: inline-flex; align-items: center; border-radius: 99px; font-size: 11px; background: var(--wash-2); color: var(--ink-2); }
 .ss-tag-warn { background: #fff4e0; color: var(--warn); }
 .ss-tag-proc { background: var(--proc-bg); color: var(--proc); }
@@ -216,75 +287,47 @@ const PANE_CSS = `
 .ss-tag-red { background: var(--red-wash); color: var(--red-d); }
 .ss-tag-ok { background: var(--src-bg); color: var(--ok); }
 .ss-tag-bad { background: #fdecec; color: var(--bad); }
-.ss-list-sk-row { display: flex; gap: 10px; padding: 12px 10px; }
-.ss-empty { text-align: center; padding: 28px 18px; color: var(--ink-3); font-size: 12.5px; display: grid; gap: 6px; justify-items: center; }
-.ss-empty b { color: var(--ink); }
+.ss-empty { text-align: center; padding: 70px 18px; color: var(--ink-3); font-size: 13px; display: grid; gap: 8px; justify-items: center; }
+.ss-empty b { color: var(--ink); font-size: 16px; }
 
-.ss-tray { flex-shrink: 0; margin: 0 10px 10px; padding: 12px; border-radius: 14px; background: #fff; border: 1px solid var(--line); box-shadow: var(--sh-2); }
+/* picks for an extraction: a dark bar that floats over the board while anything is picked */
+.ss-tray { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 32; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 44px);
+  padding: 8px 8px 8px 16px; border-radius: 16px; background: var(--ink); color: #fff; box-shadow: 0 16px 36px -12px rgba(49, 44, 42, .6); animation: ss-up .35s var(--ease); }
+@keyframes ss-up { from { opacity: 0; transform: translate(-50%, 16px); } }
 .ss-tray.is-shake { animation: ss-shake .45s; }
-.ss-tray-top { display: flex; align-items: center; gap: 10px; }
-.ss-tray-h { display: block; font-size: 13px; }
-.ss-ring { width: 38px; height: 38px; flex-shrink: 0; position: relative; }
-.ss-ring svg, .ss-pring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.ss-ring circle, .ss-pring circle { fill: none; stroke-width: 4; }
-.ss-ring-bg { stroke: var(--wash-2); }
-.ss-ring-fg { stroke: var(--red); stroke-linecap: round; transition: stroke-dashoffset .4s var(--ease); }
-.ss-ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; font-variant-numeric: tabular-nums; }
-.ss-picks { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-.ss-pick { display: inline-flex; align-items: center; gap: 4px; max-width: 150px; height: 24px; padding: 0 4px 0 9px; border-radius: 99px; background: var(--wash-2); font-size: 11.5px; animation: ss-pop .25s var(--ease); }
+.ss-tray-n { position: relative; display: flex; align-items: baseline; gap: 3px; padding-bottom: 5px; font-variant-numeric: tabular-nums; }
+.ss-tray-n b { font-size: 18px; }
+.ss-tray-n small { color: rgba(255, 255, 255, .55); font-size: 11.5px; }
+.ss-tray-fill { position: absolute; left: 0; bottom: 0; height: 3px; border-radius: 2px; background: var(--red); transition: width .3s var(--ease); }
+.ss-picks { display: flex; gap: 5px; min-width: 0; }
+.ss-pick { display: inline-flex; align-items: center; gap: 4px; max-width: 190px; height: 28px; padding: 0 4px 0 10px; border-radius: 8px; background: rgba(255, 255, 255, .1); font-size: 12px; color: #fff; animation: ss-pop .25s var(--ease); }
 .ss-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ss-pick button { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); flex-shrink: 0; }
-.ss-pick button:hover { background: var(--line-2); color: var(--ink); }
-.ss-pick-more { padding-right: 9px; color: var(--ink-3); }
-.ss-cta { width: 100%; height: 42px; margin-top: 10px; border-radius: 11px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #fff; font-weight: 700; font-size: 13.5px; background: var(--red); transition: background-color .15s; }
-.ss-cta:hover:not(:disabled) { background: var(--red-d); }
-.ss-cta:disabled { background: var(--wash-2); color: var(--mute); box-shadow: none; }
-.ss-tray-note { margin-top: 8px; font-size: 11.5px; line-height: 1.4; color: var(--ink-3); text-align: center; }
-.ss-tray-note.is-warn { color: var(--warn); text-align: left; display: flex; gap: 6px; }
+.ss-pick button { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; color: rgba(255, 255, 255, .6); flex-shrink: 0; }
+.ss-pick button:hover { background: rgba(255, 255, 255, .15); color: #fff; }
+.ss-pick-more { padding-right: 10px; color: rgba(255, 255, 255, .8); }
+.ss-pick-more.is-on { background: #fff; color: var(--ink); }
+.ss-tray .ss-link { color: rgba(255, 255, 255, .75); }
+.ss-tray .ss-link:hover { color: #fff; background: rgba(255, 255, 255, .1); }
+.ss-tray-go { height: 38px; border-radius: 11px; }
+.ss-root.has-run .ss-tray { left: 532px; transform: none; animation: none; }
+@container ss-pane (max-width: 1300px) { .ss-picks { display: none; } }
+
+/* ------------------------------- the sheet ------------------------------ */
+/* An open pipeline slides in over the board; the board's left edge stays in view for context. */
+.ss-sheet-scrim { position: absolute; inset: 0; z-index: 19; background: rgba(49, 44, 42, .3); animation: ss-fade .25s var(--ease); }
+.ss-sheet { position: absolute; top: 0; right: 0; bottom: 0; width: min(1560px, calc(100% - 240px)); z-index: 20; display: flex; flex-direction: column; min-height: 0;
+  background: #fff; border-left: 1px solid var(--line); box-shadow: -28px 0 56px -28px rgba(49, 44, 42, .55); animation: ss-sheet .4s var(--ease); }
+@keyframes ss-sheet { from { transform: translateX(56px); opacity: 0; } }
+@container ss-pane (max-width: 1150px) { .ss-sheet { width: 100%; } }
+.ss-sheet .ss-detail { flex: 1; min-height: 0; }
+.ss-flip { transform: rotate(180deg); }
 
 /* -------------------------------- main -------------------------------- */
-.ss-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
 .ss-errbox, .ss-warnbox { margin-top: 12px; display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; }
 .ss-errbox { background: #fdf3f3; border: 1px solid #f2cccc; color: #8f1f1f; }
 .ss-warnbox { background: #fff7ea; border: 1px solid #f6dcae; color: #7a4a00; }
 .ss-errbox .ss-i, .ss-warnbox .ss-i { margin-top: 1px; }
 .ss-pad-s .ss-errbox, .ss-dock-err .ss-errbox, .ss-dr-body .ss-errbox { margin-top: 0; }
-
-/* hero (nothing open) */
-.ss-hero { flex: 1; overflow-y: auto; position: relative; }
-.ss-hero-in { position: relative; max-width: 980px; margin: 0 auto; padding: 42px 40px 60px; }
-.ss-eyebrow { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px 0 6px; border-radius: 99px; background: #fff; border: 1px solid var(--line); font-size: 12px; color: var(--ink-2); box-shadow: var(--sh-1); animation: ss-rise .5s var(--ease) both; }
-.ss-eyebrow b { background: var(--red); color: #fff; font-size: 10.5px; padding: 2px 7px; border-radius: 99px; }
-.ss-hero-h { margin: 18px 0 10px; font-family: 'JohnsonDisplay', Arial, sans-serif; font-size: 34px; line-height: 1.15; letter-spacing: -.01em; font-weight: 700; max-width: 680px; animation: ss-rise .5s var(--ease) .05s both; }
-.ss-hero-h span { color: var(--red); }
-.ss-hero-lede { margin: 0; font-size: 15px; line-height: 1.6; color: var(--ink-2); max-width: 600px; animation: ss-rise .5s var(--ease) .1s both; }
-.ss-hero-actions { display: flex; gap: 10px; margin-top: 22px; animation: ss-rise .5s var(--ease) .15s both; }
-.ss-hero-art { margin: 32px 0 6px; padding: 22px; border-radius: 12px; background: #fff; border: 1px solid var(--line); box-shadow: var(--sh-2); animation: ss-rise .5s var(--ease) .2s both; }
-.ss-hero-svg { width: 100%; height: auto; display: block; overflow: visible; font-family: Arial, sans-serif; }
-.ss-hero-wire { fill: none; stroke: var(--line-2); stroke-width: 2; }
-.ss-hero-node { animation: ss-fade .5s var(--ease) both; }
-.ss-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
-.ss-steps.is-4 { grid-template-columns: repeat(4, 1fr); }
-.ss-step { position: relative; padding: 18px; border-radius: 16px; border: 1px solid var(--line); background: #fff; animation: ss-rise .5s var(--ease) both; transition: border-color .15s, box-shadow .15s; }
-.ss-step:hover { border-color: var(--line-2); }
-.ss-step-num { position: absolute; top: 14px; right: 16px; font-size: 30px; font-weight: 700; color: var(--wash-2); }
-.ss-step-ic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 12px; }
-.ss-tone-proc { background: var(--proc-bg); color: var(--proc); }
-.ss-tone-frag { background: var(--frag-bg); color: var(--frag); }
-.ss-tone-red { background: var(--red-wash); color: var(--red); }
-.ss-step b { display: block; font-size: 14px; margin-bottom: 4px; }
-.ss-step p { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.55; }
-.ss-recent-h { display: flex; align-items: baseline; gap: 10px; margin: 32px 0 12px; }
-.ss-recent-h h3 { margin: 0; font-size: 14px; font-weight: 700; }
-.ss-recent-h span { color: var(--ink-3); font-size: 12px; }
-.ss-recent { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-.ss-rc { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 13px; border: 1px solid var(--line); background: #fff; text-align: left; transition: border-color .15s, box-shadow .15s; }
-.ss-rc:hover { border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-rc b { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ss-rc small { color: var(--ink-3); font-size: 11.5px; }
-.ss-rc-arrow { color: var(--mute); }
-.ss-rc:hover .ss-rc-arrow { color: var(--red); }
-@container ss-pane (max-width: 1150px) { .ss-steps, .ss-recent { grid-template-columns: 1fr; } }
 
 /* tiles + kind colours */
 .ss-tile { --t: #eb1700; width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: inline-grid; place-items: center; color: #fff; font: 700 10.5px Arial, sans-serif; letter-spacing: .02em; background: var(--t); }
@@ -348,6 +391,7 @@ const PANE_CSS = `
 .ss-tab.is-on::after { transform: scaleX(1); }
 .ss-tab.is-on .ss-count { background: var(--ink); color: #fff; }
 .ss-tab .ss-tab-lock { color: var(--mute); }
+.ss-count { font-size: 11px; font-weight: 700; color: var(--ink-2); background: var(--wash-2); border-radius: 99px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
 .ss-tabs-tip { margin-left: auto; font-size: 12px; color: var(--ink-3); text-align: right; }
 .ss-area { flex: 1; min-height: 0; position: relative; border-top: 1px solid var(--line); display: flex; }
 .ss-view { flex: 1; min-width: 0; overflow-y: auto; }
@@ -364,7 +408,8 @@ const PANE_CSS = `
 .ss-node.is-sel { border-color: var(--k); box-shadow: 0 0 0 3px color-mix(in srgb, var(--k) 20%, transparent); }
 .ss-node.is-dim { opacity: .3; }
 .ss-node.is-lit { border-color: var(--k); }
-.ss-node-bar { position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--k); }
+.ss-node-bar { display: none; }
+.ss-node { border-color: color-mix(in srgb, var(--k) 22%, var(--line)); }
 .ss-node-in { display: flex; gap: 11px; align-items: center; padding: 11px 14px 11px 15px; height: 100%; }
 .ss-node-in-frag { height: auto; padding-bottom: 6px; }
 .ss-node-txt { min-width: 0; flex: 1; }
@@ -414,9 +459,7 @@ const PANE_CSS = `
 .ss-group-h em { font-style: normal; font-weight: 400; color: var(--mute); }
 .ss-sgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 .ss-scard { position: relative; text-align: left; display: flex; gap: 11px; align-items: flex-start; padding: 12px 14px; border-radius: 13px; border: 1px solid var(--line); background: #fff; overflow: hidden; transition: border-color .15s, box-shadow .15s; }
-.ss-scard::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--k); opacity: 0; }
 .ss-scard:hover { border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-scard:hover::before, .ss-scard.is-sel::before { opacity: 1; }
 .ss-scard.is-sel { border-color: var(--k); background: var(--kb); }
 .ss-scard b { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-scard small { display: block; color: var(--ink-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -454,7 +497,7 @@ const PANE_CSS = `
 .ss-sec-h { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
 .ss-sec-h em { font-style: normal; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 0 7px; letter-spacing: 0; }
 .ss-sec-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
-.ss-what { padding: 14px 16px; border-radius: 14px; background: var(--kb); border: 1px solid var(--line); border-left: 3px solid var(--k); }
+.ss-what { padding: 14px 16px; border-radius: 14px; background: var(--kb); border: 1px solid color-mix(in srgb, var(--k) 24%, var(--line)); }
 .ss-what-lead { margin: 0; font-size: 13.5px; line-height: 1.6; }
 .ss-what ul, .ss-fs-body ul { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 7px; }
 .ss-what li, .ss-fs-body li { position: relative; padding-left: 16px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
@@ -517,6 +560,7 @@ const PANE_CSS = `
 .ss-pchip-rt b { color: #8a5300; font-weight: 400; font-style: italic; }
 .ss-el { padding: 1px 7px; border-radius: 6px; background: var(--frag-bg); color: #5d2585; line-height: 1.8; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .ss-el .ss-fld { background: #fff; }
+.ss-el:has(.ss-res) { background: none; padding: 0; }
 .ss-code-inline { background: var(--wash-2); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 .ss-yes { color: var(--ok); font-weight: 700; }
 .ss-no { color: var(--ink-3); font-weight: 700; }
@@ -563,7 +607,7 @@ const PANE_CSS = `
 
 /* ------------------------------ run panel ------------------------------ */
 /* Bottom-left of the work area: bottom-right belongs to the floating assistant. */
-.ss-dock { position: absolute; left: 356px; bottom: 16px; width: 490px; max-width: calc(100% - 372px); z-index: 30; border-radius: 18px; background: #fff; border: 1px solid var(--line); box-shadow: var(--sh-3); overflow: hidden; animation: ss-rise .35s var(--ease); }
+.ss-dock { position: absolute; left: 22px; bottom: 18px; width: 490px; max-width: calc(100% - 44px); z-index: 30; border-radius: 18px; background: #fff; border: 1px solid var(--line); box-shadow: var(--sh-3); overflow: hidden; animation: ss-rise .35s var(--ease); }
 .ss-dock.is-min { width: auto; display: flex; align-items: center; gap: 10px; padding: 7px 16px 7px 7px; border-radius: 99px; text-align: left; }
 .ss-dock-head { display: flex; align-items: center; gap: 12px; padding: 13px 14px 13px 16px; }
 .ss-pring { width: 44px; height: 44px; flex-shrink: 0; position: relative; }
@@ -572,6 +616,10 @@ const PANE_CSS = `
 .ss-pring.is-ok .ss-ring-fg { stroke: var(--ok); } .ss-pring.is-ok b { color: var(--ok); }
 .ss-pring.is-bad .ss-ring-fg { stroke: var(--bad); } .ss-pring.is-bad b { color: var(--bad); }
 .ss-pring.is-running::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid transparent; border-top-color: rgba(235, 23, 0, .35); animation: ss-spin 1.2s linear infinite; }
+.ss-pring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ss-pring circle { fill: none; stroke-width: 4; }
+.ss-ring-bg { stroke: var(--wash-2); }
+.ss-ring-fg { stroke: var(--red); stroke-linecap: round; transition: stroke-dashoffset .4s var(--ease); }
 .ss-dock-t { flex: 1; min-width: 0; }
 .ss-dock-t b { display: block; font-size: 14px; }
 .ss-dock-t small { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -606,6 +654,8 @@ const PANE_CSS = `
 .ss-palette { width: 620px; max-width: calc(100% - 32px); border-radius: 16px; background: #fff; box-shadow: var(--sh-3); overflow: hidden; animation: ss-rise .2s var(--ease); }
 .ss-pal-in { display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--mute); }
 .ss-pal-in input { flex: 1; height: 52px; border: 0; outline: none; font-size: 15px; background: transparent; color: var(--ink); }
+.ss-pal-in input:focus-visible { outline: none; }
+.ss-pal-in:focus-within { box-shadow: inset 0 -2px 0 var(--red); }
 .ss-pal-list { max-height: 52vh; overflow-y: auto; padding: 6px; }
 .ss-pal-g { padding: 10px 10px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); }
 .ss-pal-item { width: 100%; display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 10px; text-align: left; }
@@ -638,7 +688,8 @@ const PANE_CSS = `
   .ss-ep-row + .ss-ep-row, .ss-ep > small { display: none; }
   .ss-tabs { margin-top: 4px; }
   .ss-tab { height: 34px; }
-  .ss-hero-in { padding-top: 26px; }
+  .ss-root.has-sheet .ss-tools { display: none; }
+  .ss-band { padding-top: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -960,199 +1011,169 @@ function Hl({ text, q }) {
 const TAG_TONE = { legacy: 'warn', gxp: 'proc', pii: 'frag' };
 const Tag = ({ label, q }) => <span className={`ss-tag ss-tag-${TAG_TONE[label] || 'plain'}`}><Hl text={label} q={q} /></span>;
 
-/* ----------------------------- pipeline list ----------------------------- */
+/* ----------------------------- pipeline board ----------------------------- */
 
-// One memo'd row each, so ticking a box re-renders that row - not all 500.
-const PipelineRow = memo(function PipelineRow({ p, query, isOpen, isPicked, locked, runState, maxPerRun, onPick, onOpen, lead, tail, note }) {
+// Long snake_case names wrap at the underscores, never mid-word; the first search hit is marked.
+function Breakable({ text, q }) {
+  const t = String(text ?? '');
+  const needle = (q || '').trim();
+  const at = needle ? t.toLowerCase().indexOf(needle.toLowerCase()) : -1;
+  const segs = at < 0 ? [[t, false]] : [[t.slice(0, at), false], [t.slice(at, at + needle.length), true], [t.slice(at + needle.length), false]];
+  let k = 0;
+  return segs.filter(([s]) => s).map(([s, hit]) => {
+    const parts = s.split('_');
+    const body = parts.map((x, i) => <React.Fragment key={k++}>{x}{i < parts.length - 1 && <>_<wbr /></>}</React.Fragment>);
+    return hit ? <mark key={k++} className="ss-mark">{body}</mark> : body;
+  });
+}
+
+// One memo'd card each, so ticking a box re-renders that card - not the whole board.
+const PipelineCard = memo(function PipelineCard({ p, query, isOpen, isPicked, locked, runState, maxPerRun, onPick, onOpen, infoOf, delay }) {
+  const info = infoOf ? infoOf(p) : null;
+  const tone = info?.tone || 'var(--line-2)';
   return (
-    <li style={ROW_CV} className={`ss-card${isOpen ? ' is-open' : ''}${isPicked ? ' is-picked' : ''}`}>
-      <button type="button" role="checkbox" aria-checked={isPicked} className="ss-check" disabled={locked}
-        onClick={() => onPick(p.id)} aria-label={`Pick ${p.name} for extraction`}
-        title={locked ? `You can extract up to ${maxPerRun} pipelines at a time` : undefined}>
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg>
-      </button>
-      {lead}
+    <li className={`ss-card${isOpen ? ' is-open' : ''}${isPicked ? ' is-picked' : ''}${info?.muted ? ' is-muted' : ''}`}
+      style={{ '--tone': tone, '--d': `${delay}ms` }}>
       <button type="button" className="ss-card-open" onClick={() => onOpen(p.id)} aria-current={isOpen ? 'true' : undefined}
-        title={p.modified_by ? `Last changed by ${p.modified_by}` : undefined}>
-        <div className="ss-card-nm"><Hl text={p.name} q={query} /></div>
-        {p.description && <div className="ss-card-ds"><Hl text={p.description} q={query} /></div>}
-        <div className="ss-meta">
-          {p.version && <span>v{p.version}</span>}
-          {p.last_modified && <span title={shortDate(p.last_modified)}>{relativeDay(p.last_modified)}</span>}
-          {(p.labels || []).slice(0, 3).map(l => <Tag key={l} label={l} q={query} />)}
+        title={p.modified_by ? `${p.name}\nLast changed by ${p.modified_by}` : p.name}>
+        <span className="ss-card-nm"><Breakable text={p.name} q={query} /></span>
+        {p.description && <span className="ss-card-ds"><Hl text={p.description} q={query} /></span>}
+        <span className="ss-card-route" aria-hidden="true">
+          {info?.lead || <span className="pvs-badge">SRC</span>}
+          <i />
+          <span className={`ss-card-end${info?.end === 'SF' ? ' is-sf' : ''}`}>{info?.end || '?'}</span>
+        </span>
+        <span className="ss-meta">
+          {p.version && <span className="ss-vtag">v{p.version}</span>}
+          {p.last_modified && <span title={`Changed ${shortDate(p.last_modified)}${p.modified_by ? ` by ${p.modified_by}` : ''}`}>{relativeDay(p.last_modified)}</span>}
+          {(p.labels || []).slice(0, 2).map(l => <Tag key={l} label={l} q={query} />)}
           {runState === 'running' && <span className="ss-tag ss-tag-red">● extracting</span>}
           {runState === 'done' && <span className="ss-tag ss-tag-ok">✓ extracted</span>}
           {runState === 'failed' && <span className="ss-tag ss-tag-bad">✕ failed</span>}
-          {note}
-        </div>
+          {info?.note}
+        </span>
       </button>
-      {tail}
+      <button type="button" role="checkbox" aria-checked={isPicked} className="ss-check" disabled={locked}
+        onClick={() => onPick(p.id)} aria-label={`Pick ${p.name} for extraction`}
+        title={locked ? `You can extract up to ${maxPerRun} pipelines at a time` : isPicked ? 'Picked for extraction' : 'Pick for extraction'}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg>
+      </button>
+      {info?.tail && <span className="ss-card-tail">{info.tail}</span>}
     </li>
   );
 });
 
-const PipelineList = memo(function PipelineList({ rows, query, openId, picked, full, maxPerRun, runStates, onPick, onOpen, rowLead, rowTail, rowNote }) {
+const LANE_CAP = 120;   // cards painted per lane before "Show all"; search narrows the rest
+
+function Lane({ lane, rows, collapsed, onCollapse, cardProps }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? rows : rows.slice(0, LANE_CAP);
   return (
-    <ul className="ss-list-ul">
-      {rows.map(p => (
-        <PipelineRow key={p.id} p={p} query={query} isOpen={p.id === openId} isPicked={picked.has(p.id)} locked={full && !picked.has(p.id)}
-          runState={runStates.get(p.id)} maxPerRun={maxPerRun} onPick={onPick} onOpen={onOpen}
-          lead={rowLead?.(p)} tail={rowTail?.(p)} note={rowNote?.(p)} />
+    <section className={`ss-lane${collapsed ? ' is-collapsed' : ''}`} id={`ss-lane-${lane.id}`} aria-label={`${lane.label}: ${rows.length}`}
+      style={{ '--lane': lane.color }}>
+      <header className="ss-lane-h">
+        <button type="button" className="ss-lane-btn" onClick={() => onCollapse(lane.id)} aria-expanded={!collapsed}
+          title={collapsed ? `Show ${lane.label}` : `Fold ${lane.label} away`}>
+          <i className="ss-lane-dot" />
+          <b>{lane.label}</b>
+          <span className="ss-lane-n">{rows.length}</span>
+        </button>
+        {!collapsed && lane.hint && <small>{lane.hint}</small>}
+      </header>
+      {!collapsed && (
+        rows.length ? (
+          <ul className="ss-lane-list">
+            {shown.map((p, i) => <PipelineCard key={p.id} p={p} delay={Math.min(i, 8) * 28} {...cardProps(p)} />)}
+            {rows.length > shown.length && (
+              <li><button type="button" className="ss-lane-more" onClick={() => setAll(true)}>Show all {rows.length}</button></li>
+            )}
+          </ul>
+        ) : <p className="ss-lane-empty">{lane.empty || 'Nothing here'}</p>
+      )}
+    </section>
+  );
+}
+
+const Board = memo(function Board({ lanes, rowsByLane, collapsed, onCollapse, query, openId, picked, full, maxPerRun, runStates, onPick, onOpen, cardInfo }) {
+  const cardProps = (p) => ({
+    query, isOpen: p.id === openId, isPicked: picked.has(p.id), locked: full && !picked.has(p.id), runState: runStates.get(p.id),
+    maxPerRun, onPick, onOpen, infoOf: cardInfo,
+  });
+  return (
+    <div className="ss-board" role="region" aria-label="Pipelines board">
+      {lanes.map(l => (
+        <Lane key={l.id} lane={l} rows={rowsByLane.get(l.id) || []} collapsed={collapsed.has(l.id)} onCollapse={onCollapse} cardProps={cardProps} />
       ))}
-    </ul>
+    </div>
   );
 });
 
-function ListSkeleton() {
+// The ribbon: every pipeline on the board as one line, split by lane - the board's health at a glance.
+function Ribbon({ lanes, rowsByLane, total, onJump }) {
   return (
-    <div className="ss-list-sk" aria-hidden="true">
-      {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} className="ss-list-sk-row">
-          <SkeletonLine w="20px" h={20} />
-          <div className="ss-grow ss-stack-6">
-            <SkeletonLine w={`${55 + (i % 4) * 10}%`} h={11} />
-            <SkeletonLine w="80%" h={9} />
-            <SkeletonLine w="35%" h={8} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function Tray({ picked, maxPerRun, nameOf, running, extractorReady, reason, shake, onUnpick, onClear, onExtract }) {
-  const ids = [...picked];
-  const n = ids.length;
-  const C = 2 * Math.PI * 15;
-  return (
-    <div className={`ss-tray${shake ? ' is-shake' : ''}`}>
-      <div className="ss-tray-top">
-        <div className="ss-ring" title={`${n} of ${maxPerRun} picked`}>
-          <svg viewBox="0 0 38 38"><circle className="ss-ring-bg" cx="19" cy="19" r="15" /><circle className="ss-ring-fg" cx="19" cy="19" r="15" strokeDasharray={C} strokeDashoffset={C * (1 - n / maxPerRun)} /></svg>
-          <b>{n}</b>
-        </div>
-        <div className="ss-grow">
-          <b className="ss-tray-h">{n ? `${plural(n, 'pipeline', 'pipelines')} picked` : 'Build an extraction'}</b>
-          <small className="ss-sub">{n ? `${maxPerRun - n} more can join this run` : `Tick up to ${maxPerRun} pipelines on the left`}</small>
-        </div>
-        {n > 0 && <button type="button" className="ss-link" onClick={onClear}>Clear</button>}
-      </div>
-      {n > 0 && (
-        <div className="ss-picks">
-          {ids.slice(0, 4).map(id => (
-            <span key={id} className="ss-pick" title={nameOf(id)}>
-              <span>{nameOf(id)}</span>
-              <button type="button" onClick={() => onUnpick(id)} aria-label={`Remove ${nameOf(id)}`}><Svg name="x" size={11} /></button>
-            </span>
-          ))}
-          {n > 4 && <span className="ss-pick ss-pick-more">+{n - 4} more</span>}
-        </div>
-      )}
-      <button type="button" className="ss-cta" onClick={onExtract} disabled={!n || running || !extractorReady}
-        title={!extractorReady ? reason || 'The extractor is not available' : running ? 'An extraction is already running' : undefined}>
-        <Svg name="bolt" size={16} />
-        {running ? 'Extraction running…' : n ? `Extract ${plural(n, 'pipeline', 'pipelines')}` : 'Extract pipelines'}
-      </button>
-      {!extractorReady
-        ? <div className="ss-tray-note is-warn"><Svg name="alert" size={14} /><span>{reason || 'The extractor is not available on the server.'}</span></div>
-        : <div className="ss-tray-note">You&apos;ll get one JSON report with every stage, setting and parameter.</div>}
-    </div>
-  );
-}
-
-/* --------------------------------- hero ---------------------------------- */
-
-function HeroArt() {
-  const nodes = [
-    { x: 0, tech: 'Oracle', kind: 'SOURCE', label: 'SAP materials' },
-    { x: 190, tech: 'Jython', kind: 'PROCESSOR', label: 'Clean & enrich' },
-    { x: 380, tech: 'Fragment', kind: null, label: 'Audit columns' },
-    { x: 570, tech: 'Snowflake', kind: 'TARGET', label: 'DQ_RAW.MARA' },
-  ];
-  const W = 150, H = 62, Y = 20, MID = Y + H / 2;
-  // Dots run along the wires a few times and then stop - no endless repaint on a CPU-only machine.
-  return (
-    <svg viewBox="-6 0 732 112" className="ss-hero-svg" role="img" aria-label="A pipeline reads from Oracle, transforms the data and writes it to Snowflake">
-      {nodes.slice(1).map((n, i) => (
-        <path key={i} id={`ss-hw${i}`} className="ss-hero-wire" d={`M${nodes[i].x + W} ${MID} C${nodes[i].x + W + 20} ${MID}, ${n.x - 20} ${MID}, ${n.x} ${MID}`} />
-      ))}
-      {!reducedMotion() && [0, 1, 2].map(i => (
-        <circle key={i} r="4" fill="#eb1700" opacity="0">
-          <animateMotion dur="1.4s" begin={`${0.9 + i * 0.45}s`} repeatCount="4" fill="remove"><mpath href={`#ss-hw${i}`} /></animateMotion>
-          <animate attributeName="opacity" values="0;1;1;0" dur="1.4s" begin={`${0.9 + i * 0.45}s`} repeatCount="4" />
-        </circle>
-      ))}
-      {nodes.map((n, i) => {
-        const k = n.kind ? KIND[n.kind] : FRAGMENT;
-        const { color, mark } = techMeta(n.tech);
+    <div className="ss-ribbon" role="list" aria-label="Pipelines by lane">
+      {lanes.map((l, i) => {
+        const n = (rowsByLane.get(l.id) || []).length;
+        if (!n) return null;
         return (
-          <g key={n.tech} className="ss-hero-node" style={{ animationDelay: `${0.2 + i * 0.12}s` }}>
-            <rect x={n.x} y={Y} width={W} height={H} rx="13" fill="#fff" stroke="#d5cfc9" />
-            <rect x={n.x} y={Y + 12} width="3" height={H - 24} rx="1.5" fill={k.color} />
-            <rect x={n.x + 13} y={Y + 16} width="30" height="30" rx="8" fill={color} />
-            <text x={n.x + 28} y={Y + 35} textAnchor="middle" fill="#fff" fontSize="10" fontWeight="700">{mark}</text>
-            <text x={n.x + 52} y={Y + 27} fontSize="9" fontWeight="700" letterSpacing=".6" fill={k.color}>{k.label.toUpperCase()}</text>
-            <text x={n.x + 52} y={Y + 43} fontSize="12" fontWeight="700" fill="#312c2a">{n.label}</text>
-            <circle cx={n.x} cy={MID} r="4" fill="#fff" stroke="#d5cfc9" strokeWidth="2" />
-            <circle cx={n.x + W} cy={MID} r="4" fill="#fff" stroke="#d5cfc9" strokeWidth="2" />
-          </g>
+          <button key={l.id} type="button" role="listitem" className="ss-rib" style={{ flexGrow: n, '--lane': l.color, '--d': `${i * 70}ms` }}
+            onClick={() => onJump(l.id)} title={`${n} ${l.label.toLowerCase()} - show`}>
+            <span>{n}<em>{l.label}</em></span>
+          </button>
         );
       })}
-      <text x="365" y="106" textAnchor="middle" fontSize="11" fill="#a39992">Every pipeline, drawn left to right - the way its records actually travel</text>
-    </svg>
-  );
-}
-const Hero = memo(function Hero({ pipelines, loading, server, maxPerRun, onOpen, onFocusSearch, extraStep }) {
-  const recent = useMemo(() => [...pipelines].filter(p => p.last_modified)
-    .sort((a, b) => String(b.last_modified).localeCompare(String(a.last_modified))).slice(0, 4), [pipelines]);
-  const example = recent[0] || pipelines[0];
-  return (
-    <div className="ss-hero">
-      <div className="ss-hero-in">
-        <span className="ss-eyebrow"><b>{loading ? '…' : pipelines.length}</b>pipelines{server ? ` on ${server}` : ''}</span>
-        <h1 className="ss-hero-h">Open any pipeline and <span>see exactly how its data moves.</span></h1>
-        <p className="ss-hero-lede">
-          Trace where records come from, every transformation and fragment they pass through, and where they land.
-          Then pick the pipelines you need and export their full definitions in one report.
-        </p>
-        <div className="ss-hero-actions">
-          <button type="button" className="ss-btn ss-btn-dark" onClick={onFocusSearch}><Svg name="search" />Find a pipeline <kbd>/</kbd></button>
-          {example && <button type="button" className="ss-btn" onClick={() => onOpen(example.id)}><Svg name="flow" />Show me an example</button>}
-        </div>
-        <div className="ss-hero-art"><HeroArt /></div>
-        <div className={`ss-steps${extraStep ? ' is-4' : ''}`}>
-          {[
-            ['search', 'proc', 'Find', 'Search by name, pipeline ID, label or who changed it last. Filter by label with one click.'],
-            ['flow', 'frag', 'Inspect', 'Follow the flow, open fragments in place, and click any stage to read what it does in plain English.'],
-            ['bolt', 'red', 'Extract', `Tick up to ${maxPerRun} pipelines and run the extractor. Watch it live, then download the JSON report.`],
-            ...(extraStep ? [extraStep] : []),
-          ].map(([icon, tone, title, text], i) => (
-            <div key={title} className="ss-step" style={{ animationDelay: `${0.25 + i * 0.08}s` }}>
-              <span className="ss-step-num">0{i + 1}</span>
-              <div className={`ss-step-ic ss-tone-${tone}`}><Svg name={icon} size={19} /></div>
-              <b>{title}</b>
-              <p>{text}</p>
-            </div>
-          ))}
-        </div>
-        {recent.length > 0 && (<>
-          <div className="ss-recent-h"><h3>Recently changed</h3><span>pick up where your team left off</span></div>
-          <div className="ss-recent">
-            {recent.map(p => (
-              <button key={p.id} type="button" className="ss-rc" onClick={() => onOpen(p.id)}>
-                <div className="ss-grow">
-                  <b>{p.name}</b>
-                  <small>{p.version ? `v${p.version} · ` : ''}{relativeDay(p.last_modified)}{p.modified_by ? ` by ${p.modified_by}` : ''}</small>
-                </div>
-                <Svg name="chevron" className="ss-rc-arrow" />
-              </button>
-            ))}
-          </div>
-        </>)}
-      </div>
+      {!total && <span className="ss-rib-empty">No pipeline matches</span>}
     </div>
   );
-});
+}
+
+function BoardSkeleton() {
+  return (
+    <div className="ss-board" aria-hidden="true">
+      {[5, 3, 6, 4].map((n, i) => (
+        <div key={i} className="ss-lane">
+          <div className="ss-lane-h"><SkeletonLine w="120px" h={12} /></div>
+          <div className="ss-lane-list">
+            {Array.from({ length: n }).map((_, j) => (
+              <div key={j} className="ss-card ss-card-sk"><div className="ss-stack-6 ss-grow">
+                <SkeletonLine w={`${60 + ((i + j) % 3) * 12}%`} h={12} /><SkeletonLine w="85%" h={9} /><SkeletonLine w="100%" h={16} /><SkeletonLine w="40%" h={8} />
+              </div></div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Picks for an extraction: floats over the board only while something is picked (or the extractor needs a word).
+function Tray({ picked, maxPerRun, nameOf, running, extractorReady, reason, shake, onUnpick, onClear, onExtract, onShowPicked, pickedOnly }) {
+  const ids = [...picked];
+  const n = ids.length;
+  if (!n) return null;
+  return (
+    <div className={`ss-tray${shake ? ' is-shake' : ''}`} role="region" aria-label="Picked for extraction">
+      <div className="ss-tray-n" title={`${n} of ${maxPerRun} picked`}>
+        <b>{n}</b><small>/ {maxPerRun}</small>
+        <span className="ss-tray-fill" style={{ width: `${(n / maxPerRun) * 100}%` }} />
+      </div>
+      <div className="ss-picks">
+        {ids.slice(0, 3).map(id => (
+          <span key={id} className="ss-pick" title={nameOf(id)}>
+            <span>{nameOf(id)}</span>
+            <button type="button" onClick={() => onUnpick(id)} aria-label={`Remove ${nameOf(id)}`}><Svg name="x" size={11} /></button>
+          </span>
+        ))}
+        {n > 3 && <button type="button" className={`ss-pick ss-pick-more${pickedOnly ? ' is-on' : ''}`} onClick={onShowPicked}>+{n - 3} more</button>}
+      </div>
+      <button type="button" className="ss-link" onClick={onClear}>Clear</button>
+      <button type="button" className="ss-btn ss-btn-primary ss-tray-go" onClick={onExtract} disabled={running || !extractorReady}
+        title={!extractorReady ? reason || 'The extractor is not available' : running ? 'An extraction is already running' : 'One JSON report with every stage, setting and parameter'}>
+        <Svg name="bolt" />{running ? 'Extraction running…' : `Extract ${plural(n, 'pipeline', 'pipelines')}`}
+      </button>
+    </div>
+  );
+}
 
 /* ------------------------------ stage list ------------------------------ */
 
@@ -1495,7 +1516,7 @@ function Endpoint({ title, rows, right, onSelect }) {
 
 const DetailView = memo(function DetailView({
   detail, view, stagePath, found, live, picked, canPick, running, extractorReady, reason, detailLoading, detailError,
-  rawAll, onRawAll, onNavigate, onSelectStage, onToggle, onExtract, onRefresh, onCopyId, filesAvailable,
+  rawAll, onRawAll, onNavigate, onSelectStage, onToggle, onExtract, onRefresh, onCopyId, filesAvailable, onClose,
   views = VIEWS, headerActions = null, headerNote = null,
 }) {
   // runtime:loadResource() values looked up on request; keyed by pipeline so switching back keeps them
@@ -1563,13 +1584,13 @@ const DetailView = memo(function DetailView({
     <div className="ss-detail">
       <header className="ss-dhead">
         <div className="ss-crumbs">
-          <button type="button" onClick={() => onNavigate({ pipeline: null, stage: null })}>← Overview</button>
+          <button type="button" onClick={onClose}><Svg name="chevron" size={13} className="ss-flip" />Board</button>
           {(detail.labels || []).map(l => <Tag key={l} label={l} />)}
         </div>
         <div className="ss-dtop">
           <div className="ss-grow">
             <h2 className="ss-dtitle">
-              {detail.name}
+              <span><Breakable text={detail.name} /></span>
               {live && <span className="ss-live-badge"><span className="ss-dot" />Extracting</span>}
             </h2>
             {detail.description && <p className="ss-ddesc">{detail.description}</p>}
@@ -1598,6 +1619,7 @@ const DetailView = memo(function DetailView({
               <Svg name="bolt" />Extract now
             </button>
             {headerActions}
+            <IconButton name="close" label="Close (Esc)" onClick={onClose} />
           </div>
         </div>
         {headerNote}
@@ -1883,7 +1905,15 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const [sort, setSort] = useState('name');
   const [label, setLabel] = useState(null);
   const [pickedOnly, setPickedOnly] = useState(false);
-  const [studioOnly, setStudioOnly] = useState(false);   // the studio's own list filter (e.g. "Can validate")
+  const board = studio?.board || null;
+  const [groupBy, setGroupBy] = useState(null);   // null = the board's default (it can change as permissions load)
+  const mode = groupBy && board?.lanes[groupBy] ? groupBy : board?.defaultMode || 'all';
+  const [collapsed, setCollapsed] = useState(() => new Set(board?.folded || []));
+  // permissions can arrive after the first render: fold the board's default lanes once it exists
+  const foldedOnce = useRef(!!board);
+  useEffect(() => {
+    if (board && !foldedOnce.current) { foldedOnce.current = true; setCollapsed(new Set(board.folded || [])); }
+  }, [board]);
   const [selected, setSelected] = useState(() => new Set(readSelection()));
   const [shake, setShake] = useState(0);
 
@@ -1978,13 +2008,14 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
     let cancelled = false;
     setPhase('booting');
     setFatal(null);
+    // the list doesn't wait for the health check: both go out at once
+    loadList(false);
     (async () => {
       try {
         const h = await fetchJson('/api/streamsets/health');
         if (cancelled) return;
         setHealth(h);
         setPhase('ready');
-        loadList(false);
       } catch (err) {
         if (cancelled) return;
         setFatal(err.message);
@@ -2060,15 +2091,33 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
     return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 10);
   }, [pipelines]);
   const visible = useMemo(() => {
-    const studioTest = studioOnly && studio?.filter?.test;
-    const list = pipelines.filter(p => matchesPipeline(p, listQuery) && (!label || (p.labels || []).includes(label)) && (!pickedOnly || selected.has(p.id))
-      && (!studioTest || studioTest(p)));
+    const list = pipelines.filter(p => matchesPipeline(p, listQuery) && (!label || (p.labels || []).includes(label)) && (!pickedOnly || selected.has(p.id)));
     if (sort === 'modified') {
       list.sort((a, b) => String(b.last_modified || '').localeCompare(String(a.last_modified || '')));
     }
     return list;
-  }, [pipelines, listQuery, label, pickedOnly, selected, sort, studioOnly, studio?.filter]);
-  const shown = useMemo(() => visible.slice(0, MAX_ROWS), [visible]);
+  }, [pipelines, listQuery, label, pickedOnly, selected, sort]);
+  const lanes = useMemo(() => (board?.lanes[mode] || [{ id: 'all', label: 'Pipelines', color: 'var(--ink-3)' }]), [board, mode]);
+  const rowsByLane = useMemo(() => {
+    const m = new Map(lanes.map(l => [l.id, []]));
+    const last = lanes[lanes.length - 1].id;
+    visible.forEach(p => (m.get(board ? board.laneOf(p, mode) : 'all') || m.get(last)).push(p));
+    return m;
+  }, [visible, lanes, board, mode]);
+  // in lane order, so Enter in the search box opens the card at the top-left
+  const ordered = useMemo(() => lanes.filter(l => !collapsed.has(l.id)).flatMap(l => rowsByLane.get(l.id) || []), [lanes, rowsByLane, collapsed]);
+  const shown = ordered;   // "Pick shown" leaves folded lanes alone
+  const cardInfo = useMemo(() => (board ? (p) => board.card(p, mode) : null), [board, mode]);
+  const foldLane = useStable((id) => setCollapsed(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }));
+  const jumpToLane = useStable((id) => {
+    setCollapsed(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+    if (pipelineId) navigate({ pipeline: null, stage: null, ssview: null });
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`ss-lane-${id}`);
+      el?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
+      el?.classList.remove('is-flash'); void el?.offsetWidth; el?.classList.add('is-flash');
+    });
+  });
 
   const bump = useCallback(() => {
     setShake(n => n + 1);
@@ -2256,16 +2305,18 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
       if (palette) { if (e.key === 'Escape') setPalette(false); return; }   // the palette handles the rest itself
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
       if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); searchRef.current?.focus(); }
-      if (e.key === 'Escape' && stagePath && !typing) navigate({ stage: null });
+      if (e.key === 'Escape' && !typing && !e.defaultPrevented) {
+        if (stagePath) navigate({ stage: null });
+        else if (pipelineId) navigate({ pipeline: null, ssview: null });
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [active, palette, stagePath, navigate]);
+  }, [active, palette, stagePath, pipelineId, navigate]);
 
   const paletteActions = useMemo(() => (selected.size && health?.extractor?.ready && !running
     ? [{ group: 'Actions', icon: 'bolt', title: `Extract ${plural(selected.size, 'picked pipeline', 'picked pipelines')}`, sub: 'Starts the extractor', run: () => startExtraction([...selected]) }]
     : []), [selected, health, running, startExtraction]);
-  const focusSearch = useStable(() => searchRef.current?.focus());
   const paletteStage = useStable((path) => {
     if (view === 'params') navigate({ ssview: null, stage: path });
     else navigate({ stage: path });
@@ -2301,124 +2352,130 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const notFound = detailError?.status === 404;
   const booting = phase === 'booting' || (listLoading && !pipelines.length);
   const full = selected.size >= maxPerRun;
+  const filtered = visible.length !== pipelines.length;
+  const closeSheet = () => navigate({ pipeline: null, stage: null, ssview: null });
+  const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); };
 
   return (
-    <div className="ss-root">
+    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
       <style href="pv-pane" precedence="default">{PANE_CSS}</style>
       {busy && <div className="ss-busy" aria-hidden="true" />}
 
-      <div className="ss-bar">
-        <div className="ss-brand">
-          <div className="ss-brand-mark"><Svg name={studio?.brand?.icon || 'flow'} size={18} strokeWidth={2} /></div>
-          <div><b>{studio?.brand?.title || 'StreamSets Extractor'}</b><small>{studio?.brand?.sub || 'See how a pipeline moves data, then export its definition'}</small></div>
+      <header className="ss-band">
+        <div className="ss-band-top">
+          <div className="ss-brand">
+            <div className="ss-brand-mark"><Svg name={studio?.brand?.icon || 'flow'} size={18} strokeWidth={2} /></div>
+            <div>
+              <h1>{studio?.brand?.title || 'StreamSets Extractor'}</h1>
+              <small>{studio?.brand?.sub || 'See how a pipeline moves data, then export its definition'}</small>
+            </div>
+          </div>
+          <div className="ss-pills">
+            {health?.server && <span className="ss-pill" title="StreamSets Control Hub this page reads from"><span className="ss-dot" />{health.server}</span>}
+            {health && (
+              <span className="ss-pill" title={extractorReady ? `The extractor is installed on the server - up to ${maxPerRun} pipelines per run` : reason}>
+                <span className={`ss-dot${extractorReady ? '' : ' is-warn'}`} />{extractorReady ? 'Extractor ready' : 'Extractor unavailable'}
+              </span>
+            )}
+          </div>
+          <button type="button" className="ss-jump" onClick={() => setPalette(true)}>
+            <Svg name="search" /><span>Jump to a pipeline or stage</span><kbd>Ctrl</kbd><kbd>K</kbd>
+          </button>
         </div>
-        <div className="ss-pills">
-          {health?.server && <span className="ss-pill" title="StreamSets Control Hub this page reads from"><span className="ss-dot" />Connected · {health.server}</span>}
-          {health && (
-            <span className="ss-pill" title={extractorReady ? 'The extractor script is installed on the server' : reason}>
-              <span className={`ss-dot${extractorReady ? '' : ' is-warn'}`} />{extractorReady ? `Extractor ready · up to ${maxPerRun} per run` : 'Extractor unavailable'}
-            </span>
+
+        <div className="ss-tools">
+          <div className="ss-search">
+            <Svg name="search" />
+            <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search pipelines by name, ID, label or author" aria-label="Search pipelines"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && ordered[0]) openPipeline(ordered[0].id);
+                if (e.key === 'Escape') { e.preventDefault(); setQuery(''); e.currentTarget.blur(); }
+              }} />
+            {query
+              ? <button type="button" className="ss-search-clear" onClick={() => { setQuery(''); searchRef.current?.focus(); }} aria-label="Clear search"><Svg name="x" size={13} /></button>
+              : <kbd className="ss-search-kbd">/</kbd>}
+          </div>
+          {labelCounts.length > 0 && (
+            <label className="ss-select" title="Show one label">
+              <Svg name="layers" size={14} />
+              <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
+                <option value="">All labels</option>
+                {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
+              </select>
+            </label>
           )}
+          {selected.size > 0 && (
+            <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} aria-pressed={pickedOnly} onClick={() => setPickedOnly(v => !v)}>
+              <Svg name="check" size={13} />Picked <em>{selected.size}</em>
+            </button>
+          )}
+          {board && Object.keys(board.lanes).length > 1 && (
+            <Segmented label="Group pipelines by" value={mode} onChange={setGroupBy} options={board.modes} />
+          )}
+          <Segmented label="Sort" value={sort} onChange={setSort} options={[['name', 'A–Z'], ['modified', 'Recent']]} />
+          <span className="ss-tools-end">
+            <span className="ss-fetched" title={fetchedAt ? `Synced ${formatWhen(fetchedAt)}` : undefined}>
+              {booting ? 'Loading…' : filtered ? `${visible.length} of ${pipelines.length}` : plural(pipelines.length, 'pipeline', 'pipelines')}
+            </span>
+            {filtered && <button type="button" className="ss-link" onClick={clearFilters}>Clear</button>}
+            <button type="button" className="ss-link" onClick={selectShown} disabled={!shown.length}
+              title={allShownSelected ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}>
+              {allShownSelected ? 'Unpick shown' : 'Pick shown'}
+            </button>
+            <IconButton name="refresh" onClick={() => loadList(true)} disabled={listLoading} spinning={listLoading}
+              label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
+          </span>
         </div>
-        <button type="button" className="ss-jump" onClick={() => setPalette(true)}>
-          <Svg name="search" /><span>Jump to a pipeline or stage…</span><kbd>Ctrl</kbd><kbd>K</kbd>
-        </button>
-      </div>
+        {!booting && pipelines.length > 0 && <Ribbon lanes={lanes} rowsByLane={rowsByLane} total={visible.length} onJump={jumpToLane} />}
+      </header>
 
       <div className="ss-body">
-        {/* ------------------------------ pipelines ------------------------------ */}
-        <aside className="ss-rail" aria-label="Pipelines">
-          <div className="ss-rail-head">
-            <div className="ss-rail-title">
-              <h2>Pipelines</h2>
-              <span className="ss-count">{booting ? '…' : visible.length === pipelines.length ? pipelines.length : `${visible.length} / ${pipelines.length}`}</span>
-              <span className="ss-fetched">{fetchedAt ? `synced ${formatWhen(fetchedAt)}` : ''}</span>
-              <IconButton name="refresh" onClick={() => loadList(true)} disabled={listLoading} spinning={listLoading} label="Reload the list from StreamSets" />
-            </div>
-            <div className="ss-search">
-              <Svg name="search" />
-              <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search name, ID, label or author" aria-label="Search pipelines"
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && visible[0]) openPipeline(visible[0].id);
-                  if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur(); }
-                }} />
-              {query
-                ? <button type="button" className="ss-search-clear" onClick={() => { setQuery(''); searchRef.current?.focus(); }} aria-label="Clear search"><Svg name="x" size={13} /></button>
-                : <kbd className="ss-search-kbd">/</kbd>}
-            </div>
-            {(labelCounts.length > 0 || studio?.filter) && (
-              <div className="ss-chips">
-                <button type="button" className={`ss-chip${!label && !pickedOnly && !studioOnly ? ' is-on' : ''}`} onClick={() => { setLabel(null); setPickedOnly(false); setStudioOnly(false); }}>All <em>{pipelines.length}</em></button>
-                {studio?.filter && (
-                  <button type="button" className={`ss-chip${studioOnly ? ' is-on' : ''}`} onClick={() => setStudioOnly(v => !v)}
-                    disabled={studio.filter.count == null} title={studio.filter.count == null ? 'Still checking…' : undefined}>
-                    {studio.filter.label} <em>{studio.filter.count ?? '…'}</em>
-                  </button>
-                )}
-                {selected.size > 0 && <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} onClick={() => { setPickedOnly(v => !v); setLabel(null); }}>✓ Picked <em>{selected.size}</em></button>}
-                {labelCounts.map(([l, n]) => (
-                  <button key={l} type="button" className={`ss-chip${label === l ? ' is-on' : ''}`} onClick={() => { setLabel(label === l ? null : l); setPickedOnly(false); }}>{l} <em>{n}</em></button>
-                ))}
-              </div>
-            )}
-            {studio?.railNote}
-            <div className="ss-listbar">
-              <button type="button" className="ss-link" onClick={selectShown} disabled={!shown.length}>
-                {allShownSelected ? 'Unpick these' : visible.length === pipelines.length ? 'Pick all' : 'Pick all shown'}
-              </button>
-              <span className="ss-seg" role="group" aria-label="Sort">
-                <button type="button" className={sort === 'name' ? 'is-on' : ''} onClick={() => setSort('name')}>A–Z</button>
-                <button type="button" className={sort === 'modified' ? 'is-on' : ''} onClick={() => setSort('modified')}>Recently changed</button>
-              </span>
-            </div>
-          </div>
-
-          <div className="ss-list" aria-busy={listLoading}>
-            {booting && <ListSkeleton />}
-            {listError && <div className="ss-pad-s"><ErrorBox message={listError} onRetry={() => loadList(true)} /></div>}
-            {phase === 'ready' && !listLoading && !listError && pipelines.length === 0 && (
-              <div className="ss-empty">The StreamSets service account can&apos;t see any pipelines.</div>
-            )}
-            {pipelines.length > 0 && visible.length === 0 && (
-              <div className="ss-empty">
-                <b>No pipeline matches “{query || label || 'your filter'}”</b>
-                <div>Try a table name, a label, or someone who changed it.</div>
-                <button type="button" className="ss-btn" onClick={() => { setQuery(''); setLabel(null); setPickedOnly(false); setStudioOnly(false); }}>Clear filters</button>
-              </div>
-            )}
-            {!booting && (
-              <PipelineList rows={shown} query={listQuery} openId={pipelineId} picked={selected} full={full} maxPerRun={maxPerRun}
-                runStates={runStates} onPick={toggle} onOpen={openPipeline} rowLead={studio?.rowLead} rowTail={studio?.rowTail} rowNote={studio?.rowNote} />
-            )}
-            {visible.length > MAX_ROWS && <div className="ss-empty">Showing the first {MAX_ROWS} of {visible.length}. Search to narrow it down.</div>}
-          </div>
-
-          <Tray picked={selected} maxPerRun={maxPerRun} nameOf={nameOf} running={running} extractorReady={extractorReady} reason={reason} shake={shake > 0}
-            onUnpick={toggle} onClear={() => { setSelected(new Set()); toast('Cleared your picks'); }} onExtract={() => startExtraction([...selected])} />
-        </aside>
-
-        {/* ------------------------------- detail -------------------------------- */}
-        <main className="ss-main">
-          {!pipelineId && (
-            <Hero pipelines={pipelines} loading={booting} server={health?.server} maxPerRun={maxPerRun}
-              onOpen={openPipeline} onFocusSearch={focusSearch} extraStep={studio?.heroStep} />
+        <main className="ss-main" inert={pipelineId ? true : undefined}>
+          {booting && !listError && <BoardSkeleton />}
+          {listError && <div className="ss-pad-s"><ErrorBox message={listError} onRetry={() => loadList(true)} /></div>}
+          {phase === 'ready' && !listLoading && !listError && pipelines.length === 0 && (
+            <div className="ss-empty"><b>No pipelines to show</b><div>The StreamSets service account can&apos;t see any pipelines.</div></div>
           )}
-          {pipelineId && !detail && !detailError && <DetailSkeleton />}
-          {pipelineId && !detail && detailError && (
-            <div className="ss-pad">
-              <ErrorBox message={detailError.message} onRetry={notFound ? null : refreshDetail} />
-              {notFound && <button type="button" className="ss-link ss-mt" onClick={() => navigate({ pipeline: null, stage: null })}>Back to the overview</button>}
+          {pipelines.length > 0 && visible.length === 0 && (
+            <div className="ss-empty">
+              <b>No pipeline matches “{query || label || 'your filter'}”</b>
+              <div>Try a table name, a label, or someone who changed it.</div>
+              <button type="button" className="ss-btn" onClick={clearFilters}>Clear filters</button>
             </div>
           )}
-          {detail && (
-            <DetailView detail={detail} view={view} stagePath={stagePath} found={found} live={liveHere}
-              picked={selected.has(detail.id)} canPick={!full} running={running} extractorReady={extractorReady} reason={reason}
-              detailLoading={detailLoading} detailError={detailError} rawAll={rawAll} onRawAll={setRawAll} filesAvailable={health?.resources !== false}
-              onNavigate={navigate} onSelectStage={selectStage} onToggle={toggle} onExtract={startExtraction} onRefresh={refreshDetail} onCopyId={copyId}
-              views={views} headerActions={studio?.headerActions?.(detail, navigate)} headerNote={studio?.headerNote?.(detail)} />
+          {!booting && visible.length > 0 && (
+            <Board lanes={lanes} rowsByLane={rowsByLane} collapsed={collapsed} onCollapse={foldLane} query={listQuery} openId={pipelineId}
+              picked={selected} full={full} maxPerRun={maxPerRun} runStates={runStates} onPick={toggle} onOpen={openPipeline}
+              cardInfo={cardInfo} />
           )}
         </main>
+
+        {pipelineId && (
+          <>
+            <div className="ss-sheet-scrim" onMouseDown={closeSheet} aria-hidden="true" />
+            <section className="ss-sheet" aria-label={detail?.name || 'Pipeline'}>
+              {!detail && !detailError && <DetailSkeleton />}
+              {!detail && detailError && (
+                <div className="ss-pad">
+                  <ErrorBox message={detailError.message} onRetry={notFound ? null : refreshDetail} />
+                  <button type="button" className="ss-link ss-mt" onClick={closeSheet}>Back to the board</button>
+                </div>
+              )}
+              {detail && (
+                <DetailView detail={detail} view={view} stagePath={stagePath} found={found} live={liveHere}
+                  picked={selected.has(detail.id)} canPick={!full} running={running} extractorReady={extractorReady} reason={reason}
+                  detailLoading={detailLoading} detailError={detailError} rawAll={rawAll} onRawAll={setRawAll} filesAvailable={health?.resources !== false}
+                  onNavigate={navigate} onSelectStage={selectStage} onToggle={toggle} onExtract={startExtraction} onRefresh={refreshDetail} onCopyId={copyId}
+                  onClose={closeSheet} views={views} headerActions={studio?.headerActions?.(detail, navigate)} headerNote={studio?.headerNote?.(detail)} />
+              )}
+            </section>
+          </>
+        )}
       </div>
+
+      <Tray picked={selected} maxPerRun={maxPerRun} nameOf={nameOf} running={running} extractorReady={extractorReady} reason={reason} shake={shake > 0}
+        pickedOnly={pickedOnly} onShowPicked={() => setPickedOnly(v => !v)}
+        onUnpick={toggle} onClear={() => { setSelected(new Set()); toast('Cleared your picks'); }} onExtract={() => startExtraction([...selected])} />
 
       {run && (
         <RunDock run={run} log={runLog} onCancel={cancelRun} onClose={closeRun} onDownload={downloadReport}
@@ -2468,18 +2525,43 @@ const PANEL_CSS = `
 .pvs-sub { color: var(--ink-3); font-size: 12px; }
 .pvs-mono { font-family: var(--mono); font-size: 12px; }
 
-/* journey */
-.pvs-journey { display: flex; align-items: center; flex-wrap: wrap; gap: 0 0; margin-bottom: 18px; }
-.pvs-js { display: flex; align-items: center; gap: 8px; padding-right: 10px; }
-.pvs-js .c { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; border: 1.5px solid var(--line-2); color: var(--ink-3); background: #fff; }
-.pvs-js .l { font-weight: 700; font-size: 12px; }
-.pvs-js .s { font-size: 10.5px; color: var(--ink-3); min-height: 14px; }
+/* journey: the run drawn as a route line with a station per step */
+.pvs-runbar { display: flex; align-items: center; gap: 22px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(49, 44, 42, .05); }
+.pvs-journey { list-style: none; margin: 0; padding: 0; display: flex; flex: 1; min-width: 0; }
+.pvs-js { position: relative; flex: 1; display: grid; justify-items: center; text-align: center; gap: 3px; min-width: 0; }
+.pvs-jline { position: absolute; top: 13px; right: 50%; width: 100%; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.pvs-js:first-child .pvs-jline { display: none; }
+.pvs-jline i { display: block; height: 100%; width: 100%; background: var(--ok); transform: scaleX(0); transform-origin: left; transition: transform .6s var(--ease); }
+.pvs-js.done .pvs-jline i, .pvs-js.failed .pvs-jline i, .pvs-js.waiting .pvs-jline i { transform: scaleX(1); }
+.pvs-js.running .pvs-jline i { transform: scaleX(1); background: linear-gradient(90deg, var(--ok), var(--red)); }
+.pvs-js .c { position: relative; z-index: 1; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; border: 2px solid var(--line-2); color: var(--ink-3); background: #fff; transition: background-color .3s, border-color .3s, color .3s; }
+.pvs-js .l { font-weight: 700; font-size: 12.5px; margin-top: 4px; }
+.pvs-js .s { font-size: 11px; color: var(--ink-3); }
 .pvs-js.done .c { background: var(--ok); border-color: var(--ok); color: #fff; }
-.pvs-js.running .c { border-color: var(--red); color: var(--red); animation: ss-pulse 1.2s infinite; }
-.pvs-js.waiting .c { background: var(--red); border-color: var(--red); color: #fff; }
+.pvs-js.running .c { border-color: var(--red); color: var(--red); box-shadow: 0 0 0 4px rgba(235, 23, 0, .12); animation: ss-pulse 1.4s ease-in-out infinite; }
+.pvs-js.running .s { color: var(--red-d); font-weight: 700; }
+.pvs-js.waiting .c { background: var(--red); border-color: var(--red); color: #fff; box-shadow: 0 0 0 4px rgba(235, 23, 0, .16); }
+.pvs-js.waiting .s { color: var(--red-d); font-weight: 700; }
 .pvs-js.failed .c { background: var(--bad); border-color: var(--bad); color: #fff; }
-.pvs-jl { width: 34px; height: 2px; background: var(--line-2); margin-right: 10px; }
-.pvs-jl.done { background: var(--ok); }
+
+/* layout: settings column on the left, the run (progress, review, log, results) on the right */
+.pvs-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start; max-width: none; }
+.pvs-ctl { position: sticky; top: 0; display: grid; gap: 14px; }
+.pvs-work { min-width: 0; }
+.pvs-stack { display: grid; gap: 16px; }
+.pvs-go { flex: 0 0 240px; padding-left: 22px; border-left: 1px solid var(--line); }
+.pvs-go-btn { width: 100%; height: 44px; justify-content: center; font-size: 14px; border-radius: 12px; }
+.pvs-go p { margin: 7px 2px 0; font-size: 11.5px; line-height: 1.4; }
+.pvs-idle { border: 1.5px dashed var(--line-2); border-radius: 14px; padding: 22px 24px; color: var(--ink-2); background: var(--wash); }
+.pvs-idle > b { display: block; font: 700 17px 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; color: var(--ink); margin-bottom: 6px; }
+.pvs-idle p { margin: 0; max-width: 72ch; line-height: 1.6; font-size: 13px; }
+.pvs-idle ol { margin: 14px 0 0; padding: 0; list-style: none; counter-reset: st; display: grid; gap: 8px; font-size: 13px; }
+.pvs-idle li { counter-increment: st; display: flex; gap: 10px; align-items: baseline; }
+.pvs-idle li::before { content: counter(st); width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: #fff; border: 1px solid var(--line-2); color: var(--ink-2); }
+.pvs-confirmbar { margin: 0 0 16px; box-shadow: 0 8px 22px -14px rgba(235, 23, 0, .6); }
+.pvs-confirmbar b { display: block; font-size: 14px; margin-bottom: 2px; }
+.pvs-grid2.is-after { opacity: .96; }
+@container ss-pane (max-width: 1180px) { .pvs-layout { grid-template-columns: 1fr; } .pvs-ctl { position: static; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); } .pvs-runbar { flex-wrap: wrap; } .pvs-go { flex-basis: 100%; padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--line); } }
 
 /* settings */
 .pvs-opt { display: flex; gap: 8px; }
@@ -2497,9 +2579,10 @@ textarea.pvs-input { height: 78px; padding: 8px 10px; font: 11px var(--mono); re
 .pvs-switch.is-on { border-color: var(--red); }
 .pvs-switch.is-on i { background: var(--red); }
 .pvs-switch.is-on i::after { left: 16px; }
-.pvs-login { border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
-.pvs-login-h { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-.pvs-login-h b { flex: 1; }
+.pvs-login { min-width: 0; }
+.pvs-login + .pvs-login { padding-top: 16px; border-top: 1px solid var(--line); }
+.pvs-login-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.pvs-login-h b { font-size: 12.5px; }
 .pvs-field { display: block; font-size: 11.5px; color: var(--ink-2); margin-bottom: 8px; }
 .pvs-field > span { display: block; font-weight: 700; margin-bottom: 3px; }
 .pvs-field > span em { font-style: normal; font-weight: 400; color: var(--mute); margin-left: 4px; }
@@ -2975,19 +3058,19 @@ function LoginSide({ v, side, disabled }) {
 /* ------------------------------- journey ------------------------------- */
 
 const JOURNEY_SUB = { done: 'Done', running: 'Working…', waiting: 'Your turn', failed: 'Stopped' };
+// The run as a route line: each step a station; the line fills as the run moves along it.
 function Journey({ steps }) {
   return (
-    <div className="pvs-journey" aria-label="Progress">
+    <ol className="pvs-journey" aria-label="Progress">
       {steps.map(([label, st], i) => (
-        <React.Fragment key={label}>
-          {i > 0 && <span className={`pvs-jl${steps[i - 1][1] === 'done' ? ' done' : ''}`} />}
-          <div className={`pvs-js ${st || ''}`}>
-            <span className="c">{st === 'done' ? '✓' : st === 'failed' ? '!' : i + 1}</span>
-            <div><div className="l">{label}</div><div className="s">{JOURNEY_SUB[st] || ''}</div></div>
-          </div>
-        </React.Fragment>
+        <li key={label} className={`pvs-js ${st || ''}`} aria-current={st === 'running' || st === 'waiting' ? 'step' : undefined}>
+          <span className="pvs-jline" aria-hidden="true"><i /></span>
+          <span className="c">{st === 'done' ? <Svg name="check" size={12} strokeWidth={2.6} /> : st === 'failed' ? '!' : i + 1}</span>
+          <span className="l">{label}</span>
+          <span className="s">{JOURNEY_SUB[st] || '\u00a0'}</span>
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }
 
@@ -3276,57 +3359,52 @@ function ValidatePanel({ v, detail, onOpenPipeline }) {
     : run?.review === 'done' ? ['Checks passed', 'is-pass']
       : run?.review === 'failed' || run?.extract === 'failed' ? ['Stopped', 'is-crit'] : null;
 
-  return (
-    <div className="pvs-pad">
-      <Journey steps={steps} />
-
-      {/* ------------------------------ settings ------------------------------ */}
+  const resultsReady = !!run?.result;
+  const settings = (
+    <aside className="pvs-ctl" aria-label="Validation settings">
       <section className="pvs-card">
-        <div className="pvs-card-h"><b>Settings</b><span className="pvs-sub">For this run only - logins are never saved</span></div>
-        <div className="pvs-card-b">
-          {v.setupErr && <div className="pvs-banner is-bad" style={{ marginTop: 0, marginBottom: 12 }}>{v.setupErr} <button type="button" className="ss-link" onClick={v.reload}>Try again</button></div>}
-          <div className="pvs-grid3">
-            <div>
-              <div className="pvs-micro">Mode</div>
-              <div className="pvs-opt" role="radiogroup" aria-label="Mode">
-                {[['manual', 'Manual', 'Review, then confirm'], ['auto', 'Auto', 'Runs if checks pass']].map(([k, l, s]) => (
-                  <button key={k} type="button" role="radio" aria-checked={v.runMode === k} disabled={running}
-                    className={`pvs-radio${v.runMode === k ? ' is-on' : ''}`} onClick={() => v.setRunMode(k)}><b>{l}</b><span>{s}</span></button>
-                ))}
-              </div>
-            </div>
-            <label>
-              <div className="pvs-micro">Validation config</div>
-              <select className="pvs-input" value={v.db} onChange={(e) => v.setDb(e.target.value)} disabled={running}>
-                {(v.setup?.databases || []).map((d) => <option key={d.id} value={d.id}>{d.label}{d.ready ? '' : ' (not set up)'}</option>)}
-              </select>
-              <div className="pvs-hint">{v.dbInfo && !v.dbInfo.ready ? <span className="pvs-bad">{v.dbInfo.reason}</span> : sv?.source ? `Picked from the pipeline's ${sv.source} source` : 'Which validation config to compare with'}</div>
-            </label>
-            <div>
-              <div className="pvs-micro">Write to Snowflake</div>
-              <button type="button" role="switch" aria-checked={v.wantWrite} className={`pvs-switch${v.wantWrite ? ' is-on' : ''}`}
-                disabled={running || !v.canWrite} title={!v.canWrite ? v.dbInfo?.write_reason || 'Not available' : undefined} onClick={() => v.setWriteOn(!v.wantWrite)}>
-                <i />{v.wantWrite ? 'Yes, add to IT Checks' : 'No'}
-              </button>
-              <div className="pvs-hint">
-                {!v.canWrite && v.dbInfo?.write_reason ? v.dbInfo.write_reason
-                  : v.wantWrite ? <>Appends one report row to <b>{v.dbInfo.table}</b> as &apos;{v.dbInfo.database_name}&apos;</> : 'Results stay on this page only'}
-              </div>
+        <div className="pvs-card-h"><b>Settings</b><span className="pvs-sub">This run only · logins are never saved</span></div>
+        <div className="pvs-card-b pvs-stack">
+          {v.setupErr && <div className="pvs-banner is-bad" style={{ marginTop: 0 }}>{v.setupErr} <button type="button" className="ss-link" onClick={v.reload}>Try again</button></div>}
+          <div>
+            <div className="pvs-micro">Mode</div>
+            <Segmented label="Mode" value={v.runMode} onChange={v.setRunMode} disabled={running}
+              options={[['manual', 'Review first'], ['auto', 'Straight through']]} />
+            <div className="pvs-hint">{v.runMode === 'auto' ? 'Extract → check → validate without stopping; stops and says why if a check fails.' : 'Extract and check, then you confirm before anything is compared.'}</div>
+          </div>
+          <label>
+            <div className="pvs-micro">Validation config</div>
+            <select className="pvs-input" value={v.db} onChange={(e) => v.setDb(e.target.value)} disabled={running}>
+              {(v.setup?.databases || []).map((d) => <option key={d.id} value={d.id}>{d.label}{d.ready ? '' : ' (not set up)'}</option>)}
+            </select>
+            <div className="pvs-hint">{v.dbInfo && !v.dbInfo.ready ? <span className="pvs-bad">{v.dbInfo.reason}</span> : sv?.source ? `Picked from the pipeline's ${sv.source} source` : 'Which validation config to compare with'}</div>
+          </label>
+          <div>
+            <div className="pvs-micro">Write to Snowflake</div>
+            <button type="button" role="switch" aria-checked={v.wantWrite} className={`pvs-switch${v.wantWrite ? ' is-on' : ''}`}
+              disabled={running || !v.canWrite} title={!v.canWrite ? v.dbInfo?.write_reason || 'Not available' : undefined} onClick={() => v.setWriteOn(!v.wantWrite)}>
+              <i />{v.wantWrite ? 'Yes, add the result to IT Checks' : 'No, keep it on this page'}
+            </button>
+            <div className="pvs-hint">
+              {!v.canWrite && v.dbInfo?.write_reason ? v.dbInfo.write_reason
+                : v.wantWrite ? <>Appends one report row to <b>{v.dbInfo.table}</b> as &apos;{v.dbInfo.database_name}&apos;</> : 'Nothing is written anywhere.'}
             </div>
           </div>
+        </div>
+      </section>
 
-          <div className="pvs-h4">Logins</div>
-          <div className="pvs-grid2" style={{ marginTop: 0 }}>
-            <LoginSide v={v} side="source" disabled={running} />
-            <LoginSide v={v} side="target" disabled={running} />
-          </div>
+      <section className="pvs-card">
+        <div className="pvs-card-h"><b>Logins</b></div>
+        <div className="pvs-card-b pvs-stack">
+          <LoginSide v={v} side="source" disabled={running} />
+          <LoginSide v={v} side="target" disabled={running} />
           {(v.srcMode === 'pipeline' || v.tgtMode === 'pipeline') && (
-            <div className="pvs-foot" style={{ borderTop: 0, paddingTop: 0, marginTop: 12 }}>
+            <div className="pvs-foot" style={{ borderTop: 0, paddingTop: 0, marginTop: 0 }}>
               {v.cap.status === 'error' && <span className="pvs-bad">{v.cap.error}</span>}
               {v.cap.status === 'ok' && (
                 <label className={`pvs-confirm${v.cap.confirmed ? ' is-on' : ''}`}>
                   <input type="checkbox" checked={v.cap.confirmed} disabled={running} onChange={(e) => v.setCap((c) => ({ ...c, confirmed: e.target.checked }))} />
-                  These logins are right <span className="ss-tag">pipeline v{v.cap.data.version ?? '?'}</span>
+                  These logins are right <span className="ss-tag">pipeline v{String(v.cap.data.version ?? '?').replace(/^v/i, '')}</span>
                 </label>
               )}
               <button type="button" className="ss-btn ss-btn-sm" disabled={running || v.cap.status === 'loading'} onClick={() => v.readLogins(v.picked)}>
@@ -3334,82 +3412,111 @@ function ValidatePanel({ v, detail, onOpenPipeline }) {
               </button>
             </div>
           )}
-
-          <div className="pvs-foot">
-            {running ? (
-              <button type="button" className="ss-btn pvs-stop" onClick={v.stop}><span className="pvs-spin" />Stop</button>
-            ) : (
-              <button type="button" className="ss-btn ss-btn-primary" onClick={v.start} disabled={!!v.blocked || !!v.loginProblem}>
-                <Svg name="shield" />{goLabel} →
-              </button>
-            )}
-            <span className={(v.blocked || v.loginProblem) && !running ? 'pvs-bad' : 'pvs-sub'}>
-              {!running && (v.blocked || v.loginProblem)
-                ? v.blocked || v.loginProblem
-                : v.runMode === 'auto' ? 'Extract → check → validate without stopping. If anything fails, it stops and shows why.' : 'Nothing is compared until you confirm the review.'}
-            </span>
-          </div>
         </div>
       </section>
 
-      {/* --------------------------- review + log --------------------------- */}
-      {run && (
-        <div className="pvs-grid2">
-          <section className="pvs-card">
-            <div className="pvs-card-h">
-              <b>What will be compared</b>
-              <span className="ss-push" />
-              {reviewBadge ? <span className={`pvs-st ${reviewBadge[1]}`}>{reviewBadge[0]}</span> : !run.done && <span className="pvs-sub"><span className="pvs-spin" /> Working…</span>}
-            </div>
-            <div className="pvs-card-b">
-              {run.report && (
-                <div className="pvs-route" style={{ marginBottom: 12 }}>
-                  <span className="pvs-pill is-src">{uniqJoin(flow('sources'))}</span>→<span className="pvs-pill is-dst">{uniqJoin(flow('targets'))}</span>
-                  <button type="button" className="ss-link" onClick={() => download(run.report, `${safeName}_extract.json`)}>Download extract</button>
-                </div>
-              )}
-              {autoStop && (
-                <div className="pvs-banner is-bad" style={{ marginTop: 0, marginBottom: 12, display: 'block' }}>
-                  <b>Auto mode stopped before validating - nothing was compared</b>
-                  <ul>{(autoStop.length ? autoStop : ['The checks didn’t pass - see the log']).map((m) => <li key={m}>{m}</li>)}</ul>
-                  <div className="pvs-sub">Fix the cause (or pick other logins / another config) and run again, or switch to Manual to look through the details.</div>
-                </div>
-              )}
-              {run.plan
-                ? <ReviewPlan plan={run.plan} hideProblems={!!autoStop} />
-                : !run.done && <p className="pvs-sub" style={{ margin: 0 }}>{run.extract === 'done' ? 'Working out what will be compared and testing both logins…' : 'Extracting the pipeline from StreamSets…'}</p>}
-              {!run.confirmed && !autoStop && run.errors.map((m, i) => <p key={i} className="pvs-bad" style={{ margin: '8px 0 0' }}>{m}</p>)}
-              {awaiting && (!run.auto || v.confirmBlocked) && (
-                <div className="pvs-banner is-wait">
-                  <button type="button" className="ss-btn ss-btn-primary" onClick={v.confirm} disabled={!!v.confirmBlocked}>Confirm &amp; validate</button>
-                  <button type="button" className="ss-btn" onClick={v.cancel}>Cancel</button>
-                  {v.confirmBlocked
-                    ? <span className="pvs-bad">{v.confirmBlocked}</span>
-                    : <span className="pvs-sub">Nothing has been compared yet. {v.wantWrite ? 'Results will be written to Snowflake.' : 'Results won’t be written to Snowflake.'}
-                      {run.expiresAt && ` Valid until ${new Date(run.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}</span>}
-                </div>
-              )}
-              {run.done && !run.confirmed && !run.token && run.plan && !run.auto && (
-                <p className="pvs-bad" style={{ margin: '10px 0 0' }}>This can&apos;t be validated as it is - fix the problem above (or pick other logins) and extract &amp; review again.</p>
-              )}
-            </div>
-          </section>
-          <LiveLog run={run} onStop={v.stop} />
-        </div>
-      )}
+    </aside>
+  );
 
-      {/* ------------------------- write + results ------------------------- */}
-      {run?.confirmed && run.write && (
-        run.writeInfo?.written ? (
-          <div className="pvs-banner is-ok">
-            ✓ Written to <b>{run.writeInfo.table}</b> as &apos;{run.writeInfo.database}&apos; at {run.writeInfo.load_date}.
-            <a className="ss-link" href={`/dqe?check=IT_Checks&run=${encodeURIComponent(run.writeInfo.load_date)}`}>Open in IT Checks ↗</a>
+  return (
+    <div className="pvs-pad pvs-layout">
+      {settings}
+      <div className="pvs-work">
+        <div className="pvs-runbar">
+          <Journey steps={steps} />
+          <div className="pvs-go">
+            {running ? (
+              <button type="button" className="ss-btn pvs-stop pvs-go-btn" onClick={v.stop}><span className="pvs-spin" />Stop</button>
+            ) : (
+              <button type="button" className={`ss-btn pvs-go-btn${run ? '' : ' ss-btn-primary'}`} onClick={v.start} disabled={!!v.blocked || !!v.loginProblem}>
+                <Svg name="shield" />{goLabel}
+              </button>
+            )}
+            <p className={(v.blocked || v.loginProblem) && !running ? 'pvs-bad' : 'pvs-sub'}>
+              {!running && (v.blocked || v.loginProblem) ? v.blocked || v.loginProblem
+                : running ? 'Running - other tabs and pipelines stay usable.'
+                  : v.runMode === 'auto' ? 'Runs to the end unless a check fails.' : 'Nothing is compared until you confirm.'}
+            </p>
           </div>
-        ) : run.writeInfo ? <div className="pvs-banner is-bad">Not written: {run.writeInfo.reason}</div>
-          : <div className="pvs-banner is-wait"><span className="pvs-spin" />After validation, writes to {run.writeTarget?.table}</div>
-      )}
-      {run?.confirmed && run.errors.length > 0 && <div className="pvs-banner is-bad" style={{ display: 'block' }}>{run.errors.map((m, i) => <div key={i}>{m}</div>)}</div>}
-      {run?.result && <Results result={run.result} seconds={run.seconds} onDownload={() => download(run.result, `${safeName}_validation.json`)} />}
+        </div>
+
+        {!run && (
+          <div className="pvs-idle">
+            <b>Ready when you are</b>
+            <p>
+              {v.runMode === 'auto' ? 'Run validation' : 'Extract & review'} pulls this pipeline from StreamSets, works out every table it loads, tests both logins
+              and reads what its processors change on the way - so differences it makes on purpose show up as expected, not as problems.
+            </p>
+            <ol>
+              <li><b>Extract</b> the pipeline as it is in StreamSets right now</li>
+              <li><b>{v.runMode === 'auto' ? 'Check' : 'Review'}</b> the tables, logins and transformations{v.runMode === 'auto' ? '' : ' - you confirm'}</li>
+              <li><b>Validate</b> table by table: rows, columns, nulls, duplicates, distinct values</li>
+              {v.wantWrite && <li><b>Write</b> the result to IT Checks</li>}
+            </ol>
+          </div>
+        )}
+
+        {awaiting && (!run.auto || v.confirmBlocked) && (
+          <div className="pvs-banner is-wait pvs-confirmbar">
+            <div className="ss-grow">
+              <b>{v.confirmBlocked ? 'This review can’t be confirmed' : 'Check the review below, then confirm'}</b>
+              <div className={v.confirmBlocked ? 'pvs-bad' : 'pvs-sub'}>
+                {v.confirmBlocked || <>Nothing has been compared yet. {v.wantWrite ? 'Results will be written to Snowflake.' : 'Results won’t be written to Snowflake.'}
+                  {run.expiresAt && ` Valid until ${new Date(run.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}</>}
+              </div>
+            </div>
+            <button type="button" className="ss-btn" onClick={v.cancel}>Cancel</button>
+            <button type="button" className="ss-btn ss-btn-primary" onClick={v.confirm} disabled={!!v.confirmBlocked}><Svg name="check" />Confirm &amp; validate</button>
+          </div>
+        )}
+
+        {run?.confirmed && run.write && (
+          run.writeInfo?.written ? (
+            <div className="pvs-banner is-ok">
+              <Svg name="check" />Written to <b>{run.writeInfo.table}</b> as &apos;{run.writeInfo.database}&apos; at {run.writeInfo.load_date}.
+              <a className="ss-link" href={`/dqe?check=IT_Checks&run=${encodeURIComponent(run.writeInfo.load_date)}`}>Open in IT Checks ↗</a>
+            </div>
+          ) : run.writeInfo ? <div className="pvs-banner is-bad">Not written: {run.writeInfo.reason}</div>
+            : <div className="pvs-banner is-wait"><span className="pvs-spin" />After validation, writes to {run.writeTarget?.table}</div>
+        )}
+        {run?.confirmed && run.errors.length > 0 && <div className="pvs-banner is-bad" style={{ display: 'block' }}>{run.errors.map((m, i) => <div key={i}>{m}</div>)}</div>}
+        {resultsReady && <Results result={run.result} seconds={run.seconds} onDownload={() => download(run.result, `${safeName}_validation.json`)} />}
+
+        {run && (
+          <div className={`pvs-grid2${resultsReady ? ' is-after' : ''}`}>
+            <section className="pvs-card">
+              <div className="pvs-card-h">
+                <b>What {run.confirmed ? 'was' : 'will be'} compared</b>
+                <span className="ss-push" />
+                {reviewBadge ? <span className={`pvs-st ${reviewBadge[1]}`}>{reviewBadge[0]}</span> : !run.done && <span className="pvs-sub"><span className="pvs-spin" /> Working…</span>}
+              </div>
+              <div className="pvs-card-b">
+                {run.report && (
+                  <div className="pvs-route" style={{ marginBottom: 12 }}>
+                    <span className="pvs-pill is-src">{uniqJoin(flow('sources'))}</span><Svg name="chevron" size={13} /><span className="pvs-pill is-dst">{uniqJoin(flow('targets').filter((t) => !/finisher|trash|dev null/i.test(t)))}</span>
+                    <button type="button" className="ss-link" onClick={() => download(run.report, `${safeName}_extract.json`)}><Svg name="download" size={13} /> Extract JSON</button>
+                  </div>
+                )}
+                {autoStop && (
+                  <div className="pvs-banner is-bad" style={{ marginTop: 0, marginBottom: 12, display: 'block' }}>
+                    <b>Stopped before validating - nothing was compared</b>
+                    <ul>{(autoStop.length ? autoStop : ['The checks didn’t pass - see the log']).map((m) => <li key={m}>{m}</li>)}</ul>
+                    <div className="pvs-sub">Fix the cause (or pick other logins / another config) and run again, or switch to Review first to look through the details.</div>
+                  </div>
+                )}
+                {run.plan
+                  ? <ReviewPlan plan={run.plan} hideProblems={!!autoStop} />
+                  : !run.done && <p className="pvs-sub" style={{ margin: 0 }}>{run.extract === 'done' ? 'Working out what will be compared and testing both logins…' : 'Extracting the pipeline from StreamSets…'}</p>}
+                {!run.confirmed && !autoStop && run.errors.map((m, i) => <p key={i} className="pvs-bad" style={{ margin: '8px 0 0' }}>{m}</p>)}
+                {run.done && !run.confirmed && !run.token && run.plan && !run.auto && (
+                  <p className="pvs-bad" style={{ margin: '10px 0 0' }}>This can&apos;t be validated as it is - fix the problem above (or pick other logins) and extract &amp; review again.</p>
+                )}
+              </div>
+            </section>
+            <LiveLog run={run} onStop={v.stop} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3485,7 +3592,8 @@ const PAGE_CSS = `${PANEL_CSS}
 .pvs-badge.is-mdb { background: var(--proc-bg); color: var(--proc); }
 .pvs-badge.is-mss { background: var(--blue-soft, #e8f0fe); color: var(--blue, #1a56db); }
 .pvs-badge.is-any { background: var(--src-bg); color: var(--ok); }
-.pvs-last { align-self: center; flex-shrink: 0; }
+.pvs-when { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); white-space: nowrap; }
+.pvs-when i { width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--line-2)); }
 .pvs-why { color: var(--warn); }
 .pvs-meter { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-3); }
 .pvs-meter div { flex: 1; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
@@ -3494,6 +3602,9 @@ const PAGE_CSS = `${PANEL_CSS}
 `;
 
 const SOURCE_BADGE = { Oracle: ['ORA', 'is-ora'], MariaDB: ['MDB', 'is-mdb'], 'SQL Server': ['MSS', 'is-mss'] };
+const SOURCE_LANE = { Oracle: 'oracle', MariaDB: 'mariadb', 'SQL Server': 'sqlserver' };
+const RESULT_LANE = { CRITICAL: 'attention', ERROR: 'attention', FAULTY: 'attention', WARNING: 'warn', TABLE_NOT_FOUND: 'warn', TIMEOUT: 'warn', PASSED: 'pass' };
+const LANE = { crit: '#d4351c', warn: '#c98a00', pass: '#3f8f22', fresh: '#81766f', cant: '#b8afa7', ora: '#eb1700', mdb: '#0f68b2', mss: '#6b46c1' };
 const when = (s) => {
   const d = new Date(String(s || '').replace(' ', 'T'));
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
@@ -3515,7 +3626,7 @@ export default function PipelineValidation() {
   const canValidate = hasPermission('runITChecks');
   const canHistory = hasPermission('viewITChecks');
   const v = useValidation({ canValidate, canHistory });
-  const { support, supportedCount, latest, running } = v;
+  const { support, latest, running } = v;
   const pickedId = v.picked?.id;
   const stopRef = useRef(v.stop);
   stopRef.current = v.stop;   // header / list are memoised; this always calls the current run's stop
@@ -3526,7 +3637,6 @@ export default function PipelineValidation() {
     const verdict = (id) => support?.[id];
     const validatable = (id) => canValidate && verdict(id)?.ok !== false;
     const last = (name) => latestByName.get(String(name || '').toLowerCase());
-    const total = support ? Object.keys(support).length : 0;
     return {
       brand: { icon: 'shield', title: 'Pipeline Studio', sub: 'View a StreamSets pipeline, extract it, and validate it against Snowflake' },
       views: [
@@ -3535,25 +3645,51 @@ export default function PipelineValidation() {
         { id: 'history', label: 'History', icon: 'clock', locked: canHistory ? null : 'Needs the viewITChecks permission',
           render: (detail) => <HistoryTab detail={detail} /> },
       ],
-      heroStep: ['shield', 'ok', 'Validate', 'Compare an Oracle, MariaDB or SQL Server pipeline with Snowflake table by table, and add the result to IT Checks if you want.'],
-      filter: canValidate ? { label: 'Can validate', count: supportedCount, test: (p) => verdict(p.id)?.ok !== false } : null,
-      railNote: canValidate && (
-        <div className="pvs-meter">
-          <div><i style={{ width: total ? `${(supportedCount / total) * 100}%` : '0%' }} /></div>
-          {support ? `${supportedCount} of ${total} can be validated` : 'Checking which can be validated…'}
-        </div>
-      ),
-      rowLead: canValidate ? (p) => {
-        const s = verdict(p.id);
-        const [text, cls] = !s ? ['··', ''] : s.ok === false ? ['—', ''] : SOURCE_BADGE[s.source] || ['SRC', 'is-any'];
-        const title = !s ? 'Checking…' : s.ok === false ? `Can't validate: ${s.reason}` : `Source: ${s.source || 'decided when it runs'}`;
-        return <span className={`pvs-badge ${cls}`} title={title}>{text}</span>;
-      } : null,
-      rowNote: canValidate ? (p) => (running && pickedId === p.id ? <span className="ss-tag ss-tag-red">● validating</span>
-        : verdict(p.id)?.ok === false ? <span className="pvs-why">{verdict(p.id).reason}</span> : null) : null,
-      rowTail: canHistory ? (p) => {
-        const l = last(p.name);
-        return l ? <span className="pvs-last" title={`Last validated ${when(l.load_date)}`}><StatusPill s={l.status} /></span> : null;
+      board: (canValidate || canHistory) ? {
+        modes: [...(canHistory ? [['result', 'Last result']] : []), ...(canValidate ? [['source', 'Source']] : [])],
+        defaultMode: canHistory ? 'result' : 'source',
+        folded: ['cant'],
+        lanes: {
+          ...(canHistory ? { result: [
+            { id: 'attention', label: 'Needs attention', color: LANE.crit, hint: 'Critical, error or faulty on the last run', empty: 'Nothing failing - nice.' },
+            { id: 'warn', label: 'Warnings', color: LANE.warn, hint: 'Warnings or tables not found last time', empty: 'No warnings.' },
+            { id: 'pass', label: 'Passed', color: LANE.pass, hint: 'Every table matched last time', empty: 'None passed yet.' },
+            { id: 'fresh', label: 'Not validated', color: LANE.fresh, hint: `No result in the last 90 days`, empty: 'Everything has a recent result.' },
+            ...(canValidate ? [{ id: 'cant', label: 'Not supported', color: LANE.cant, hint: 'Source or target the validator can’t read', empty: 'Every pipeline can be validated.' }] : []),
+          ] } : {}),
+          ...(canValidate ? { source: [
+            { id: 'oracle', label: 'Oracle', color: LANE.ora, hint: 'Insight7, RIMDocs', empty: 'No Oracle pipelines.' },
+            { id: 'mariadb', label: 'MariaDB / MySQL', color: LANE.mdb, hint: 'HAQ', empty: 'No MariaDB pipelines.' },
+            { id: 'sqlserver', label: 'SQL Server', color: LANE.mss, hint: 'LIFT', empty: 'No SQL Server pipelines.' },
+            { id: 'other', label: 'Decided at run', color: LANE.fresh, hint: 'Shared connection - the source shows when it runs', empty: 'None.' },
+            { id: 'cant', label: 'Not supported', color: LANE.cant, hint: 'Source or target the validator can’t read', empty: 'Every pipeline can be validated.' },
+          ] } : {}),
+        },
+        laneOf: (p, mode) => {
+          const s = verdict(p.id);
+          if (canValidate && s?.ok === false) return 'cant';
+          if (mode === 'source') return SOURCE_LANE[s?.source] || 'other';
+          const l = last(p.name);
+          return !l ? 'fresh' : RESULT_LANE[l.status] || 'attention';
+        },
+        card: (p, mode) => {
+          const s = verdict(p.id);
+          const l = canHistory ? last(p.name) : null;
+          const cant = canValidate && s?.ok === false;
+          const [text, cls] = !canValidate ? ['SRC', 'is-any'] : !s ? ['··', ''] : cant ? ['—', ''] : SOURCE_BADGE[s.source] || ['SRC', 'is-any'];
+          const title = !canValidate ? 'Source' : !s ? 'Checking…' : cant ? `Can't validate: ${s.reason}` : `Source: ${s.source || 'decided when it runs'}`;
+          const busy = running && pickedId === p.id;
+          return {
+            lead: <span className={`pvs-badge ${cls}`} title={title}>{text}</span>,
+            end: cant && /target/i.test(s.reason || '') ? '?' : 'SF',
+            tone: busy ? 'var(--red)' : l ? (STATUS[l.status] || [])[2] : cant ? 'transparent' : 'var(--line-2)',
+            muted: cant,
+            tail: l ? (mode === 'result'
+              ? <span className="pvs-when" style={{ '--c': (STATUS[l.status] || [])[2] }} title={`Validated ${when(l.load_date)}`}><i />{(STATUS[l.status] || [l.status])[0]} · {relativeDay(String(l.load_date).replace(' ', 'T'))}</span>
+              : <span title={`Last validated ${when(l.load_date)}`}><StatusPill s={l.status} /></span>) : null,
+            note: busy ? <span className="ss-tag ss-tag-red">● validating</span> : cant ? <span className="pvs-why">{s.reason}</span> : null,
+          };
+        },
       } : null,
       headerActions: (detail, navigate) => {
         const s = verdict(detail.id);
@@ -3597,7 +3733,7 @@ export default function PipelineValidation() {
         );
       },
     };
-  }, [canValidate, canHistory, support, supportedCount, latestByName, running, pickedId]);
+  }, [canValidate, canHistory, support, latestByName, running, pickedId]);
 
   return (
     <Validation.Provider value={v}>

@@ -145,8 +145,11 @@ class _Tx:
     def wild(self, stage, glob, types, why):
         self.tx["wild"].append({"glob": glob or "*", "types": types, "why": why})
 
-    def rows(self, why):
-        self.tx["rows"].append(why)
+    def rows(self, why, way="fewer"):
+        """A reason the row counts can differ. way: the direction it can move Snowflake's count - 'fewer' rows
+        (filters, dedup, offsets), 'more' (pivots, CDC inserted as-is) or 'any'. Only a mismatch in that direction
+        is explained by it: a filter never explains extra rows, an insert-only CDC load never explains missing ones."""
+        self.tx["rows"].append({"why": why, "way": way})
 
 
 def _preconditions(a, cfg, label):
@@ -266,7 +269,7 @@ def _processor(a, s, label):
         a.wild(label, "*", None, f"{label} flattens nested fields")
         a.step(label, "flattens fields", "nested fields become top-level columns")
     elif "listpivot" in name or "fieldpivot" in name or "mappivot" in name:
-        a.rows(f"{label} turns each list item into its own record")
+        a.rows(f"{label} turns each list item into its own record", "more")
         a.step(label, "pivots", str(_get(cfg, "listPath") or ""))
     elif "selector" in name:
         preds = [p for p in _list(_get(cfg, "lanePredicates")) if isinstance(p, dict)]
@@ -346,7 +349,7 @@ def _destination(a, p, origin):
         cfg = t.get("configuration") or {}
         cdc_origin = origin_family((origin or {}).get("type")) in ("sqlserver_cdc", "sqlserver_ct", "oracle_cdc", "mysql_binlog")
         if cdc_origin and str(cfg.get("Cdcdata")).lower() != "true":
-            a.rows("the origin sends every change but Snowflake only inserts (Process CDC Data is off), so changed rows repeat")
+            a.rows("the origin sends every change but Snowflake only inserts (Process CDC Data is off), so changed rows repeat", "more")
             a.step(t.get("stage_name") or "Snowflake", "inserts every change", "Process CDC Data is off")
         elif cdc_origin:
             a.step(t.get("stage_name") or "Snowflake", "applies changes", "inserts, updates and deletes are merged (Process CDC Data)")
@@ -486,8 +489,12 @@ def _apply_table(t, tx):
         return None
 
     issues_in = t.get("validation_issues") or []
-    row_mismatch = not (t.get("row_counts") or {}).get("match", True)
-    filtered = "; ".join(tx["rows"]) if row_mismatch and tx["rows"] else None
+    rc = t.get("row_counts") or {}
+    row_mismatch = not rc.get("match", True)
+    src_n, sf_n = rc.get("source"), rc.get("snowflake")
+    way = "fewer" if isinstance(src_n, int) and isinstance(sf_n, int) and sf_n < src_n else "more" if isinstance(src_n, int) and isinstance(sf_n, int) else None
+    reasons = [r["why"] for r in tx["rows"] if way and r["way"] in (way, "any")]
+    filtered = "; ".join(reasons) if row_mismatch and reasons else None
     for issue in issues_in:
         if issue.startswith("Columns only in Snowflake:"):
             if sf_left:

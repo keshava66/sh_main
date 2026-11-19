@@ -801,7 +801,7 @@ function describeFragment(stage, ctx) {
   const used = new Map();
   flattenStages(f.stages).forEach(({ stage: x }) => x.config.forEach(c => c.params.forEach(p => used.set(p.name, p))));
   return {
-    lead: ['A shared building block that pipelines reuse - ', B(f.name), f.version ? `, version ${f.version}. ` : '. ',
+    lead: ['A shared building block that pipelines reuse - ', B(f.name), f.version ? `, version ${String(f.version).replace(/^v/i, '')}. ` : '. ',
       ...(f.error ? ["StreamSets didn't send what's inside it, so its steps can't be shown."]
         : ['Records ', ...(from.length ? ['coming from ', ...from, ' '] : []), `go through its ${plural(f.stages.length, 'step', 'steps')} in order`,
           ...(to.length ? [', then carry on to ', ...to] : []), '.'])],

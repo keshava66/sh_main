@@ -72,6 +72,12 @@ class _MariaConn:
         self._conn.close()
 
 
+def _shared_connection(cfg: dict) -> bool:
+    """The source stage uses a shared Control Hub connection (Connection = a connection id, not None/MANUAL)."""
+    sel = next((str(v).strip() for k, v in cfg.items() if k.replace(" ", "").lower() == "connectionselection"), "")
+    return sel not in ("", "MANUAL", "None")
+
+
 def _source_of(pipeline: dict):
     """(kind, jdbc url, username) from the extracted source stage. kind is 'oracle' / 'mariadb' / 'sqlserver'
     when supported, otherwise a name for the error message ('teradata', 'Amazon S3', ...), or None when the
@@ -83,6 +89,10 @@ def _source_of(pipeline: dict):
     cfg = s.get("configuration") or {}
     user = (cfg.get("Username") or "").strip() or None
     url = next((v.strip() for v in cfg.values() if isinstance(v, str) and v.strip().lower().startswith("jdbc:")), "")
+    if url and _shared_connection(cfg):
+        # the stage reads through a shared Control Hub connection: the URL left in the stage is a stale default,
+        # not what runs - keep its database type, but take host/database from the config or the typed login
+        return driver_kind(url), "", None
     if url:
         return driver_kind(url), url, user
     return FAMILY_KIND.get(origin_family(s.get("type"))), "", user   # CDC origins name their database
@@ -433,6 +443,10 @@ def _kind_for(pipeline, config, source):
     """Which database the source is: the pipeline's URL, else its origin type (CDC origins name it), else the
     connection typed/captured for this run, else the one source section the validation config has."""
     kind, url, user = _source_of(pipeline)
+    s = source_stage(pipeline)
+    if s and _shared_connection(s.get("configuration") or {}):
+        print("ℹ️  The source uses a shared StreamSets connection - its URL isn't in the pipeline, so the connection "
+              "comes from the validation config (or the one entered / captured for this run)")
     typed = driver_kind((source or {}).get("connection", ""))
     if not url and typed:
         kind = typed
