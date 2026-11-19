@@ -57,6 +57,11 @@ const shortDate = (iso) => {
   const d = new Date(String(iso).replace(' ', 'T'));   // the validation history writes "YYYY-MM-DD HH:MM:SS"
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 };
+const relativeTime = (iso) => {
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!Number.isFinite(m)) return '';
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : relativeDay(iso);
+};
 const initials = (name) => String(name || '?').split(/[\s._@-]+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
 /** A callback that never changes identity but always runs the latest code - keeps memo'd parts from re-rendering. */
@@ -77,31 +82,35 @@ const PANE_CSS = `
    loading, an extraction in progress, or the pipeline being extracted. */
 
 .ss-root {
-  --red: #d71e28; --red-d: #a8141c; --red-wash: #fdf2f2; --red-line: #f5c7c9;
-  --ink: #1d2433; --ink-2: #4a5568; --ink-3: #6b7385; --mute: #98a0b0;
-  --line: #e6e8ee; --line-2: #d3d7e0; --wash: #f8f9fb; --wash-2: #f1f3f7;
-  --src: #18794e; --src-bg: #ecf7f1; --proc: #1d5fbf; --proc-bg: #edf3fc; --dst: #b85c12; --dst-bg: #fdf3ea;
-  --exe: #4a5568; --exe-bg: #f1f3f7; --frag: #7a3fb0; --frag-bg: #f5effb;
-  --ok: #18794e; --bad: #b42318; --warn: #a15c07;
-  --focus: #3b6fd8; --focus-ring: rgba(59, 111, 216, .18);
-  --sh-1: 0 1px 2px rgba(16, 24, 40, .05);
-  --sh-2: 0 1px 3px rgba(16, 24, 40, .08), 0 1px 2px rgba(16, 24, 40, .04);
-  --sh-3: 0 12px 24px -6px rgba(16, 24, 40, .14), 0 4px 8px -4px rgba(16, 24, 40, .06);
-  --ease: cubic-bezier(.2, .8, .2, 1);
+  --red: #eb1700; --red-d: #b31200; --red-wash: #fff3f1; --red-line: #ffd2cb;
+  --blue: #0f68b2; --violet: #8c3bbb; --green: #328714;
+  --ink: #312c2a; --ink-2: #6e6259; --ink-3: #81766f; --mute: #a39992;
+  --line: #e8e6e3; --line-2: #d5cfc9; --wash: #faf9f7; --wash-2: #f4f1ed;
+  --src: #328714; --src-bg: #eef6ea; --proc: #0f68b2; --proc-bg: #eaf2fa; --dst: #d9620f; --dst-bg: #fdf1e7;
+  --exe: #6e6259; --exe-bg: #f1efed; --frag: #8c3bbb; --frag-bg: #f5edfb;
+  --ok: #328714; --bad: #b31200; --warn: #a35f00;
+  --focus: #eb1700; --focus-ring: rgba(235, 23, 0, .12);
+  --sh-1: 0 10px 24px -22px rgba(49, 44, 42, .6);
+  --sh-2: 0 20px 40px -32px rgba(49, 44, 42, .7);
+  --sh-3: 0 34px 70px -34px rgba(49, 44, 42, .6);
+  --display: 'JohnsonDisplay', Arial, Helvetica, sans-serif;
+  --text: 'JohnsonText', Arial, Helvetica, sans-serif;
+  --ease: cubic-bezier(.16, 1, .3, 1);
   --mono: ui-monospace, 'Cascadia Mono', Consolas, 'Courier New', monospace;
   position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column;
   container: ss-pane / inline-size;   /* layout reacts to the pane's width, not the window's (the app sidebar takes some) */
-  background: #fff; color: var(--ink); font-family: 'JohnsonText', Arial, sans-serif; font-size: 13px; line-height: 1.45;
+  background: #f4f1ed; color: var(--ink); font-family: var(--text); font-size: 13px; line-height: 1.45;
 }
+@font-face { font-family: 'JohnsonDisplay'; src: url('/fonts/JohnsonDisplay-Medium.otf') format('opentype'); font-weight: 500; font-style: normal; font-display: swap; }
 .ss-root *, .ss-root *::before, .ss-root *::after { box-sizing: border-box; }
-.ss-root ::selection { background: #dbe6fb; color: var(--ink); }
-.ss-root * { scrollbar-width: thin; scrollbar-color: #cfd4de transparent; }
+.ss-root ::selection { background: #ffd2cb; color: var(--ink); }
+.ss-root * { scrollbar-width: thin; scrollbar-color: #cbc4bc transparent; }
 .ss-root ::-webkit-scrollbar { width: 10px; height: 10px; }
-.ss-root ::-webkit-scrollbar-thumb { background: #cfd4de; border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; }
+.ss-root ::-webkit-scrollbar-thumb { background: #cbc4bc; border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; }
 .ss-root ::-webkit-scrollbar-thumb:hover { background-color: var(--mute); }
 .ss-root ::-webkit-scrollbar-track { background: transparent; }
 .ss-root input, .ss-root textarea { caret-color: var(--red); }
-.ss-root button { cursor: pointer; }
+.ss-root button { cursor: pointer; font-family: inherit; }
 .ss-root button:disabled { cursor: not-allowed; }
 .ss-root :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
 .ss-root kbd { font: 10.5px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line-2); border-bottom-width: 2px; background: #fff; color: var(--ink-2); }
@@ -137,16 +146,16 @@ const PANE_CSS = `
 .ss-busy::after { content: ''; position: absolute; inset: 0; width: 33%; background: var(--focus); animation: ss-busy 1.1s linear infinite; }
 
 /* ------------------------------ buttons ------------------------------ */
-.ss-btn { height: 34px; padding: 0 13px; border-radius: 8px; display: inline-flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12.5px; border: 1px solid var(--line-2); background: #fff; color: var(--ink); white-space: nowrap; transition: background-color .15s, border-color .15s; }
-.ss-btn:hover:not(:disabled) { border-color: var(--mute); background: var(--wash); }
+.ss-btn { height: 36px; padding: 0 15px; border-radius: 12px; display: inline-flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12.5px; border: 1px solid var(--line-2); background: #fff; color: var(--ink); white-space: nowrap; transition: background-color .15s, border-color .15s; }
+.ss-btn:hover:not(:disabled) { border-color: var(--line-2); background: #fff; color: var(--red-d); }
 .ss-btn { box-shadow: var(--sh-1); }
 .ss-btn:disabled { opacity: .45; }
 .ss-btn.is-on { background: var(--red-wash); border-color: var(--red-line); color: var(--red-d); }
 .ss-btn-dark { background: var(--ink); border-color: var(--ink); color: #fff; }
-.ss-btn-dark:hover:not(:disabled) { background: #0f1420; border-color: #0f1420; }
-.ss-btn-dark kbd { background: #374151; color: #fff; border-color: #4b5563; }
-.ss-btn-primary { background: var(--red); border-color: var(--red); color: #fff; }
-.ss-btn-primary:hover:not(:disabled) { background: var(--red-d); border-color: var(--red-d); }
+.ss-btn-dark:hover:not(:disabled) { background: #1c1918; border-color: #1c1918; color: #fff; }
+.ss-btn-dark kbd { background: #4a4442; color: #fff; border-color: #5d5552; }
+.ss-btn-primary { background: var(--red); border-color: var(--red); color: #fff; box-shadow: 0 10px 22px -10px rgba(235, 23, 0, .7); }
+.ss-btn-primary:hover:not(:disabled) { background: var(--red-d); border-color: var(--red-d); color: #fff; }
 .ss-btn-sm { height: 30px; }
 .ss-ibtn { width: 30px; height: 30px; border-radius: 8px; display: inline-grid; place-items: center; color: var(--ink-2); flex-shrink: 0; transition: background-color .15s; }
 .ss-ibtn:hover:not(:disabled) { background: var(--wash-2); color: var(--ink); }
@@ -157,158 +166,205 @@ const PANE_CSS = `
 .ss-seg button { height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; color: var(--ink-3); }
 .ss-seg button.is-on { background: #fff; color: var(--ink); font-weight: 700; box-shadow: var(--sh-1); }
 
-/* ------------------------------ header ------------------------------ */
-/* White header: brand and status, the controls that scope the board, then the summary. */
-.ss-band { flex-shrink: 0; position: relative; z-index: 25; background: #fff; color: var(--ink); padding: 14px 24px 0; border-bottom: 1px solid var(--line); }
-.ss-band-top { display: flex; align-items: center; gap: 16px; min-height: 36px; }
-.ss-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.ss-brand-mark { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: var(--red); flex-shrink: 0; background: var(--red-wash); border: 1px solid var(--red-line); }
-.ss-brand h1 { margin: 0; font: 700 18px/1.2 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.01em; color: var(--ink); }
-.ss-brand small { display: block; margin-top: 1px; color: var(--ink-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-pills { display: flex; gap: 6px; min-width: 0; margin-left: 6px; }
-.ss-pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--wash); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
-.ss-dot { width: 6px; height: 6px; border-radius: 50%; background: #22a06b; flex-shrink: 0; }
-.ss-dot.is-warn { background: #d97706; }
-.ss-jump { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 11px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; color: var(--ink-3); min-width: 250px; flex-shrink: 0; transition: border-color .15s; }
-.ss-jump:hover { border-color: var(--mute); color: var(--ink-2); }
-.ss-jump span { flex: 1; text-align: left; font-size: 12.5px; }
+/* ------------------------------ hero ------------------------------ */
+/* Same language as the Dashboard and the DQE welcome: Display headline with a red italic line,
+   a soft command bar, and a node map. The hero scrolls away with the board. */
+.ss-hero { position: relative; display: grid; grid-template-columns: minmax(380px, 1fr) minmax(360px, 1fr); gap: clamp(20px, 3vw, 56px); align-items: center;
+  padding: clamp(26px, 4vh, 46px) clamp(24px, 3.4vw, 56px) clamp(14px, 2.4vh, 26px);
+  background: radial-gradient(120% 100% at 82% 0%, #fff 0%, #faf9f7 40%, #f4f1ed 78%); }
+.ss-hero-copy { position: relative; z-index: 2; min-width: 0; max-width: 620px; }
+.ss-chip { display: inline-flex; align-items: center; gap: 10px; max-width: 100%; padding: 7px 14px; border-radius: 999px; background: rgba(255, 255, 255, .86);
+  border: 1px solid rgba(110, 98, 89, .16); box-shadow: 0 10px 26px -20px rgba(49, 44, 42, .6); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--ink-2); white-space: nowrap; overflow: hidden; animation: ss-rise .7s var(--ease) both; }
+.ss-chip > span:not(.ss-dot) { overflow: hidden; text-overflow: ellipsis; }
+.ss-chip b { font-family: var(--display); font-weight: 500; letter-spacing: .04em; color: var(--ink); font-size: 11.5px; text-transform: none; }
+.ss-sep { width: 1px; height: 12px; background: var(--line-2); flex-shrink: 0; }
+.ss-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--green); box-shadow: 0 0 0 3px rgba(50, 135, 20, .14); }
+.ss-dot.is-warn { background: var(--red); box-shadow: 0 0 0 3px rgba(235, 23, 0, .14); }
+.ss-dot.is-idle { background: var(--mute); box-shadow: none; animation: ss-pulse 1.2s ease-in-out infinite; }
+.ss-kicker { margin-top: clamp(16px, 2.6vh, 26px); font-size: 10px; letter-spacing: .26em; text-transform: uppercase; color: var(--blue); font-weight: 700; animation: ss-rise .8s var(--ease) .06s both; }
+.ss-title { margin: 12px 0 0; font-family: var(--display); font-weight: 700; font-size: clamp(40px, 2.4vw + 2.2vh, 70px); line-height: .96; letter-spacing: -.035em; color: var(--ink);
+  animation: ss-rise .9s var(--ease) .1s both; }
+.ss-title em { display: block; font-weight: 300; font-style: italic; color: var(--red); letter-spacing: -.03em; }
+.ss-rule { display: block; width: 46px; height: 3px; margin: clamp(14px, 2.4vh, 24px) 0 0; background: var(--red); border-radius: 2px; transform-origin: left; animation: ss-grow .8s var(--ease) .35s both; }
+@keyframes ss-grow { from { transform: scaleX(0); } }
+.ss-lede { margin: clamp(12px, 2vh, 20px) 0 0; max-width: 500px; font-weight: 300; font-size: clamp(13.5px, .35vw + .9vh, 16px); line-height: 1.55; color: var(--ink-2); animation: ss-rise .9s var(--ease) .18s both; }
 
-.ss-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.ss-search { position: relative; flex: 0 1 420px; min-width: 240px; }
-.ss-search > .ss-i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--mute); }
-.ss-search input { width: 100%; height: 34px; padding: 0 38px 0 34px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; outline: none; font-size: 13px; color: var(--ink); transition: border-color .15s, box-shadow .15s; }
-.ss-search input::placeholder { color: var(--mute); }
-.ss-search input:hover { border-color: var(--mute); }
-.ss-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-search-kbd, .ss-search-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
-.ss-search-clear { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-3); }
+.ss-cmd { display: flex; align-items: center; gap: 10px; margin-top: clamp(16px, 2.6vh, 26px); max-width: 600px; animation: ss-rise .9s var(--ease) .26s both; }
+.ss-cmd-box { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px; height: clamp(44px, 5.6vh, 50px); padding: 0 8px 0 16px; border-radius: 14px; cursor: text;
+  background: #fff; border: 1px solid rgba(110, 98, 89, .2); box-shadow: 0 24px 50px -30px rgba(49, 44, 42, .55), inset 0 1px 0 #fff; transition: border-color .25s, box-shadow .25s; }
+.ss-cmd-box:focus-within { border-color: rgba(235, 23, 0, .45); box-shadow: 0 26px 60px -28px rgba(235, 23, 0, .32), 0 0 0 4px rgba(235, 23, 0, .07); }
+.ss-cmd-box > .ss-i { color: var(--red); }
+.ss-cmd-box input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; font: 400 14.5px var(--text); color: var(--ink); }
+.ss-cmd-box input::placeholder { color: var(--mute); }
+.ss-cmd-box input:focus-visible { outline: none; }
+.ss-kbds { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.ss-root .ss-kbds kbd { display: inline-flex; align-items: center; height: 26px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); border-bottom-width: 1px;
+  background: linear-gradient(#fff, #f7f5f3); box-shadow: 0 2px 0 var(--line); font: 11px var(--text); color: var(--ink-2); }
+.ss-search-clear { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--ink-3); flex-shrink: 0; }
 .ss-search-clear:hover { background: var(--wash-2); color: var(--ink); }
-.ss-select { position: relative; display: inline-flex; align-items: center; height: 34px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; color: var(--ink-2); }
-.ss-select:hover { border-color: var(--mute); }
-.ss-select .ss-i { position: absolute; left: 10px; pointer-events: none; color: var(--mute); }
-.ss-select select { appearance: none; height: 100%; padding: 0 28px 0 30px; background: transparent; border: 0; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; outline: none; max-width: 220px;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 14px) 15px, calc(100% - 10px) 15px; background-size: 4px 4px; background-repeat: no-repeat; }
-.ss-select:focus-within { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-chip { flex-shrink: 0; height: 34px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; font-size: 12.5px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
-.ss-chip:hover { border-color: var(--mute); }
-.ss-chip.is-on { background: var(--ink); border-color: var(--ink); color: #fff; font-weight: 700; }
-.ss-chip em { font-style: normal; opacity: .7; font-variant-numeric: tabular-nums; }
-.ss-band .ss-seg { padding: 3px; border-radius: 8px; }
-.ss-band .ss-seg button { height: 28px; padding: 0 11px; font-size: 12.5px; border-radius: 6px; color: var(--ink-3); }
-.ss-band .ss-seg button:hover:not(.is-on) { color: var(--ink); }
-.ss-tools-end { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
-.ss-fetched { font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; margin-right: 6px; }
+.ss-jumpbtn { flex-shrink: 0; display: inline-flex; align-items: center; gap: 10px; height: clamp(44px, 5.6vh, 50px); padding: 0 8px 0 16px; border-radius: 14px;
+  background: rgba(255, 255, 255, .7); border: 1px solid var(--line); font-size: 13px; color: var(--ink-2); transition: border-color .2s, color .2s, background-color .2s; }
+.ss-jumpbtn:hover { border-color: var(--line-2); color: var(--ink); background: #fff; }
+.ss-hero-note { margin: 12px 0 0; font-size: 12.5px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; animation: ss-rise .9s var(--ease) .32s both; }
+.ss-hero-note.is-err { color: var(--bad); }
+.ss-hero-note b { font-family: var(--display); font-weight: 500; color: var(--ink); }
 
-/* summary: one line of health, a distribution bar, and a figure per lane that jumps to it */
-.ss-hero { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 32px; align-items: center; padding: 18px 0 18px;
-  max-height: 200px; overflow: hidden; transition: max-height .35s var(--ease), padding .35s var(--ease), opacity .25s; }
-.ss-root.is-lifted .ss-hero, .ss-root.has-sheet .ss-hero { max-height: 0; padding: 0; opacity: 0; }
-.ss-hero-text { min-width: 0; }
-.ss-hero-k { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
-.ss-hero-text h2 { margin: 4px 0 0; font: 700 26px/1.15 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.015em; font-variant-numeric: tabular-nums; }
-.ss-hero-text h2 small { font-size: 14px; font-weight: 400; color: var(--ink-3); margin-left: 6px; letter-spacing: 0; }
-.ss-hero-text p { margin: 3px 0 0; color: var(--ink-3); font-size: 12.5px; }
-.ss-hero-text p.is-err { color: var(--bad); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ss-hero-bar { display: flex; gap: 2px; height: 6px; margin-top: 12px; border-radius: 3px; overflow: hidden; background: var(--wash-2); }
-.ss-hero-bar i { background: var(--lane); min-width: 3px; transition: flex-grow .5s var(--ease); }
-.ss-hero-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; min-width: 0; }
-.ss-hl { display: grid; gap: 2px; text-align: left; padding: 10px 14px 11px; border-radius: 10px; border: 1px solid var(--line); background: #fff; min-width: 0;
-  transition: border-color .15s, box-shadow .15s; }
-.ss-hl span { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-hl span i { width: 8px; height: 8px; border-radius: 2px; background: var(--lane); flex-shrink: 0; }
-.ss-hl b { font: 700 22px/1.2 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; color: var(--ink); font-variant-numeric: tabular-nums; }
-.ss-hl:hover:not(:disabled) { border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-hl:disabled { cursor: default; }
-.ss-hl:disabled b { color: var(--mute); }
-.ss-hero.is-skel i { display: block; max-width: 100%; border-radius: 6px; background: var(--wash-2); animation: ss-pulse 1.4s ease-in-out infinite; }
-.ss-hero.is-skel .ss-hero-text { display: grid; gap: 10px; }
-.ss-hero.is-skel .ss-hl { height: 68px; }
-@container ss-pane (max-width: 1000px) { .ss-hero { grid-template-columns: 1fr; gap: 14px; max-height: 320px; } }
-@container ss-pane (max-width: 1250px) { .ss-pills { display: none; } .ss-brand small { display: none; } }
-@container ss-pane (max-width: 1000px) { .ss-jump { min-width: 0; } .ss-jump span { display: none; } .ss-search { flex-basis: 100%; } }
+/* the map */
+.ss-map { position: relative; z-index: 1; width: 100%; max-width: 640px; justify-self: center; aspect-ratio: 560 / 340; animation: ss-fade 1.2s ease .2s both; }
+.ss-map > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.ss-map-orbit { fill: none; stroke: #d5cfc9; stroke-width: 1; stroke-dasharray: 2 7; opacity: .8; }
+.ss-map-line { fill: none; stroke: var(--c); stroke-width: 1.4; opacity: .35; transition: opacity .25s, stroke-width .25s; }
+.ss-map-flow { fill: none; stroke: var(--c); stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1 15; animation: ss-flow 2.6s linear infinite; animation-delay: var(--d); transition: opacity .25s; }
+@keyframes ss-flow { to { stroke-dashoffset: -64; } }
+.ss-map.has-hot .ss-map-link:not(.is-hot) .ss-map-line, .ss-map.has-hot .ss-map-link:not(.is-hot) .ss-map-flow { opacity: .1; }
+.ss-map-link.is-hot .ss-map-line { opacity: .9; stroke-width: 2; }
+.ss-map-ringbg { fill: none; stroke: #ebe7e2; stroke-width: 7; }
+.ss-map-seg { fill: none; stroke-width: 7; transition: stroke-dasharray .8s var(--ease); }
+.ss-map-node { position: absolute; width: 46px; height: 46px; margin: -23px 0 0 -23px; padding: 0; border-radius: 50%; }
+.ss-map-node:disabled { cursor: default; }
+.ss-map-bub { position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center; background: #fff; border: 1px solid var(--line);
+  box-shadow: 0 16px 30px -18px rgba(49, 44, 42, .55); font: 700 11px/1 var(--text); letter-spacing: .04em; color: var(--c); transition: transform .35s var(--ease), background-color .3s, color .3s, box-shadow .3s, border-color .3s; }
+.ss-map-bub::before { content: ''; position: absolute; inset: 4px; border-radius: 50%; background: var(--c); opacity: .08; }
+.ss-map-node:not(:disabled):hover .ss-map-lbl { color: var(--c); }
+.ss-map-node:not(:disabled):hover .ss-map-bub, .ss-map-node:focus-visible .ss-map-bub { transform: scale(1.14); background: var(--c); border-color: var(--c); color: #fff; box-shadow: 0 20px 36px -16px var(--c); }
+.ss-map-lbl { position: absolute; right: 58px; top: 50%; transform: translateY(-50%); display: flex; align-items: baseline; gap: 7px; white-space: nowrap;
+  font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
+.ss-map-lbl b { font-family: var(--display); font-weight: 700; font-size: 15px; letter-spacing: 0; color: var(--ink); }
+.ss-map-disc { position: absolute; width: 26.4%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; display: grid; place-content: center; justify-items: center; gap: 2px; text-align: center;
+  background: radial-gradient(circle at 35% 28%, #fff 0%, #fbfaf8 55%, #f3efeb 100%); border: 1px solid var(--line);
+  box-shadow: 0 30px 60px -28px rgba(49, 44, 42, .55), inset 0 -8px 20px rgba(175, 165, 155, .12); transition: border-color .3s, box-shadow .3s; }
+.ss-map-disc:not(:disabled):hover { border-color: var(--red-line); box-shadow: 0 30px 60px -26px rgba(235, 23, 0, .35); }
+.ss-map-disc:disabled { cursor: default; }
+.ss-map-disc b { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 1.6vw + .8vh, 38px); line-height: 1; letter-spacing: -.02em; color: var(--ink); }
+.ss-map-disc b small { font-size: .5em; margin-left: 1px; color: var(--ink-3); }
+.ss-map-disc > small { font-size: 9.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--ink-3); }
+.ss-map-wait { animation: ss-pulse 1.2s ease-in-out infinite; }
+.ss-map-sf { width: 26px; height: 26px; margin-bottom: 4px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: #29b5e8; box-shadow: 0 6px 14px -6px rgba(41, 181, 232, .9); }
+.ss-map-pulse { position: absolute; inset: -14px; border-radius: 50%; border: 1px solid rgba(235, 23, 0, .4); animation: ss-ring 3.2s cubic-bezier(.3, 0, .5, 1) infinite; pointer-events: none; }
+.ss-map-pulse.is-b { animation-delay: 1.6s; border-color: rgba(15, 104, 178, .35); }
+@keyframes ss-ring { 0% { opacity: .6; transform: scale(.86); } 100% { opacity: 0; transform: scale(1.45); } }
+@container ss-pane (max-width: 1180px) { .ss-chip-host { display: none; } }
+@container ss-pane (max-width: 1080px) { .ss-hero { grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); } .ss-jumpbtn { display: none; } }
+@container ss-pane (max-width: 820px) { .ss-hero { grid-template-columns: 1fr; } .ss-map { display: none; } }
+
+/* ----------------------------- board section ----------------------------- */
+.ss-sec { padding: clamp(16px, 2.6vh, 28px) clamp(24px, 3.4vw, 56px) 140px; }
+.ss-sec-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px 28px; flex-wrap: wrap; margin-bottom: 22px; }
+.ss-k { font-size: 10px; letter-spacing: .26em; text-transform: uppercase; color: var(--blue); font-weight: 700; }
+.ss-sec-head h2 { margin: 10px 0 0; font-family: var(--display); font-weight: 700; font-size: clamp(26px, 1.4vw + 1vh, 36px); letter-spacing: -.025em; line-height: 1.02; color: var(--ink); }
+.ss-sec-head h2 em { font-weight: 300; font-style: italic; color: var(--red); }
+.ss-sec-head p { margin: 10px 0 0; font-size: 13px; font-weight: 300; color: var(--ink-2); }
+.ss-sec-head p .ss-link { font-size: 13px; padding: 0 2px; color: var(--red); font-weight: 400; }
+.ss-filters { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.ss-pills { display: inline-flex; padding: 5px; border-radius: 999px; background: rgba(255, 255, 255, .85); border: 1px solid var(--line); box-shadow: 0 14px 30px -24px rgba(49, 44, 42, .6); }
+.ss-pills button { height: 34px; padding: 0 18px; border-radius: 999px; font-size: 13px; color: var(--ink-2); white-space: nowrap; transition: background-color .3s var(--ease), color .3s, box-shadow .3s; }
+.ss-pills button:hover:not(.is-on) { color: var(--ink); }
+.ss-pills button.is-on { background: var(--red); color: #fff; box-shadow: 0 10px 22px -10px rgba(235, 23, 0, .7); }
+.ss-subtools { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.ss-select { position: relative; display: inline-flex; align-items: center; height: 32px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink-2); }
+.ss-select:hover { border-color: var(--line-2); }
+.ss-select .ss-i { position: absolute; left: 11px; pointer-events: none; color: var(--ink-3); }
+.ss-select select { appearance: none; height: 100%; padding: 0 28px 0 31px; background: transparent; border: 0; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; outline: none; max-width: 210px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 15px) 14px, calc(100% - 11px) 14px; background-size: 4px 4px; background-repeat: no-repeat; }
+.ss-select select option { color: var(--ink); background: #fff; }
+.ss-select:focus-within { border-color: rgba(235, 23, 0, .45); box-shadow: 0 0 0 3px var(--focus-ring); }
+.ss-subtools .ss-chip { animation: none; height: 32px; padding: 0 13px; gap: 6px; font-size: 12.5px; letter-spacing: 0; text-transform: none; color: var(--ink-2); background: #fff; border-color: var(--line); box-shadow: none; cursor: pointer; }
+.ss-subtools .ss-chip:hover:not(:disabled) { border-color: var(--line-2); color: var(--ink); }
+.ss-subtools .ss-chip:disabled { opacity: .45; }
+.ss-subtools .ss-chip.is-on { background: var(--red-wash); border-color: var(--red-line); color: var(--red-d); }
+.ss-subtools .ss-chip em { font-style: normal; font-weight: 700; }
+@container ss-pane (max-width: 760px) { .ss-filters { align-items: flex-start; } .ss-subtools { justify-content: flex-start; } }
 
 .ss-body { flex: 1; min-height: 0; display: flex; position: relative; }
 
 /* -------------------------------- board -------------------------------- */
-.ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: auto; background: var(--wash); }
-.ss-board { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px 16px; padding: 20px 24px 140px; min-height: 100%; }
-.ss-lane { flex: 1 1 0; min-width: 236px; max-width: 560px; display: flex; flex-direction: column; border-radius: 12px; transition: box-shadow .3s; }
-.ss-lane.is-flash { animation: ss-flash 1.1s var(--ease); }
-@keyframes ss-flash { 0%, 60% { box-shadow: 0 0 0 2px var(--lane); } 100% { box-shadow: 0 0 0 2px transparent; } }
-.ss-lane-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 2px 2px 10px; background: var(--wash); border-top: 3px solid var(--lane); padding-top: 10px; }
-.ss-lane-btn { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 2px 4px 2px 2px; border-radius: 6px; }
-.ss-lane-btn:hover b { color: var(--ink-2); }
-.ss-lane-dot { display: none; }
-.ss-lane-h b { font-size: 13px; white-space: nowrap; }
-.ss-lane-n { font-size: 11.5px; font-weight: 700; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 0 7px; font-variant-numeric: tabular-nums; }
-.ss-lane-h small { color: var(--mute); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ss-lane-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-.ss-lane-empty { margin: 0; padding: 18px 14px; border: 1px dashed var(--line-2); border-radius: 10px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
-.ss-lane-more { width: 100%; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink-2); font-size: 12.5px; font-weight: 700; }
-.ss-lane-more:hover { border-color: var(--line-2); }
-.ss-lane.is-collapsed { flex: 0 0 44px; min-width: 44px; }
-.ss-lane.is-collapsed .ss-lane-h { padding: 0; border-top: 0; }
-.ss-lane.is-collapsed .ss-lane-dot { display: block; width: 8px; height: 8px; border-radius: 2px; background: var(--lane); flex-shrink: 0; }
-.ss-lane.is-collapsed .ss-lane-btn { flex-direction: column; gap: 10px; width: 44px; padding: 12px 0; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
-.ss-lane.is-collapsed .ss-lane-btn b { writing-mode: vertical-rl; transform: rotate(180deg); font-weight: 400; color: var(--ink-2); }
-.ss-lane.is-collapsed .ss-lane-btn:hover { border-color: var(--line-2); }
+.ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow-y: auto; overflow-x: hidden; background: #f4f1ed; scroll-behavior: smooth; }
+.ss-board { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px; }
+.ss-lane { flex: 1 1 0; min-width: 250px; max-width: 560px; display: flex; flex-direction: column; padding: 6px 10px 12px; border-radius: 22px;
+  background: rgba(255, 255, 255, .42); border: 1px solid rgba(110, 98, 89, .1); transition: box-shadow .3s; }
+.ss-lane.is-flash { animation: ss-flash 1.3s var(--ease); }
+@keyframes ss-flash { 0%, 55% { box-shadow: 0 0 0 2px var(--lane), 0 24px 50px -30px var(--lane); } 100% { box-shadow: 0 0 0 2px transparent; } }
+.ss-lane-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0 -4px; padding: 10px 4px 12px; background: linear-gradient(#f6f4f1 78%, rgba(246, 244, 241, 0)); border-radius: 18px 18px 0 0; }
+.ss-lane-btn { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; padding: 2px 4px; border-radius: 8px; }
+.ss-lane-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--lane); flex-shrink: 0; box-shadow: 0 0 0 4px color-mix(in srgb, var(--lane) 16%, transparent); }
+.ss-lane-h b { font-family: var(--display); font-weight: 500; font-size: 15px; letter-spacing: -.01em; white-space: nowrap; color: var(--ink); }
+.ss-lane-btn:hover b { color: var(--red); }
+.ss-lane-n { min-width: 24px; height: 20px; padding: 0 7px; border-radius: 99px; display: inline-grid; place-items: center; font: 700 11px var(--text); color: #fff; background: var(--lane); font-variant-numeric: tabular-nums; }
+.ss-lane-h small { color: var(--ink-3); font-size: 11.5px; font-weight: 300; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ss-lane-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.ss-lane-empty { margin: 0; padding: 22px 14px; border: 1px dashed var(--line-2); border-radius: 16px; color: var(--ink-3); font-size: 12.5px; font-weight: 300; text-align: center; }
+.ss-lane-more { width: 100%; height: 36px; border-radius: 12px; border: 1px solid var(--line); background: #fff; color: var(--red); font-size: 12.5px; font-weight: 700; }
+.ss-lane-more:hover { border-color: var(--red-line); }
+.ss-lane.is-collapsed { flex: 0 0 56px; min-width: 56px; padding: 6px; }
+.ss-lane.is-collapsed .ss-lane-h { margin: 0; padding: 0; background: none; }
+.ss-lane.is-collapsed .ss-lane-btn { flex-direction: column; gap: 10px; width: 44px; padding: 14px 0; border-radius: 16px; }
+.ss-lane.is-collapsed .ss-lane-btn b { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; color: var(--ink-2); }
+.ss-lane.is-collapsed .ss-lane-btn:hover { background: #fff; }
 
-/* cards: name, what it does, its route (source to Snowflake) and the last result */
-.ss-card { position: relative; border-radius: 10px; border: 1px solid var(--line); background: #fff; box-shadow: var(--sh-1);
-  transition: border-color .15s, box-shadow .15s; content-visibility: auto; contain-intrinsic-size: auto 108px; }
-.ss-card:hover { border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-card.is-open { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-card.is-picked { border-color: #b9cdf3; background: #f6f9ff; }
-.ss-card.is-muted { background: var(--wash); box-shadow: none; }
+/* cards: the Dashboard's card language at board density */
+.ss-card { position: relative; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%);
+  box-shadow: 0 18px 36px -32px rgba(49, 44, 42, .7); overflow: hidden;
+  transition: border-color .3s, box-shadow .35s, transform .35s var(--ease); animation: ss-cardin .6s var(--ease) both; animation-delay: var(--d, 0ms);
+  content-visibility: auto; contain-intrinsic-size: auto 120px; }
+@keyframes ss-cardin { from { opacity: 0; transform: translateY(10px); } }
+.ss-card::after { content: ''; position: absolute; left: 16px; right: 16px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: var(--tone); transform: scaleX(0); transform-origin: left; transition: transform .45s var(--ease); }
+.ss-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--tone) 40%, var(--line)); box-shadow: 0 26px 44px -30px color-mix(in srgb, var(--tone) 60%, rgba(49, 44, 42, .6)); }
+.ss-card:hover::after, .ss-card.is-open::after { transform: scaleX(1); }
+.ss-card.is-open { border-color: var(--red-line); box-shadow: 0 0 0 3px rgba(235, 23, 0, .1), 0 26px 44px -30px rgba(235, 23, 0, .5); }
+.ss-card.is-picked { border-color: var(--red-line); background: linear-gradient(160deg, #fff 0%, #fff6f4 100%); }
+.ss-card.is-muted { background: rgba(255, 255, 255, .6); box-shadow: none; }
 .ss-card.is-muted .ss-card-nm { color: var(--ink-3); }
-.ss-card-sk { padding: 14px; display: flex; }
-.ss-card-open { display: block; width: 100%; text-align: left; padding: 12px 40px 11px 14px; border-radius: 10px; }
-.ss-card-nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; font-weight: 700; line-height: 1.35; color: var(--ink); overflow-wrap: anywhere; }
-.ss-card-ds { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-card-route { display: inline-flex; align-items: center; gap: 5px; margin: 10px 0 8px; }
-.ss-card-route .pvs-badge { width: auto; height: 20px; margin: 0; padding: 0 6px; border-radius: 5px; font-size: 10px; }
-.ss-card-route i { width: 14px; height: 1px; background: var(--line-2); position: relative; }
-.ss-card-route i::after { content: ''; position: absolute; right: -1px; top: -3px; border: 3.5px solid transparent; border-left: 4px solid var(--line-2); border-right: 0; }
-.ss-card-end { min-width: 24px; height: 20px; padding: 0 6px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; font-weight: 700; background: var(--wash-2); color: var(--ink-3); }
-.ss-card-end.is-sf { background: #e9f6fc; color: #0b6e99; }
-.ss-card-tail { position: absolute; right: 12px; bottom: 11px; font-size: 11.5px; }
-.ss-vtag { font-weight: 700; color: var(--ink-2); }
-.ss-check { position: absolute; top: 11px; right: 11px; width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--line-2); background: #fff; display: grid; place-items: center; opacity: 0; transition: opacity .15s, background-color .15s, border-color .15s; }
+.ss-card-sk { padding: 16px; display: flex; animation: none; }
+.ss-card-open { display: block; width: 100%; text-align: left; padding: 14px 42px 13px 16px; border-radius: 16px; }
+.ss-card-nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-family: var(--display); font-size: 14px; font-weight: 700; line-height: 1.3; letter-spacing: -.005em; color: var(--ink); overflow-wrap: anywhere; transition: color .2s; }
+.ss-card-open:hover .ss-card-nm, .ss-card.is-open .ss-card-nm { color: var(--red); }
+.ss-card-ds { display: block; margin-top: 3px; font-size: 12px; font-weight: 300; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-card-route { display: flex; align-items: center; gap: 0; margin: 12px 0 10px; }
+.ss-card-route .pvs-badge { width: auto; min-width: 34px; height: 22px; margin: 0; padding: 0 7px; border-radius: 7px; font-size: 10px; letter-spacing: .04em; }
+.ss-card-route i { flex: 1; max-width: 120px; height: 2px; margin: 0 6px; border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 30%, transparent), var(--tone)); opacity: .75; }
+.ss-card.is-muted .ss-card-route i { background: none; border-top: 2px dashed var(--line-2); height: 0; }
+.ss-card-end { min-width: 30px; height: 22px; padding: 0 7px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 700; letter-spacing: .04em; background: var(--wash-2); color: var(--ink-3); }
+.ss-card-end.is-sf { background: linear-gradient(145deg, #29b5e8, #1b8fbd); color: #fff; box-shadow: 0 6px 12px -8px #29b5e8; }
+.ss-card-tail { position: absolute; right: 14px; bottom: 13px; font-size: 11.5px; }
+.ss-vtag { font-family: var(--display); font-weight: 500; color: var(--ink); }
+.ss-check { position: absolute; top: 13px; right: 13px; width: 20px; height: 20px; border-radius: 7px; border: 1.5px solid var(--line-2); background: #fff; display: grid; place-items: center; opacity: 0; transition: opacity .2s, background-color .2s, border-color .2s, transform .2s var(--ease); }
 .ss-card:hover .ss-check, .ss-check:focus-visible, .ss-check[aria-checked="true"], .ss-root.has-picks .ss-check { opacity: 1; }
-.ss-check:hover:not(:disabled) { border-color: var(--focus); }
-.ss-check svg { width: 11px; height: 11px; fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
-.ss-check[aria-checked="true"] { background: var(--focus); border-color: var(--focus); }
-.ss-check[aria-checked="true"] svg { opacity: 1; }
+.ss-check:hover:not(:disabled) { border-color: var(--red); }
+.ss-check svg { width: 12px; height: 12px; fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset .25s var(--ease); }
+.ss-check[aria-checked="true"] { background: var(--red); border-color: var(--red); box-shadow: 0 6px 14px -6px rgba(235, 23, 0, .8); }
+.ss-check[aria-checked="true"] svg { stroke-dashoffset: 0; }
 .ss-check:disabled { opacity: .35 !important; }
-.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding-right: 110px; font-size: 11.5px; color: var(--ink-3); }
-.ss-tag { padding: 0 6px; height: 18px; display: inline-flex; align-items: center; border-radius: 4px; font-size: 11px; background: var(--wash-2); color: var(--ink-2); }
-.ss-tag-warn { background: #fef6e7; color: var(--warn); }
-.ss-tag-proc { background: var(--proc-bg); color: var(--proc); }
-.ss-tag-frag { background: var(--frag-bg); color: var(--frag); }
-.ss-tag-red { background: var(--red-wash); color: var(--red-d); }
-.ss-tag-ok { background: var(--src-bg); color: var(--ok); }
-.ss-tag-bad { background: #fef0ef; color: var(--bad); }
-.ss-empty { text-align: center; padding: 70px 18px; color: var(--ink-3); font-size: 13px; display: grid; gap: 8px; justify-items: center; }
-.ss-empty b { color: var(--ink); font-size: 16px; }
+.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; padding-right: 112px; font-size: 11.5px; color: var(--ink-3); }
+.ss-tag { padding: 0 8px; height: 19px; display: inline-flex; align-items: center; border-radius: 99px; font-size: 10.5px; background: var(--wash-2); color: var(--ink-2); border: 1px solid var(--line); }
+.ss-tag-warn { background: #fff6e0; color: #8a5a00; border-color: #f5e1b0; }
+.ss-tag-proc { background: var(--proc-bg); color: var(--proc); border-color: #cfe0f2; }
+.ss-tag-frag { background: var(--frag-bg); color: var(--frag); border-color: #e6d4f4; }
+.ss-tag-red { background: var(--red-wash); color: var(--red-d); border-color: var(--red-line); }
+.ss-tag-ok { background: var(--src-bg); color: var(--ok); border-color: #d4e9c8; }
+.ss-tag-bad { background: #fdecea; color: var(--bad); border-color: #f6c9c3; }
+.ss-empty { text-align: center; padding: 60px 18px; color: var(--ink-2); font-size: 13px; font-weight: 300; display: grid; gap: 8px; justify-items: center; border-radius: 22px; background: rgba(255, 255, 255, .55); border: 1px solid var(--line); }
+.ss-empty b { color: var(--ink); font: 700 19px var(--display); letter-spacing: -.01em; }
+.ss-empty .ss-btn { margin-top: 8px; }
 
 /* picks for an extraction: a bar that floats over the board while anything is picked */
 .ss-tray { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 32; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 48px);
-  padding: 8px 8px 8px 16px; border-radius: 12px; background: #fff; color: var(--ink); border: 1px solid var(--line-2); box-shadow: var(--sh-3); animation: ss-up .25s var(--ease); }
+  padding: 8px 8px 8px 18px; border-radius: 999px; background: rgba(255, 255, 255, .97); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 30px 60px -28px rgba(49, 44, 42, .6); animation: ss-up .3s var(--ease); }
 @keyframes ss-up { from { opacity: 0; transform: translate(-50%, 10px); } }
 .ss-tray.is-shake { animation: ss-shake .45s; }
 .ss-tray-n { position: relative; display: flex; white-space: nowrap; align-items: baseline; gap: 3px; padding-bottom: 5px; font-variant-numeric: tabular-nums; }
-.ss-tray-n b { font-size: 17px; }
+.ss-tray-n b { font-family: var(--display); font-size: 19px; }
 .ss-tray-n small { color: var(--ink-3); font-size: 11.5px; }
 .ss-tray-fill { position: absolute; left: 0; bottom: 0; height: 2px; border-radius: 2px; background: var(--focus); transition: width .3s var(--ease); }
 .ss-picks { display: flex; gap: 5px; min-width: 0; }
-.ss-pick { display: inline-flex; align-items: center; gap: 4px; max-width: 190px; height: 28px; padding: 0 4px 0 10px; border-radius: 7px; background: var(--wash-2); font-size: 12px; color: var(--ink); }
+.ss-pick { display: inline-flex; align-items: center; gap: 4px; max-width: 190px; height: 30px; padding: 0 5px 0 12px; border-radius: 999px; background: var(--wash-2); font-size: 12px; color: var(--ink); }
 .ss-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-pick button { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; color: var(--ink-3); flex-shrink: 0; }
 .ss-pick button:hover { background: var(--line); color: var(--ink); }
 .ss-pick-more { padding-right: 10px; white-space: nowrap; color: var(--ink-2); }
 .ss-pick-more.is-on { background: var(--ink); color: #fff; }
-.ss-tray-go { height: 36px; }
+.ss-tray-go { height: 38px; border-radius: 999px; padding: 0 18px; }
 .ss-root.has-run .ss-tray { left: 532px; transform: none; animation: none; }
 @container ss-pane (max-width: 1300px) { .ss-picks { display: none; } }
 
@@ -346,7 +402,7 @@ const PANE_CSS = `
 .ss-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--ink-3); margin-bottom: 6px; }
 .ss-crumbs > button:hover { color: var(--ink); }
 .ss-dtop { display: flex; align-items: flex-start; gap: 18px; }
-.ss-dtitle { margin: 0; font-size: 20px; letter-spacing: -.01em; line-height: 1.25; font-weight: 700; word-break: break-word; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ss-dtitle { margin: 0; font-family: var(--display); font-size: 24px; letter-spacing: -.02em; line-height: 1.25; font-weight: 700; word-break: break-word; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ss-ddesc { margin: 4px 0 0; color: var(--ink-2); font-size: 13px; max-width: 760px; }
 .ss-live-badge { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 99px; background: var(--red-wash); color: var(--red-d); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .ss-live-badge .ss-dot { background: var(--red); box-shadow: none; animation: ss-pulse 1.2s ease-in-out infinite; }
@@ -361,8 +417,8 @@ const PANE_CSS = `
 .ss-commit q { quotes: none; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ss-dactions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 
-.ss-route { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 1.1fr) minmax(0, 1fr); align-items: center; gap: 18px; padding: 12px 16px; border-radius: 10px;
-  background: var(--wash); border: 1px solid var(--line); }
+.ss-route { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 1.1fr) minmax(0, 1fr); align-items: center; gap: 18px; padding: 14px 18px; border-radius: 18px;
+  background: linear-gradient(160deg, #fff 0%, #faf8f6 100%); border: 1px solid var(--line); box-shadow: 0 20px 40px -34px rgba(49, 44, 42, .7); }
 .ss-ep { min-width: 0; }
 .ss-ep.is-r { text-align: right; }
 .ss-ep-h { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); margin-bottom: 4px; }
@@ -376,7 +432,7 @@ const PANE_CSS = `
 .ss-track-sum { font-size: 12px; color: var(--ink-2); margin-bottom: 7px; }
 .ss-track-line { position: relative; height: 10px; overflow: hidden; }
 .ss-track-line::before { content: ''; position: absolute; left: 0; right: 8px; top: 4px; height: 2px; border-radius: 2px; background: var(--line-2); }
-.ss-track-line::after { content: ''; position: absolute; right: 0; top: 0; border: 5px solid transparent; border-left: 8px solid var(--line-2); border-right: 0; }
+.ss-track-line::after { content: ''; position: absolute; right: 0; top: 0; border: 5px solid transparent; border-left: 8px solid var(--red); border-right: 0; opacity: .7; }
 /* three dots travel the line a few times when the pipeline opens, then rest (transform only) */
 .ss-track-line span { display: none; }
 .ss-track-line span:nth-child(2) { animation-delay: .8s; }
@@ -473,7 +529,7 @@ const PANE_CSS = `
 .ss-prow-head { border-top: 0; background: var(--wash); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); padding: 10px 16px; }
 .ss-pname { font: 12px var(--mono); word-break: break-all; }
 .ss-pval { font: 12px var(--mono); word-break: break-all; white-space: pre-wrap; }
-.ss-pval .ss-muted, .ss-pval .ss-secret { font-family: 'JohnsonText', Arial, sans-serif; }
+.ss-pval .ss-muted, .ss-pval .ss-secret { font-family: var(--text); }
 .ss-secret { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--ink-3); font-size: 12px; }
 .ss-secret-val { font: 700 11.5px/1.6 var(--mono); padding: 0 7px; border-radius: 5px; background: var(--red-wash); border: 1px solid var(--red-line); color: var(--ink); white-space: pre-wrap; word-break: break-all; }
 .ss-secret .ss-res-btn.is-hide { color: var(--ink-2); background: var(--wash-2); border-color: var(--line-2); }
@@ -688,17 +744,11 @@ const PANE_CSS = `
   .ss-ep-row + .ss-ep-row, .ss-ep > small { display: none; }
   .ss-tabs { margin-top: 4px; }
   .ss-tab { height: 34px; }
-  .ss-root.has-sheet .ss-tools { display: none; }
-  .ss-band { padding-top: 10px; }
-  .ss-tools { margin-top: 10px; }
-  .ss-hero { padding: 12px 0; gap: 20px; }
-  .ss-hero-text h2 { font-size: 22px; }
-  .ss-hl { padding: 7px 12px 8px; }
-  .ss-hl b { font-size: 18px; }
-  .ss-board { padding-top: 12px; }
+  .ss-hero { padding-top: 18px; padding-bottom: 10px; }
+  .ss-title { font-size: 46px; }
+  .ss-map { max-width: 520px; }
 }
 @media (max-height: 820px) { .ss-route { display: none; } }
-@media (max-height: 700px) { .ss-hero { display: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   .ss-root *, .ss-root *::before, .ss-root *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -1117,44 +1167,103 @@ const Board = memo(function Board({ lanes, rowsByLane, collapsed, onCollapse, qu
   );
 });
 
-// The summary: the board's health in one line, a bar with each lane's share, and a figure per lane that jumps to it.
-function HeroSkeleton() {
+// The map beside the title: each source as a node, a line from it into Snowflake, and the pass rate on the
+// Snowflake disc with a ring split by last result. Plain SVG + CSS, so it costs nothing on a GPU-less desktop.
+const MAP_W = 560, MAP_H = 340, DISC = { x: 400, y: 170, r: 74 };
+function PipelineMap({ sources, ring, headline, loading, total, onSource, onResult }) {
+  const shown = sources.filter(s => s.n > 0 || s.always);
+  const gap = MAP_H / (shown.length + 1);
+  const nodes = shown.map((s, i) => ({ ...s, x: 168, y: Math.round(gap * (i + 1)) }));
+  const [hot, setHot] = useState(null);
+  const C = 2 * Math.PI * (DISC.r + 16);
+  const ringTotal = ring.reduce((n, r) => n + r.n, 0);
+  let acc = 0;
+  const pct = headline?.ring != null ? Math.round(headline.ring * 100) : null;
   return (
-    <section className="ss-hero is-skel" aria-hidden="true">
-      <div className="ss-hero-text"><i style={{ width: 90, height: 10 }} /><i style={{ width: 200, height: 26 }} /><i style={{ width: '100%', height: 6 }} /></div>
-      <div className="ss-hero-lanes">{[0, 1, 2, 3].map(i => <i key={i} className="ss-hl" />)}</div>
+    <div className={`ss-map${hot ? ' has-hot' : ''}`} aria-label="Where the pipelines read from and how they did">
+      <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <defs>
+          <pattern id="ss-map-dots" width="18" height="18" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#cbc4bc" opacity=".55" /></pattern>
+        </defs>
+        <rect width={MAP_W} height={MAP_H} fill="url(#ss-map-dots)" />
+        {[0, 1, 2].map(k => <circle key={k} cx={DISC.x} cy={DISC.y} r={DISC.r + 40 + k * 34} className="ss-map-orbit" />)}
+        {nodes.map((n, i) => {
+          const d = `M ${n.x + 24} ${n.y} C ${n.x + 110} ${n.y}, ${DISC.x - 150} ${DISC.y}, ${DISC.x - DISC.r - 20} ${DISC.y}`;
+          return (
+            <g key={n.id} className={`ss-map-link${hot === n.id ? ' is-hot' : ''}`} style={{ '--c': n.color, '--d': `${i * -0.7}s` }}>
+              <path d={d} className="ss-map-line" />
+              {n.n > 0 && <path d={d} className="ss-map-flow" />}
+            </g>
+          );
+        })}
+        <circle cx={DISC.x} cy={DISC.y} r={DISC.r + 16} className="ss-map-ringbg" />
+        {ringTotal > 0 && ring.map(r => {
+          if (!r.n) return null;
+          const len = (r.n / ringTotal) * C;
+          const el = <circle key={r.id} cx={DISC.x} cy={DISC.y} r={DISC.r + 16} className="ss-map-seg" stroke={r.color}
+            strokeDasharray={`${Math.max(0, len - 3)} ${C}`} strokeDashoffset={-acc} transform={`rotate(-90 ${DISC.x} ${DISC.y})`} />;
+          acc += len;
+          return el;
+        })}
+      </svg>
+      {nodes.map(n => (
+        <button key={n.id} type="button" className="ss-map-node" style={{ left: `${(n.x / MAP_W) * 100}%`, top: `${(n.y / MAP_H) * 100}%`, '--c': n.color }}
+          onMouseEnter={() => setHot(n.id)} onMouseLeave={() => setHot(null)} onFocus={() => setHot(n.id)} onBlur={() => setHot(null)}
+          onClick={() => onSource?.(n.id)} disabled={!onSource || !n.n} title={n.n ? `Show the ${n.label} pipelines` : `No ${n.label} pipelines`}>
+          <span className="ss-map-bub">{n.mark}</span>
+          <span className="ss-map-lbl"><b>{n.n}</b>{n.label}</span>
+        </button>
+      ))}
+      <button type="button" className="ss-map-disc" style={{ left: `${(DISC.x / MAP_W) * 100}%`, top: `${(DISC.y / MAP_H) * 100}%` }}
+        onClick={onResult} disabled={!onResult} title="Group the board by last result">
+        <span className="ss-map-pulse" aria-hidden="true" /><span className="ss-map-pulse is-b" aria-hidden="true" />
+        <span className="ss-map-sf"><Svg name="snow" size={15} strokeWidth={1.8} /></span>
+        {loading ? <b className="ss-map-wait">…</b> : <b>{pct != null ? <>{pct}<small>%</small></> : total}</b>}
+        <small>{pct != null ? 'passing' : 'pipelines'}</small>
+      </button>
+    </div>
+  );
+}
+
+function Hero({ health, extractorReady, reason, fetchedAt, booting, total, search, headline, sources, ring, onSource, onResult }) {
+  return (
+    <section className="ss-hero" aria-label="Pipeline Studio">
+      <div className="ss-hero-copy">
+        <div className="ss-chip">
+          <span className={`ss-dot${health && !extractorReady ? ' is-warn' : !health ? ' is-idle' : ''}`} />
+          <span title={extractorReady ? 'The extractor is installed on the server' : reason}>{!health ? 'Connecting' : extractorReady ? 'Extractor ready' : 'Extractor unavailable'}</span>
+          {health?.server && <><i className="ss-sep ss-chip-host" /><span className="ss-chip-host" title="StreamSets Control Hub this page reads from">{health.server}</span></>}
+          {fetchedAt && <><i className="ss-sep" />Synced <b>{relativeTime(fetchedAt)}</b></>}
+        </div>
+        <div className="ss-kicker">StreamSets to Snowflake</div>
+        <h1 className="ss-title">Pipeline <em>Studio.</em></h1>
+        <span className="ss-rule" aria-hidden="true" />
+        <p className="ss-lede">
+          {booting ? 'Loading your pipelines from StreamSets…' : `${plural(total, 'pipeline', 'pipelines')} in one place. Open one to see how it moves data, extract its definition, or validate it table by table against Snowflake.`}
+        </p>
+        {search}
+        {headline && !headline.loading && (headline.sub || headline.error) && (
+          <p className={`ss-hero-note${headline.error ? ' is-err' : ''}`} role={headline.error ? 'alert' : undefined}>
+            {headline.error && <Svg name="alert" size={13} />}
+            {!headline.error && headline.ring != null && <><b>{headline.title}</b>{headline.kicker ? ` ${headline.kicker.toLowerCase()}` : ''}<i className="ss-sep" /></>}
+            {headline.sub}
+            {headline.onRetry && <button type="button" className="ss-link" onClick={headline.onRetry}>Try again</button>}
+          </p>
+        )}
+      </div>
+      <PipelineMap sources={sources} ring={ring} headline={headline} total={total} loading={booting || headline?.loading} onSource={onSource} onResult={onResult} />
     </section>
   );
 }
 
-function Hero({ lanes, rowsByLane, total, headline, onJump }) {
-  const counts = lanes.map(l => (rowsByLane.get(l.id) || []).length);
-  const title = headline?.title || plural(total, 'pipeline', 'pipelines');
+// Red pill tabs, the same control as the Dashboard's toolkit filters.
+function PillTabs({ options, value, onChange, label }) {
   return (
-    <section className="ss-hero" aria-label="Board overview" aria-busy={headline?.loading || undefined}>
-      <div className="ss-hero-text">
-        <div className="ss-hero-k">{headline?.kicker || 'Overview'}</div>
-        <h2>{headline?.ring != null ? <>{Math.round(headline.ring * 100)}%<small>{title}</small></> : title}</h2>
-        <p className={headline?.error ? 'is-err' : undefined} role={headline?.error ? 'alert' : undefined}>
-          {headline?.error && <Svg name="alert" size={13} />}{headline?.sub || 'on the board'}
-          {headline?.onRetry && <button type="button" className="ss-link" onClick={headline.onRetry}>Try again</button>}
-        </p>
-        {headline?.bar && (
-          <div className="ss-hero-bar" aria-hidden="true">
-            {headline.bar.map(b => b.n > 0 && <i key={b.id} style={{ '--lane': b.color, flexGrow: b.n }} />)}
-          </div>
-        )}
-      </div>
-      <div className="ss-hero-lanes" role="list" aria-label="Pipelines by lane">
-        {lanes.map((l, i) => (
-          <button key={l.id} type="button" role="listitem" className="ss-hl" disabled={!counts[i]} style={{ '--lane': l.color }}
-            onClick={() => onJump(l.id)} title={counts[i] ? `Go to ${l.label.toLowerCase()}` : `No pipelines in ${l.label.toLowerCase()}`}>
-            <span><i />{l.label}</span>
-            <b>{counts[i]}</b>
-          </button>
-        ))}
-      </div>
-    </section>
+    <div className="ss-pills" role="tablist" aria-label={label}>
+      {options.map(([v, t]) => (
+        <button key={v} type="button" role="tab" aria-selected={value === v} className={value === v ? 'is-on' : ''} onClick={() => onChange(v)}>{t}</button>
+      ))}
+    </div>
   );
 }
 
@@ -2152,14 +2261,19 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const cardInfo = useMemo(() => (board ? (p) => board.card(p, mode) : null), [board, mode]);
   const laneReady = !board?.readyFor || board.readyFor(mode);   // lanes wait for what sorts them, rather than showing them all empty
   const headline = useMemo(() => board?.headline?.(visible) || null, [visible, board]);
-  // the hero folds away once the board is scrolled, and comes back at the top
-  const [lifted, setLifted] = useState(false);
-  const onBoardScroll = useStable((e) => {
-    const y = e.currentTarget.scrollTop;
-    if (!lifted && y > 60) setLifted(true);
-    else if (lifted && y < 4) setLifted(false);
-  });
   const foldLane = useStable((id) => setCollapsed(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }));
+  const sourceLanes = board?.lanes.source || null;
+  const sources = useMemo(() => {
+    const marks = { oracle: 'ORA', mariadb: 'MDB', sqlserver: 'MSS', other: 'RUN', cant: 'N/A' };
+    if (!sourceLanes) return [{ id: 'all', label: 'StreamSets', color: '#81766f', mark: 'SS', n: visible.length, always: true }];
+    const ready = !board.readyFor || board.readyFor('source');
+    const n = {};
+    if (ready) visible.forEach(p => { const k = board.laneOf(p, 'source'); n[k] = (n[k] || 0) + 1; });
+    return sourceLanes.map(l => ({ id: l.id, label: l.id === 'mariadb' ? 'MariaDB' : l.id === 'other' ? 'At run time' : l.label, color: l.color, mark: marks[l.id] || 'SRC', n: n[l.id] || 0, always: !ready && l.id !== 'cant' && l.id !== 'other' }));
+  }, [sourceLanes, board, visible]);
+  const ring = headline?.bar || [];
+  const showSource = useStable((id) => { if (board?.lanes.source) { setGroupBy('source'); setTimeout(() => jumpToLane(id), 60); } });
+  const showResult = useStable(() => setGroupBy('result'));
   const jumpToLane = useStable((id) => {
     setCollapsed(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
     if (pipelineId) navigate({ pipeline: null, stage: null, ssview: null });
@@ -2408,85 +2522,81 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); };
 
   return (
-    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${lifted ? ' is-lifted' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
+    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
       <style href="pv-pane" precedence="default">{PANE_CSS}</style>
       {busy && <div className="ss-busy" aria-hidden="true" />}
 
-      <header className="ss-band">
-        <div className="ss-band-top">
-          <div className="ss-brand">
-            <div className="ss-brand-mark"><Svg name={studio?.brand?.icon || 'flow'} size={18} strokeWidth={2} /></div>
-            <div>
-              <h1>{studio?.brand?.title || 'StreamSets Extractor'}</h1>
-              <small>{studio?.brand?.sub || 'See how a pipeline moves data, then export its definition'}</small>
-            </div>
-          </div>
-          <div className="ss-pills">
-            {health?.server && <span className="ss-pill" title="StreamSets Control Hub this page reads from"><span className="ss-dot" />{health.server}</span>}
-            {health && (
-              <span className="ss-pill" title={extractorReady ? `The extractor is installed on the server - up to ${maxPerRun} pipelines per run` : reason}>
-                <span className={`ss-dot${extractorReady ? '' : ' is-warn'}`} />{extractorReady ? 'Extractor ready' : 'Extractor unavailable'}
-              </span>
-            )}
-          </div>
-          <button type="button" className="ss-jump" onClick={() => setPalette(true)}>
-            <Svg name="search" /><span>Jump to a pipeline or stage</span><kbd>Ctrl</kbd><kbd>K</kbd>
-          </button>
-        </div>
-
-        <div className="ss-tools">
-          <div className="ss-search">
-            <Svg name="search" />
-            <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search pipelines by name, ID, label or author" aria-label="Search pipelines"
-              onKeyDown={e => {
-                if (e.key === 'Enter' && ordered[0]) openPipeline(ordered[0].id);
-                if (e.key === 'Escape') { e.preventDefault(); setQuery(''); e.currentTarget.blur(); }
-              }} />
-            {query
-              ? <button type="button" className="ss-search-clear" onClick={() => { setQuery(''); searchRef.current?.focus(); }} aria-label="Clear search"><Svg name="x" size={13} /></button>
-              : <kbd className="ss-search-kbd">/</kbd>}
-          </div>
-          {labelCounts.length > 0 && (
-            <label className="ss-select" title="Show one label">
-              <Svg name="layers" size={14} />
-              <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
-                <option value="">All labels</option>
-                {label && !labelCounts.some(([l]) => l === label) && <option value={label}>{label}</option>}
-                {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
-              </select>
-            </label>
-          )}
-          {selected.size > 0 && (
-            <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} aria-pressed={pickedOnly} onClick={() => setPickedOnly(v => !v)}>
-              <Svg name="check" size={13} />Picked <em>{selected.size}</em>
-            </button>
-          )}
-          {board && board.modes.length > 1 && (
-            <Segmented label="Group pipelines by" value={mode} onChange={setGroupBy} options={board.modes} />
-          )}
-          <Segmented label="Sort" value={sort} onChange={setSort} options={[['name', 'A–Z'], ['modified', 'Recent']]} />
-          <span className="ss-tools-end">
-            <span className="ss-fetched" title={fetchedAt ? `Synced ${formatWhen(fetchedAt)}` : undefined}>
-              {booting ? 'Loading…' : filtered ? `${visible.length} of ${pipelines.length}` : plural(pipelines.length, 'pipeline', 'pipelines')}
-            </span>
-            {filtered && <button type="button" className="ss-link" onClick={clearFilters}>Clear</button>}
-            <button type="button" className="ss-link" onClick={selectShown} disabled={!shown.length}
-              title={allShownSelected ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}>
-              {allShownSelected ? 'Unpick shown' : 'Pick shown'}
-            </button>
-            <IconButton name="refresh" onClick={() => loadList(true)} disabled={listLoading} spinning={listLoading}
-              label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
-          </span>
-        </div>
-        {booting && !listError && <HeroSkeleton />}
-        {!booting && pipelines.length > 0 && (
-          <Hero lanes={lanes} rowsByLane={rowsByLane} total={visible.length} headline={headline} onJump={jumpToLane} />
-        )}
-      </header>
-
       <div className="ss-body">
-        <main className="ss-main" inert={pipelineId ? true : undefined} onScroll={onBoardScroll}>
-          {booting && !listError && <BoardSkeleton />}
+        <main className="ss-main" inert={pipelineId ? true : undefined}>
+          <Hero health={health} extractorReady={extractorReady} reason={reason} fetchedAt={fetchedAt} booting={booting} total={pipelines.length}
+            headline={headline} sources={sources} ring={ring}
+            onSource={board?.lanes.source ? showSource : null} onResult={board?.lanes.result && mode !== 'result' ? showResult : null}
+            search={(
+              <div className="ss-cmd">
+                <label className="ss-cmd-box">
+                  <Svg name="search" size={16} />
+                  <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} aria-label="Search pipelines"
+                    placeholder="Find a pipeline by name, table, label or author"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && ordered[0]) openPipeline(ordered[0].id);
+                      if (e.key === 'Escape') { e.preventDefault(); setQuery(''); e.currentTarget.blur(); }
+                    }} />
+                  {query
+                    ? <button type="button" className="ss-search-clear" onClick={() => { setQuery(''); searchRef.current?.focus(); }} aria-label="Clear search"><Svg name="x" size={13} /></button>
+                    : <span className="ss-kbds"><kbd>/</kbd></span>}
+                </label>
+                <button type="button" className="ss-jumpbtn" onClick={() => setPalette(true)} title="Jump to a pipeline or a stage inside one">
+                  Jump to a stage<span className="ss-kbds"><kbd>Ctrl K</kbd></span>
+                </button>
+              </div>
+            )} />
+
+          <section className="ss-sec" aria-label="Pipelines board">
+            <div className="ss-sec-head">
+              <div>
+                <div className="ss-k">Board</div>
+                <h2>Every pipeline, by <em>{mode === 'source' ? 'source.' : mode === 'result' ? 'last result.' : 'name.'}</em></h2>
+                <p>
+                  {booting ? 'Loading…' : filtered ? `${visible.length} of ${plural(pipelines.length, 'pipeline', 'pipelines')} match` : plural(pipelines.length, 'pipeline', 'pipelines')}
+                  {' '}· sorted {sort === 'modified' ? 'by last change' : 'A to Z'}
+                  {filtered && <> · <button type="button" className="ss-link" onClick={clearFilters}>Clear filters</button></>}
+                </p>
+              </div>
+              <div className="ss-filters">
+                {board && board.modes.length > 1 && <PillTabs label="Group pipelines by" value={mode} onChange={setGroupBy} options={board.modes} />}
+                <div className="ss-subtools">
+                  {selected.size > 0 && (
+                    <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} aria-pressed={pickedOnly} onClick={() => setPickedOnly(v => !v)}>
+                      <Svg name="check" size={12} />Picked <em>{selected.size}</em>
+                    </button>
+                  )}
+                  {labelCounts.length > 0 && (
+                    <label className="ss-select" title="Show one label">
+                      <Svg name="layers" size={13} />
+                      <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
+                        <option value="">All labels</option>
+                        {label && !labelCounts.some(([l]) => l === label) && <option value={label}>{label}</option>}
+                        {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <label className="ss-select" title="Sort the cards">
+                    <Svg name="list" size={13} />
+                    <select value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort pipelines">
+                      <option value="name">A to Z</option>
+                      <option value="modified">Recently changed</option>
+                    </select>
+                  </label>
+                  <button type="button" className="ss-chip" onClick={selectShown} disabled={!shown.length}
+                    title={allShownSelected ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}>
+                    {allShownSelected ? 'Unpick shown' : 'Pick shown'}
+                  </button>
+                  <IconButton name="refresh" onClick={() => loadList(true)} disabled={listLoading} spinning={listLoading}
+                    label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
+                </div>
+              </div>
+            </div>
+            {booting && !listError && <BoardSkeleton />}
           {listError && <div className="ss-pad-s"><ErrorBox message={listError} onRetry={() => loadList(true)} /></div>}
           {phase === 'ready' && !listLoading && !listError && pipelines.length === 0 && (
             <div className="ss-empty"><b>No pipelines to show</b><div>The StreamSets service account can&apos;t see any pipelines.</div></div>
@@ -2504,6 +2614,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
               picked={selected} full={full} maxPerRun={maxPerRun} runStates={runStates} onPick={toggle} onOpen={openPipeline}
               cardInfo={cardInfo} />
           )}
+          </section>
         </main>
 
         {pipelineId && (
@@ -2555,11 +2666,11 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
 // Shared by the Pipeline Studio panels (kept apart from the components so fast refresh keeps working).
 
 const STATUS = { // label, badge class, tile colour
-  PASSED: ['Passed', 'is-pass', '#1f9d63'],
-  CRITICAL: ['Critical', 'is-crit', '#d92d20'],
-  WARNING: ['Warning', 'is-warn', '#e09400'],
-  FAULTY: ['Faulty', 'is-faulty', '#e8590c'],
-  ERROR: ['Error', 'is-err', '#7a5af8'],
+  PASSED: ['Passed', 'is-pass', '#328714'],
+  CRITICAL: ['Critical', 'is-crit', '#eb1700'],
+  WARNING: ['Warning', 'is-warn', '#e0a100'],
+  FAULTY: ['Faulty', 'is-faulty', '#ff6017'],
+  ERROR: ['Error', 'is-err', '#8c3bbb'],
   TIMEOUT: ['Timeout', 'is-nf', '#c9a100'],
   TABLE_NOT_FOUND: ['Not found', 'is-nf', '#c9a100'],
 };
@@ -2567,7 +2678,7 @@ const STATUS = { // label, badge class, tile colour
 const PANEL_CSS = `
 /* Pipeline Studio panels. Lives inside .ss-root, so it uses the pane's colours (--red, --ink, --line...). */
 .pvs-pad { padding: 20px 26px 140px; max-width: 1240px; }
-.pvs-card { border: 1px solid var(--line); border-radius: 10px; background: #fff; min-width: 0; box-shadow: var(--sh-1); }
+.pvs-card { border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%); min-width: 0; box-shadow: 0 20px 40px -34px rgba(49, 44, 42, .7); }
 .pvs-card-h { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pvs-card-h b { font-size: 13.5px; }
 .pvs-card-b { padding: 14px 16px; }
@@ -2581,7 +2692,7 @@ const PANEL_CSS = `
 .pvs-mono { font-family: var(--mono); font-size: 12px; }
 
 /* journey: the run drawn as a route line with a station per step */
-.pvs-runbar { display: flex; align-items: center; gap: 22px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: var(--sh-1); }
+.pvs-runbar { display: flex; align-items: center; gap: 22px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 18px; background: #fff; box-shadow: 0 20px 40px -34px rgba(49, 44, 42, .7); }
 .pvs-journey { list-style: none; margin: 0; padding: 0; display: flex; flex: 1; min-width: 0; }
 .pvs-js { position: relative; flex: 1; display: grid; justify-items: center; text-align: center; gap: 3px; min-width: 0; }
 .pvs-jline { position: absolute; top: 13px; right: 50%; width: 100%; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
@@ -2607,8 +2718,8 @@ const PANEL_CSS = `
 .pvs-go { flex: 0 0 240px; padding-left: 22px; border-left: 1px solid var(--line); }
 .pvs-go-btn { width: 100%; height: 40px; justify-content: center; font-size: 13.5px; border-radius: 8px; }
 .pvs-go p { margin: 7px 2px 0; font-size: 11.5px; line-height: 1.4; }
-.pvs-idle { border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; color: var(--ink-2); background: #fff; box-shadow: var(--sh-1); }
-.pvs-idle > b { display: block; font: 700 17px 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; color: var(--ink); margin-bottom: 6px; }
+.pvs-idle { border: 1px solid var(--line); border-radius: 18px; padding: 22px 24px; color: var(--ink-2); background: #fff; box-shadow: var(--sh-1); }
+.pvs-idle > b { display: block; font: 700 17px var(--display); color: var(--ink); margin-bottom: 6px; }
 .pvs-idle p { margin: 0; max-width: 72ch; line-height: 1.6; font-size: 13px; }
 .pvs-idle ol { margin: 14px 0 0; padding: 0; list-style: none; counter-reset: st; display: grid; gap: 8px; font-size: 13px; }
 .pvs-idle li { counter-increment: st; display: flex; gap: 10px; align-items: baseline; }
@@ -3642,9 +3753,9 @@ const StudioPane = memo(StreamsetsPane);
 
 const PAGE_CSS = `${PANEL_CSS}
 .pvs-badge { width: 34px; height: 30px; margin-top: -2px; border-radius: 8px; display: grid; place-items: center; font-size: 10px; font-weight: 700; flex-shrink: 0; background: var(--wash-2); color: var(--mute); letter-spacing: .02em; }
-.pvs-badge.is-ora { background: #fdf0e8; color: #b03d0a; }
-.pvs-badge.is-mdb { background: var(--proc-bg); color: var(--proc); }
-.pvs-badge.is-mss { background: #f2eefd; color: #5b3cc4; }
+.pvs-badge.is-ora { background: linear-gradient(145deg, #c74634, #9e2a1b); color: #fff; box-shadow: 0 6px 12px -8px #c74634; }
+.pvs-badge.is-mdb { background: linear-gradient(145deg, #0f68b2, #0a4a80); color: #fff; box-shadow: 0 6px 12px -8px #0f68b2; }
+.pvs-badge.is-mss { background: linear-gradient(145deg, #8c3bbb, #62278a); color: #fff; box-shadow: 0 6px 12px -8px #8c3bbb; }
 .pvs-badge.is-any { background: var(--src-bg); color: var(--ok); }
 .pvs-when { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); white-space: nowrap; }
 .pvs-when i { width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--line-2)); }
@@ -3655,7 +3766,7 @@ const PAGE_CSS = `${PANEL_CSS}
 const SOURCE_BADGE = { Oracle: ['ORA', 'is-ora'], MariaDB: ['MDB', 'is-mdb'], 'SQL Server': ['MSS', 'is-mss'] };
 const SOURCE_LANE = { Oracle: 'oracle', MariaDB: 'mariadb', 'SQL Server': 'sqlserver' };
 const RESULT_LANE = { CRITICAL: 'attention', ERROR: 'attention', FAULTY: 'attention', WARNING: 'warn', TABLE_NOT_FOUND: 'warn', TIMEOUT: 'warn', PASSED: 'pass' };
-const LANE = { crit: '#d92d20', warn: '#e09400', pass: '#1f9d63', fresh: '#98a0b0', cant: '#d3d7e0', ora: '#c2410c', mdb: '#2563c9', mss: '#6d48c9' };
+const LANE = { crit: '#eb1700', warn: '#e0a100', pass: '#328714', fresh: '#a39992', cant: '#cbc4bc', ora: '#c74634', mdb: '#0f68b2', mss: '#8c3bbb' };
 
 // The tabs read the validation state from context, so the pane's memoised parts don't re-render on every log line.
 function ValidateTab({ detail, navigate }) {
