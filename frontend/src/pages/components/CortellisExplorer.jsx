@@ -71,6 +71,8 @@ const STOPPED_STATUS = /no development|discontinued|suspended|withdrawn|terminat
 const statusColor = (s) => (/launch|marketed|registered|approved/i.test(s || '') ? '#2a7a12' : STOPPED_STATUS.test(s || '') ? '#76706b' : '#0f68b2');
 // a status column gets colours by value; other columns keep their column colour
 const pillColor = (label, value, fallback) => (/status/i.test(label || '') ? statusColor(value) : fallback);
+// flag column the backend adds on approval package / RWE, docs with text in Postgres sort first
+const EXT_COL = 'extracted_text';
 const isUrl = (v) => typeof v === 'string' && /^https?:\/\/\S+$/i.test(v.trim());
 const looksLikeDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+Z?)?$/.test(v);
 const niceCol = (c) => c.replace(/^trailInfo_/, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, x => x.toUpperCase());
@@ -1520,6 +1522,9 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
   const toRecord = (r) => ({ key: keyIdx >= 0 ? r[keyIdx] : null, title: titleIdx >= 0 ? r[titleIdx] : null, columns: data.columns, row: r });
 
   const cell = (c, v) => {
+    if (c === EXT_COL) return v === true || v === 'true'
+      ? <span className="inline-flex items-center gap-1 rounded-full bg-[#e8f3e3] text-[#2a7a12] text-[11px] font-johnson-text font-medium px-2 py-[1px] whitespace-nowrap">✓ Available</span>
+      : <span className="text-jj-gray-04">—</span>;
     if (isEmpty(v)) return <span className="text-jj-gray-04">—</span>;
     if (isUrl(v)) return <a href={v} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-jj-blue-03 hover:underline whitespace-nowrap">Open ↗</a>;
     if (looksLikeDate(v)) return <span className="tabular-nums whitespace-nowrap">{fmtDate(v)}</span>;
@@ -1576,7 +1581,7 @@ function DataTable({ meta, state, labelOf, logInPage, onLoading, onSynced, canVi
                   {visible.map(i => {
                     const c = data.columns[i];
                     return (
-                      <th key={c} onClick={() => toggleSort(c)} title={`Sort by ${labelOf(c)}`}
+                      <th key={c} onClick={() => c !== EXT_COL && toggleSort(c)} title={c === EXT_COL ? 'Records with extracted text are always listed first' : `Sort by ${labelOf(c)}`}
                         className="px-3 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wider text-jj-gray-07 whitespace-nowrap border-b border-r border-jj-gray-02 last:border-r-0 cursor-pointer hover:bg-jj-gray-02 select-none bg-[#faf9f8]">
                         {labelOf(c)}{sort.col === c ? (sort.desc ? ' ▼' : ' ▲') : ''}
                       </th>
@@ -2574,7 +2579,7 @@ function RecordDrawer({ meta, record, onClose, onNavigate, onOpen, onSearchIn, l
   const structure = smiles && !drawFailed;
 
   // fields shown in a section above stay out of "All fields"
-  const placed = new Set([meta.title, meta.text, ...meta.facets, info.eventsCol, ...info.eventCols, info.smilesCol, ...chemCols, ...indicationCols].filter(Boolean));
+  const placed = new Set([EXT_COL, meta.title, meta.text, ...meta.facets, info.eventsCol, ...info.eventCols, info.smilesCol, ...chemCols, ...indicationCols].filter(Boolean));
   const rows = cols.map((c, i) => [c, vals[i]]).filter(([c, v]) => !placed.has(c) && (showEmpty || !isEmpty(v)));
   const emptyCount = cols.filter((c, i) => !placed.has(c) && isEmpty(vals[i])).length;
 

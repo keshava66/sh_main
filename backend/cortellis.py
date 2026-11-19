@@ -490,8 +490,8 @@ def get_meta(tid: str, bypass_cache: bool = Query(False), auth: dict = Depends(P
     return {
         "id": tid, "label": spec["label"], "blurb": spec.get("blurb"), "table": _fq(spec),
         "facets": [f for f in spec["facets"] if f in cols] + ([STEREO] if _has_stereo(spec) and spec["title"] in cols else []),
-        "grid": [c for c in spec["grid"] if c in cols],
-        "columns": cols, "labels": labels,
+        "grid": ([EXT_COL] if _has_extract(spec, cols) else []) + [c for c in spec["grid"] if c in cols],
+        "columns": cols, "labels": {**labels, **({EXT_COL: "Extracted text"} if _has_extract(spec, cols) else {})},
         "title": spec["title"], "text": spec.get("text"), "url": spec.get("url"), "key": spec.get("key"),
         "search": spec["search"],
         "extract": spec.get("extract"),
@@ -919,6 +919,9 @@ def get_table(
     yrs = _parse_years(years)
     args = {"tid": tid, "page": page, "size": size, "q": q.strip(), "f": f, "y": yrs,
             "sort": sort, "desc": desc, "all": all_columns}
+    xfiles = _extracted_files(bypass_cache) if _has_extract(spec, cols) else None
+    if xfiles is not None:
+        args["xv"] = len(xfiles)   # new extractions land -> new cache entry
 
     def parts():
         show = cols if all_columns else [c for c in spec["grid"] if c in cols]
@@ -934,6 +937,13 @@ def get_table(
         else:
             order = f" ORDER BY {_q(sort)} {d} NULLS LAST" if sort in cols else ""
         select = ", ".join(_q(c) for c in show)
+        if xfiles is not None:
+            # docs with text in Postgres go first, then whatever sort the page asked for
+            params["xfiles"] = ",".join(xfiles)
+            flag = (f"IFF({_q(spec['extract'])} IN (SELECT URL FROM {STATUS_TABLE} "
+                    f"WHERE ARRAY_CONTAINS(SPLIT_PART(S3_PATH, '/', -1)::VARIANT, SPLIT(%(xfiles)s, ','))), TRUE, FALSE)")
+            select = f"{flag} AS {_q(EXT_COL)}, {select}"
+            order = f" ORDER BY {_q(EXT_COL)} DESC" + (", " + order[len(" ORDER BY "):] if order else "")
         sql = f"SELECT {select} FROM {_fq(spec)}{where}{order} LIMIT %(limit)s OFFSET %(offset)s"
         res = _run_or_fail(sql, params, f"/table/{tid}")
 
@@ -1041,6 +1051,30 @@ def _pg_json(v):
     if isinstance(v, (list, dict)):
         return v
     return str(v)
+
+
+EXT_COL = "extracted_text"
+_xfiles: Dict[str, Any] = {"at": 0.0, "files": None}
+XFILES_TTL = 600
+
+
+def _has_extract(spec, cols) -> bool:
+    return bool(spec.get("extract")) and spec["extract"] in cols and bool(_pg_config)
+
+
+def _extracted_files(bypass: bool = False):
+    """pdf names that have chunks in Postgres. Cached 10 min, None if Postgres is down
+    (the grid then just loads without the extracted-first sort)."""
+    if not bypass and _xfiles["files"] is not None and time.time() - _xfiles["at"] < XFILES_TTL:
+        return _xfiles["files"]
+    try:
+        _, rows = _pg_run(f"SELECT DISTINCT file_name FROM {PG_TABLE} WHERE file_name IS NOT NULL")
+    except HTTPException as e:
+        logger.warning(f"Cortellis extracted file list unavailable: {e.detail}")
+        return _xfiles["files"]
+    files = sorted(r[0] for r in rows if r[0] and "," not in r[0])
+    _xfiles.update(at=time.time(), files=files)
+    return files
 
 
 @cortellis_router.get("/extract/{tid}")
