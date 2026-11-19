@@ -2240,14 +2240,18 @@ class DataValidator:
             check_error = None
             sf_last_updated = None
 
+            checked_by = []   # roles that looked and got an answer
+            cant_look = []    # roles that couldn't run the check (e.g. no rights on the warehouse)
             for role in roles:
                 sf_conn_for_check = self.snowflake_pool_manager.get_connection(role)
                 if not sf_conn_for_check:
                     continue
                 try:
                     found = sf_conn_for_check.table_exists(sf_table)
+                    checked_by.append(role)
                 except Exception as e:
                     found, check_error = False, e
+                    cant_look.append(role)
                 if found:
                     table_exists = True
                     role_with_access = role
@@ -2261,6 +2265,14 @@ class DataValidator:
 
             if not table_exists:
                 self.oracle_pool.return_connection(oracle_conn)
+                if check_error is not None and checked_by:
+                    # another role looked and didn't find it: missing, not an error. A role that can't run a
+                    # query (no warehouse) couldn't validate the table anyway.
+                    why = ("no active warehouse - the role has no rights on the configured warehouse"
+                           if '000606' in str(check_error) or 'No active warehouse' in str(check_error) else type(check_error).__name__)
+                    print_safe(f"       ℹ️  Role(s) {', '.join(map(str, cant_look))} couldn't look ({why}); "
+                               f"checked with {', '.join(map(str, checked_by))}")
+                    check_error = None
                 if check_error is not None:
                     # At least one role couldn't even look: don't call it missing
                     log_detailed_error(f"Snowflake - Couldn't check whether {sf_table} exists", check_error,
