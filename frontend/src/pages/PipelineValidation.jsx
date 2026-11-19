@@ -2,6 +2,8 @@ import React, {
   useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, memo, lazy, Suspense,
   createContext, useContext,
 } from 'react';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import { useSearchParams } from 'react-router-dom';
 import { useRBAC } from '../context/RBACContext';
 import { apiEventSource, apiJson } from '../utils/apiClient';
@@ -57,6 +59,11 @@ const shortDate = (iso) => {
   const d = new Date(String(iso).replace(' ', 'T'));   // the validation history writes "YYYY-MM-DD HH:MM:SS"
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 };
+const relativeTime = (iso) => {
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!Number.isFinite(m)) return '';
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : relativeDay(iso);
+};
 const initials = (name) => String(name || '?').split(/[\s._@-]+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
 /** A callback that never changes identity but always runs the latest code - keeps memo'd parts from re-rendering. */
@@ -77,31 +84,33 @@ const PANE_CSS = `
    loading, an extraction in progress, or the pipeline being extracted. */
 
 .ss-root {
-  --red: #d71e28; --red-d: #a8141c; --red-wash: #fdf2f2; --red-line: #f5c7c9;
-  --ink: #1d2433; --ink-2: #4a5568; --ink-3: #6b7385; --mute: #98a0b0;
-  --line: #e6e8ee; --line-2: #d3d7e0; --wash: #f8f9fb; --wash-2: #f1f3f7;
-  --src: #18794e; --src-bg: #ecf7f1; --proc: #1d5fbf; --proc-bg: #edf3fc; --dst: #b85c12; --dst-bg: #fdf3ea;
-  --exe: #4a5568; --exe-bg: #f1f3f7; --frag: #7a3fb0; --frag-bg: #f5effb;
-  --ok: #18794e; --bad: #b42318; --warn: #a15c07;
-  --focus: #3b6fd8; --focus-ring: rgba(59, 111, 216, .18);
-  --sh-1: 0 1px 2px rgba(16, 24, 40, .05);
-  --sh-2: 0 1px 3px rgba(16, 24, 40, .08), 0 1px 2px rgba(16, 24, 40, .04);
-  --sh-3: 0 12px 24px -6px rgba(16, 24, 40, .14), 0 4px 8px -4px rgba(16, 24, 40, .06);
+  --red: #5b5bd6; --red-d: #4747bd; --red-wash: #f1f1fd; --red-line: #d5d5f6;
+  --ink: #18181b; --ink-2: #3f3f46; --ink-3: #6b6b74; --mute: #8e8e97;
+  --line: #ebebee; --line-2: #dcdce1; --wash: #fafafa; --wash-2: #f4f4f5;
+  --src: #1a7f37; --src-bg: #ecf8ef; --proc: #2563c9; --proc-bg: #eef4fd; --dst: #b4540a; --dst-bg: #fdf3ea;
+  --exe: #52525b; --exe-bg: #f4f4f5; --frag: #7c3aed; --frag-bg: #f5f0fe;
+  --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+  --focus: #5b5bd6; --focus-ring: rgba(91, 91, 214, .22);
+  --sh-1: 0 1px 2px rgba(24, 24, 27, .04);
+  --sh-2: 0 1px 2px rgba(24, 24, 27, .05), 0 2px 6px -1px rgba(24, 24, 27, .06);
+  --sh-3: 0 16px 32px -12px rgba(24, 24, 27, .18), 0 4px 10px -4px rgba(24, 24, 27, .08);
   --ease: cubic-bezier(.2, .8, .2, 1);
-  --mono: ui-monospace, 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --mono: 'Geist Mono Variable', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --sans: 'Geist Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
   position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column;
   container: ss-pane / inline-size;   /* layout reacts to the pane's width, not the window's (the app sidebar takes some) */
-  background: #fff; color: var(--ink); font-family: 'JohnsonText', Arial, sans-serif; font-size: 13px; line-height: 1.45;
+  background: #fff; color: var(--ink); font-family: var(--sans); font-size: 13px; line-height: 1.45; font-feature-settings: 'tnum' 0; -webkit-font-smoothing: antialiased;
 }
 .ss-root *, .ss-root *::before, .ss-root *::after { box-sizing: border-box; }
-.ss-root ::selection { background: #dbe6fb; color: var(--ink); }
+.ss-root ::selection { background: #dcdcfa; color: var(--ink); }
 .ss-root * { scrollbar-width: thin; scrollbar-color: #cfd4de transparent; }
 .ss-root ::-webkit-scrollbar { width: 10px; height: 10px; }
 .ss-root ::-webkit-scrollbar-thumb { background: #cfd4de; border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; }
 .ss-root ::-webkit-scrollbar-thumb:hover { background-color: var(--mute); }
 .ss-root ::-webkit-scrollbar-track { background: transparent; }
 .ss-root input, .ss-root textarea { caret-color: var(--red); }
-.ss-root button { cursor: pointer; }
+.ss-root button { cursor: pointer; font: inherit; color: inherit; }
+.ss-root h1, .ss-root h2, .ss-root h3, .ss-root h4 { font-family: var(--sans); }
 .ss-root button:disabled { cursor: not-allowed; }
 .ss-root :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
 .ss-root kbd { font: 10.5px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line-2); border-bottom-width: 2px; background: #fff; color: var(--ink-2); }
@@ -151,164 +160,184 @@ const PANE_CSS = `
 .ss-ibtn { width: 30px; height: 30px; border-radius: 8px; display: inline-grid; place-items: center; color: var(--ink-2); flex-shrink: 0; transition: background-color .15s; }
 .ss-ibtn:hover:not(:disabled) { background: var(--wash-2); color: var(--ink); }
 .ss-ibtn:disabled { opacity: .4; }
-.ss-ibtn.is-on { background: var(--ink); color: #fff; }
+.ss-ibtn.is-on { background: var(--red-wash); color: var(--red-d); }
 .ss-ibtn.is-spin .ss-i { animation: ss-spin .8s linear infinite; }
 .ss-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--wash-2); flex-shrink: 0; }
 .ss-seg button { height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; color: var(--ink-3); }
 .ss-seg button.is-on { background: #fff; color: var(--ink); font-weight: 700; box-shadow: var(--sh-1); }
 
 /* ------------------------------ header ------------------------------ */
-/* White header: brand and status, the controls that scope the board, then the summary. */
-.ss-band { flex-shrink: 0; position: relative; z-index: 25; background: #fff; color: var(--ink); padding: 14px 24px 0; border-bottom: 1px solid var(--line); }
-.ss-band-top { display: flex; align-items: center; gap: 16px; min-height: 36px; }
-.ss-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.ss-brand-mark { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: var(--red); flex-shrink: 0; background: var(--red-wash); border: 1px solid var(--red-line); }
-.ss-brand h1 { margin: 0; font: 700 18px/1.2 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.01em; color: var(--ink); }
-.ss-brand small { display: block; margin-top: 1px; color: var(--ink-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-pills { display: flex; gap: 6px; min-width: 0; margin-left: 6px; }
-.ss-pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--wash); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
-.ss-dot { width: 6px; height: 6px; border-radius: 50%; background: #22a06b; flex-shrink: 0; }
-.ss-dot.is-warn { background: #d97706; }
-.ss-jump { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 11px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; color: var(--ink-3); min-width: 250px; flex-shrink: 0; transition: border-color .15s; }
-.ss-jump:hover { border-color: var(--mute); color: var(--ink-2); }
-.ss-jump span { flex: 1; text-align: left; font-size: 12.5px; }
+/* Top bar (name, status, jump), the search as the page's main control, then the status tabs that scope the list. */
+.ss-band { flex-shrink: 0; position: relative; z-index: 25; background: #fff; border-bottom: 1px solid var(--line); padding: 0 28px; }
+.ss-band-top { display: flex; align-items: center; gap: 14px; height: 52px; }
+.ss-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ss-brand-mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; background: var(--ink); }
+.ss-brand-mark svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 1.7; stroke-linecap: round; }
+.ss-brand-mark circle { fill: var(--red); stroke: none; }
+.ss-brand h1 { margin: 0; font: 600 15px/1 var(--sans); letter-spacing: -.012em; white-space: nowrap; }
+.ss-brand-src { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 10px; border-left: 1px solid var(--line-2); }
+.ss-band-end { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ss-pill { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line); font-size: 12px; color: var(--ink-2); white-space: nowrap; margin-right: 6px; }
+.ss-dot { width: 6px; height: 6px; border-radius: 50%; background: #22a35a; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(34, 163, 90, .15); }
+.ss-dot.is-warn { background: #d97706; box-shadow: 0 0 0 3px rgba(217, 119, 6, .15); }
+.ss-fetched { font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ss-jump { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 5px 0 10px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; color: var(--ink-2); margin-left: 6px; transition: border-color .15s, background-color .15s; }
+.ss-jump:hover { border-color: var(--mute); background: var(--wash); }
+.ss-jump span { font-size: 12.5px; }
+.ss-jump kbd { font-size: 10.5px; }
 
-.ss-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.ss-search { position: relative; flex: 0 1 420px; min-width: 240px; }
-.ss-search > .ss-i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--mute); }
-.ss-search input { width: 100%; height: 34px; padding: 0 38px 0 34px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; outline: none; font-size: 13px; color: var(--ink); transition: border-color .15s, box-shadow .15s; }
-.ss-search input::placeholder { color: var(--mute); }
-.ss-search input:hover { border-color: var(--mute); }
-.ss-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-search-kbd, .ss-search-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
-.ss-search-clear { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-3); }
+.ss-find { display: flex; align-items: center; gap: 28px; padding: 18px 0 16px; }
+.ss-search { position: relative; flex: 1 1 auto; max-width: 720px; min-width: 260px; }
+.ss-search > .ss-i { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--ink-3); pointer-events: none; }
+.ss-search input { width: 100%; height: 44px; padding: 0 44px 0 42px; border-radius: 10px; border: 1px solid var(--line-2); background: #fff; outline: none; font: 400 14.5px var(--sans); color: var(--ink);
+  box-shadow: var(--sh-1); transition: border-color .15s, box-shadow .15s; }
+.ss-search input::placeholder { color: var(--ink-3); }
+.ss-search input:hover { border-color: #c4c4cc; }
+.ss-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 4px var(--focus-ring); }
+.ss-search-kbd, .ss-search-clear { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); }
+.ss-search-clear { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-3); }
 .ss-search-clear:hover { background: var(--wash-2); color: var(--ink); }
-.ss-select { position: relative; display: inline-flex; align-items: center; height: 34px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; color: var(--ink-2); }
-.ss-select:hover { border-color: var(--mute); }
-.ss-select .ss-i { position: absolute; left: 10px; pointer-events: none; color: var(--mute); }
-.ss-select select { appearance: none; height: 100%; padding: 0 28px 0 30px; background: transparent; border: 0; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; outline: none; max-width: 220px;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 14px) 15px, calc(100% - 10px) 15px; background-size: 4px 4px; background-repeat: no-repeat; }
-.ss-select:focus-within { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-chip { flex-shrink: 0; height: 34px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; font-size: 12.5px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
-.ss-chip:hover { border-color: var(--mute); }
-.ss-chip.is-on { background: var(--ink); border-color: var(--ink); color: #fff; font-weight: 700; }
-.ss-chip em { font-style: normal; opacity: .7; font-variant-numeric: tabular-nums; }
-.ss-band .ss-seg { padding: 3px; border-radius: 8px; }
-.ss-band .ss-seg button { height: 28px; padding: 0 11px; font-size: 12.5px; border-radius: 6px; color: var(--ink-3); }
-.ss-band .ss-seg button:hover:not(.is-on) { color: var(--ink); }
-.ss-tools-end { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
-.ss-fetched { font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; margin-right: 6px; }
 
-/* summary: one line of health, a distribution bar, and a figure per lane that jumps to it */
-.ss-hero { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 32px; align-items: center; padding: 18px 0 18px;
-  max-height: 200px; overflow: hidden; transition: max-height .35s var(--ease), padding .35s var(--ease), opacity .25s; }
-.ss-root.is-lifted .ss-hero, .ss-root.has-sheet .ss-hero { max-height: 0; padding: 0; opacity: 0; }
-.ss-hero-text { min-width: 0; }
-.ss-hero-k { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
-.ss-hero-text h2 { margin: 4px 0 0; font: 700 26px/1.15 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.015em; font-variant-numeric: tabular-nums; }
-.ss-hero-text h2 small { font-size: 14px; font-weight: 400; color: var(--ink-3); margin-left: 6px; letter-spacing: 0; }
-.ss-hero-text p { margin: 3px 0 0; color: var(--ink-3); font-size: 12.5px; }
-.ss-hero-text p.is-err { color: var(--bad); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ss-hero-bar { display: flex; gap: 2px; height: 6px; margin-top: 12px; border-radius: 3px; overflow: hidden; background: var(--wash-2); }
-.ss-hero-bar i { background: var(--lane); min-width: 3px; transition: flex-grow .5s var(--ease); }
-.ss-hero-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; min-width: 0; }
-.ss-hl { display: grid; gap: 2px; text-align: left; padding: 10px 14px 11px; border-radius: 10px; border: 1px solid var(--line); background: #fff; min-width: 0;
-  transition: border-color .15s, box-shadow .15s; }
-.ss-hl span { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-hl span i { width: 8px; height: 8px; border-radius: 2px; background: var(--lane); flex-shrink: 0; }
-.ss-hl b { font: 700 22px/1.2 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; color: var(--ink); font-variant-numeric: tabular-nums; }
-.ss-hl:hover:not(:disabled) { border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-hl:disabled { cursor: default; }
-.ss-hl:disabled b { color: var(--mute); }
-.ss-hero.is-skel i { display: block; max-width: 100%; border-radius: 6px; background: var(--wash-2); animation: ss-pulse 1.4s ease-in-out infinite; }
-.ss-hero.is-skel .ss-hero-text { display: grid; gap: 10px; }
-.ss-hero.is-skel .ss-hl { height: 68px; }
-@container ss-pane (max-width: 1000px) { .ss-hero { grid-template-columns: 1fr; gap: 14px; max-height: 320px; } }
-@container ss-pane (max-width: 1250px) { .ss-pills { display: none; } .ss-brand small { display: none; } }
-@container ss-pane (max-width: 1000px) { .ss-jump { min-width: 0; } .ss-jump span { display: none; } .ss-search { flex-basis: 100%; } }
+.ss-health { margin-left: auto; display: grid; gap: 8px; min-width: 220px; max-width: 320px; font-size: 13px; color: var(--ink-3); }
+.ss-health b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ss-health-bar { display: flex; gap: 2px; height: 6px; border-radius: 99px; overflow: hidden; background: var(--wash-2); }
+.ss-health-bar i { min-width: 3px; transition: flex-grow .4s var(--ease); }
+.ss-health.is-err { display: flex; align-items: center; gap: 6px; color: var(--bad); max-width: 420px; }
+.ss-health.is-loading .ss-health-bar { animation: ss-pulse 1.4s ease-in-out infinite; }
+
+.ss-views { display: flex; align-items: flex-end; gap: 16px; }
+.ss-lanetabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; margin-bottom: -1px; }
+.ss-lanetabs::-webkit-scrollbar { display: none; }
+.ss-lanetabs button { position: relative; flex-shrink: 0; display: inline-flex; align-items: center; gap: 7px; height: 40px; padding: 0 12px; font-size: 13px; color: var(--ink-3); border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
+.ss-lanetabs button:hover { color: var(--ink); }
+.ss-lanetabs button.is-on { color: var(--ink); font-weight: 500; border-bottom-color: var(--ink); }
+.ss-lanetabs i { width: 7px; height: 7px; border-radius: 50%; background: var(--lane); }
+.ss-lanetabs span { min-width: 20px; height: 18px; padding: 0 6px; border-radius: 99px; background: var(--wash-2); color: var(--ink-3); font-size: 11.5px; font-weight: 500; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+.ss-lanetabs button.is-on span { background: var(--ink); color: #fff; }
+.ss-views-end { margin-left: auto; display: flex; align-items: center; gap: 8px; padding-bottom: 7px; flex-shrink: 0; }
+.ss-select { position: relative; display: inline-flex; align-items: center; height: 30px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; color: var(--ink-2); }
+.ss-select:hover { border-color: #c4c4cc; }
+.ss-select .ss-i { position: absolute; left: 9px; pointer-events: none; color: var(--ink-3); }
+.ss-select select { appearance: none; height: 100%; padding: 0 26px 0 29px; background: transparent; border: 0; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; outline: none; max-width: 210px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 13px) 13px, calc(100% - 9px) 13px; background-size: 4px 4px; background-repeat: no-repeat; }
+.ss-select:focus-within { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
+.ss-chip { flex-shrink: 0; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-2); background: #fff; font-size: 12.5px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+.ss-chip:hover { border-color: #c4c4cc; }
+.ss-chip.is-on { background: var(--red-wash); border-color: var(--red-line); color: var(--red-d); font-weight: 500; }
+.ss-chip em { font-style: normal; font-variant-numeric: tabular-nums; }
+@container ss-pane (max-width: 1100px) { .ss-health { display: none; } .ss-brand-src, .ss-fetched { display: none; } }
+@container ss-pane (max-width: 900px) { .ss-views { flex-wrap: wrap; } .ss-views-end { padding-bottom: 8px; } .ss-jump span, .ss-pill { display: none; } }
 
 .ss-body { flex: 1; min-height: 0; display: flex; position: relative; }
 
-/* -------------------------------- board -------------------------------- */
-.ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: auto; background: var(--wash); }
-.ss-board { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px 16px; padding: 20px 24px 140px; min-height: 100%; }
-.ss-lane { flex: 1 1 0; min-width: 236px; max-width: 560px; display: flex; flex-direction: column; border-radius: 12px; transition: box-shadow .3s; }
-.ss-lane.is-flash { animation: ss-flash 1.1s var(--ease); }
-@keyframes ss-flash { 0%, 60% { box-shadow: 0 0 0 2px var(--lane); } 100% { box-shadow: 0 0 0 2px transparent; } }
-.ss-lane-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 2px 2px 10px; background: var(--wash); border-top: 3px solid var(--lane); padding-top: 10px; }
-.ss-lane-btn { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 2px 4px 2px 2px; border-radius: 6px; }
-.ss-lane-btn:hover b { color: var(--ink-2); }
-.ss-lane-dot { display: none; }
-.ss-lane-h b { font-size: 13px; white-space: nowrap; }
-.ss-lane-n { font-size: 11.5px; font-weight: 700; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 0 7px; font-variant-numeric: tabular-nums; }
-.ss-lane-h small { color: var(--mute); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ss-lane-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-.ss-lane-empty { margin: 0; padding: 18px 14px; border: 1px dashed var(--line-2); border-radius: 10px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
-.ss-lane-more { width: 100%; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink-2); font-size: 12.5px; font-weight: 700; }
-.ss-lane-more:hover { border-color: var(--line-2); }
-.ss-lane.is-collapsed { flex: 0 0 44px; min-width: 44px; }
-.ss-lane.is-collapsed .ss-lane-h { padding: 0; border-top: 0; }
-.ss-lane.is-collapsed .ss-lane-dot { display: block; width: 8px; height: 8px; border-radius: 2px; background: var(--lane); flex-shrink: 0; }
-.ss-lane.is-collapsed .ss-lane-btn { flex-direction: column; gap: 10px; width: 44px; padding: 12px 0; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
-.ss-lane.is-collapsed .ss-lane-btn b { writing-mode: vertical-rl; transform: rotate(180deg); font-weight: 400; color: var(--ink-2); }
-.ss-lane.is-collapsed .ss-lane-btn:hover { border-color: var(--line-2); }
+/* -------------------------------- list -------------------------------- */
+.ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: auto; background: #fff; }
+.ss-list { --cols: minmax(0, 1fr) 132px 170px 136px 64px; padding: 0 28px 140px; }
+.ss-thead { position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; height: 36px; background: rgba(255, 255, 255, .96);
+  border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
+.ss-thead-cols { display: grid; grid-template-columns: var(--cols); gap: 16px; align-items: center; padding-right: 8px; }
+.ss-th-sort { display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-left: -6px; padding: 0 6px; border-radius: 6px; color: inherit; }
+.ss-th-sort .ss-i { opacity: 0; }
+.ss-th-sort:hover { color: var(--ink); background: var(--wash-2); }
+.ss-th-sort.is-on { color: var(--ink); font-weight: 500; }
+.ss-th-sort.is-on .ss-i { opacity: 1; }
+.ss-col-ver { text-align: right; }
 
-/* cards: name, what it does, its route (source to Snowflake) and the last result */
-.ss-card { position: relative; border-radius: 10px; border: 1px solid var(--line); background: #fff; box-shadow: var(--sh-1);
-  transition: border-color .15s, box-shadow .15s; content-visibility: auto; contain-intrinsic-size: auto 108px; }
-.ss-card:hover { border-color: var(--line-2); box-shadow: var(--sh-2); }
-.ss-card.is-open { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-card.is-picked { border-color: #b9cdf3; background: #f6f9ff; }
-.ss-card.is-muted { background: var(--wash); box-shadow: none; }
-.ss-card.is-muted .ss-card-nm { color: var(--ink-3); }
-.ss-card-sk { padding: 14px; display: flex; }
-.ss-card-open { display: block; width: 100%; text-align: left; padding: 12px 40px 11px 14px; border-radius: 10px; }
-.ss-card-nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; font-weight: 700; line-height: 1.35; color: var(--ink); overflow-wrap: anywhere; }
-.ss-card-ds { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-card-route { display: inline-flex; align-items: center; gap: 5px; margin: 10px 0 8px; }
-.ss-card-route .pvs-badge { width: auto; height: 20px; margin: 0; padding: 0 6px; border-radius: 5px; font-size: 10px; }
-.ss-card-route i { width: 14px; height: 1px; background: var(--line-2); position: relative; }
-.ss-card-route i::after { content: ''; position: absolute; right: -1px; top: -3px; border: 3.5px solid transparent; border-left: 4px solid var(--line-2); border-right: 0; }
-.ss-card-end { min-width: 24px; height: 20px; padding: 0 6px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; font-weight: 700; background: var(--wash-2); color: var(--ink-3); }
-.ss-card-end.is-sf { background: #e9f6fc; color: #0b6e99; }
-.ss-card-tail { position: absolute; right: 12px; bottom: 11px; font-size: 11.5px; }
-.ss-vtag { font-weight: 700; color: var(--ink-2); }
-.ss-check { position: absolute; top: 11px; right: 11px; width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--line-2); background: #fff; display: grid; place-items: center; opacity: 0; transition: opacity .15s, background-color .15s, border-color .15s; }
-.ss-card:hover .ss-check, .ss-check:focus-visible, .ss-check[aria-checked="true"], .ss-root.has-picks .ss-check { opacity: 1; }
+.ss-group { margin-top: 4px; }
+.ss-gh { position: sticky; top: 36px; z-index: 2; margin: 0; background: #fff; }
+.ss-gh button { display: flex; align-items: center; gap: 9px; width: 100%; height: 38px; padding: 0 8px 0 10px; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--wash); font-size: 13px; }
+.ss-gh button:hover { background: var(--wash-2); }
+.ss-gh { padding-top: 14px; }
+.ss-group:first-of-type .ss-gh { padding-top: 10px; }
+.ss-group-chev { color: var(--ink-3); transform: rotate(90deg); transition: transform .18s var(--ease); }
+.ss-group.is-collapsed .ss-group-chev { transform: none; }
+.ss-group-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lane); flex-shrink: 0; }
+.ss-gh b { font-weight: 600; white-space: nowrap; }
+.ss-group-n { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ss-gh small { color: var(--ink-3); font-size: 12px; margin-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ss-group-empty { margin: 0; padding: 14px 10px 14px 46px; color: var(--ink-3); font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.ss-rows { list-style: none; margin: 0; padding: 0; }
+
+.ss-row { position: relative; display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; border-bottom: 1px solid var(--line); transition: background-color .12s; }
+.ss-row:hover, .ss-row:focus-within { background: var(--wash); }
+.ss-row.is-picked { background: #f7f7fe; }
+.ss-row.is-open { background: var(--red-wash); }
+.ss-row.is-muted .ss-row-nm { color: var(--ink-3); }
+.ss-row-sk { padding: 0; }
+.ss-row-pick { display: grid; place-items: center; height: 100%; }
+.ss-row-open { display: grid; grid-template-columns: var(--cols); gap: 16px; align-items: center; min-height: 56px; padding: 9px 8px 9px 0; text-align: left; min-width: 0; border-radius: 0; }
+.ss-row-open:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 6px; }
+.ss-row-main { display: grid; gap: 3px; min-width: 0; }
+.ss-row-nm { font-weight: 550; font-size: 13.5px; letter-spacing: -.005em; color: var(--ink); overflow-wrap: anywhere; line-height: 1.3; }
+.ss-row-open:hover .ss-row-nm { color: var(--red-d); }
+.ss-row-ds { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--ink-3); }
+.ss-row-ds:empty { display: none; }
+.ss-row-dtext { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-row-ds .pvs-why { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-col { min-width: 0; font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-col-chg { display: flex; align-items: center; gap: 7px; color: var(--ink-3); }
+.ss-col-ver { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ss-row-more { padding: 10px 0 10px 46px; border-bottom: 1px solid var(--line); }
+.ss-row-acts { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: flex; gap: 6px; padding: 0 8px 0 40px; opacity: 0; pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--row-bg, var(--wash)) 32px); transition: opacity .12s; }
+.ss-row:hover .ss-row-acts, .ss-row:focus-within .ss-row-acts { opacity: 1; pointer-events: auto; }
+.ss-row.is-picked { --row-bg: #f7f7fe; }
+.ss-row.is-open { --row-bg: var(--red-wash); }
+.ss-row-acts .ss-btn { height: 28px; padding: 0 10px; font-size: 12px; background: #fff; }
+.ss-src { display: inline-flex; align-items: center; gap: 7px; }
+.ss-src i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex-shrink: 0; }
+.ss-res { display: inline-flex; align-items: center; gap: 8px; }
+.ss-res small { color: var(--ink-3); font-size: 12px; }
+.ss-cant { color: var(--warn); }
+.ss-badge { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 500; background: var(--wash-2); color: var(--ink-2); white-space: nowrap; }
+.ss-badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ss-badge.is-pass { background: #e9f7ee; color: #1a7f37; }
+.ss-badge.is-crit { background: #ffebe9; color: #c21c28; }
+.ss-badge.is-faulty { background: #fff1e5; color: #b4400b; }
+.ss-badge.is-warn { background: #fff5d6; color: #8a5a00; }
+.ss-badge.is-err { background: #ffeff7; color: #b3246f; }
+.ss-badge.is-nf { background: #f4f1e4; color: #6d5a12; }
+.ss-badge.is-run { background: var(--red-wash); color: var(--red-d); }
+.ss-badge.is-run i { animation: ss-pulse 1.2s ease-in-out infinite; }
+.ss-row .ss-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 9px; font-weight: 600; color: var(--ink-2); background: var(--wash-2); border: 1px solid var(--line); flex-shrink: 0; }
+.ss-check { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid #c9c9d1; background: #fff; display: grid; place-items: center; transition: background-color .12s, border-color .12s; }
 .ss-check:hover:not(:disabled) { border-color: var(--focus); }
-.ss-check svg { width: 11px; height: 11px; fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.ss-check svg { width: 11px; height: 11px; fill: none; stroke: #fff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
 .ss-check[aria-checked="true"] { background: var(--focus); border-color: var(--focus); }
 .ss-check[aria-checked="true"] svg { opacity: 1; }
-.ss-check:disabled { opacity: .35 !important; }
-.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding-right: 110px; font-size: 11.5px; color: var(--ink-3); }
-.ss-tag { padding: 0 6px; height: 18px; display: inline-flex; align-items: center; border-radius: 4px; font-size: 11px; background: var(--wash-2); color: var(--ink-2); }
-.ss-tag-warn { background: #fef6e7; color: var(--warn); }
+.ss-check:disabled { opacity: .35; }
+.ss-tag { padding: 0 6px; height: 18px; display: inline-flex; align-items: center; border-radius: 5px; font-size: 11px; font-weight: 500; background: var(--wash-2); color: var(--ink-2); flex-shrink: 0; }
+.ss-tag-warn { background: #fff5d6; color: #8a5a00; }
 .ss-tag-proc { background: var(--proc-bg); color: var(--proc); }
 .ss-tag-frag { background: var(--frag-bg); color: var(--frag); }
 .ss-tag-red { background: var(--red-wash); color: var(--red-d); }
 .ss-tag-ok { background: var(--src-bg); color: var(--ok); }
-.ss-tag-bad { background: #fef0ef; color: var(--bad); }
-.ss-empty { text-align: center; padding: 70px 18px; color: var(--ink-3); font-size: 13px; display: grid; gap: 8px; justify-items: center; }
-.ss-empty b { color: var(--ink); font-size: 16px; }
+.ss-tag-bad { background: #ffebe9; color: var(--bad); }
+.ss-empty { text-align: center; padding: 80px 18px; color: var(--ink-3); font-size: 13px; display: grid; gap: 8px; justify-items: center; }
+.ss-empty b { color: var(--ink); font-size: 15px; font-weight: 600; }
+.ss-empty .ss-btn { margin-top: 8px; }
+@container ss-pane (max-width: 1250px) { .ss-list { --cols: minmax(0, 1fr) 120px 160px 112px; } .ss-col-ver { display: none; } }
+@container ss-pane (max-width: 980px) { .ss-list { --cols: minmax(0, 1fr) 150px; } .ss-col-src, .ss-col-chg { display: none; } }
+@container ss-pane (max-width: 640px) { .ss-list { --cols: minmax(0, 1fr); padding: 0 12px 140px; } .ss-col-res { display: none; } .ss-band { padding: 0 14px; } }
 
-/* picks for an extraction: a bar that floats over the board while anything is picked */
-.ss-tray { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 32; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 48px);
-  padding: 8px 8px 8px 16px; border-radius: 12px; background: #fff; color: var(--ink); border: 1px solid var(--line-2); box-shadow: var(--sh-3); animation: ss-up .25s var(--ease); }
-@keyframes ss-up { from { opacity: 0; transform: translate(-50%, 10px); } }
+/* picks for an extraction: a bar that floats over the list while anything is picked */
+.ss-tray { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 32; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 48px);
+  padding: 7px 7px 7px 16px; border-radius: 12px; background: #fff; color: var(--ink); border: 1px solid var(--line-2); box-shadow: var(--sh-3); animation: ss-up .22s var(--ease); }
+@keyframes ss-up { from { opacity: 0; transform: translate(-50%, 8px); } }
 .ss-tray.is-shake { animation: ss-shake .45s; }
-.ss-tray-n { position: relative; display: flex; white-space: nowrap; align-items: baseline; gap: 3px; padding-bottom: 5px; font-variant-numeric: tabular-nums; }
-.ss-tray-n b { font-size: 17px; }
-.ss-tray-n small { color: var(--ink-3); font-size: 11.5px; }
+.ss-tray-n { position: relative; display: flex; align-items: baseline; gap: 3px; white-space: nowrap; font-variant-numeric: tabular-nums; padding-bottom: 4px; }
+.ss-tray-n b { font-size: 15px; font-weight: 600; }
+.ss-tray-n small { color: var(--ink-3); font-size: 12px; }
 .ss-tray-fill { position: absolute; left: 0; bottom: 0; height: 2px; border-radius: 2px; background: var(--focus); transition: width .3s var(--ease); }
 .ss-picks { display: flex; gap: 5px; min-width: 0; }
-.ss-pick { display: inline-flex; align-items: center; gap: 4px; max-width: 190px; height: 28px; padding: 0 4px 0 10px; border-radius: 7px; background: var(--wash-2); font-size: 12px; color: var(--ink); }
+.ss-pick { display: inline-flex; align-items: center; gap: 4px; max-width: 200px; height: 28px; padding: 0 4px 0 10px; border-radius: 7px; background: var(--wash-2); font-size: 12px; color: var(--ink); }
 .ss-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-pick button { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; color: var(--ink-3); flex-shrink: 0; }
 .ss-pick button:hover { background: var(--line); color: var(--ink); }
-.ss-pick-more { padding-right: 10px; white-space: nowrap; color: var(--ink-2); }
+.ss-pick-more { padding-right: 10px; color: var(--ink-2); white-space: nowrap; }
 .ss-pick-more.is-on { background: var(--ink); color: #fff; }
-.ss-tray-go { height: 36px; }
+.ss-tray-go { height: 34px; }
 .ss-root.has-run .ss-tray { left: 532px; transform: none; animation: none; }
 @container ss-pane (max-width: 1300px) { .ss-picks { display: none; } }
 
@@ -338,7 +367,7 @@ const PANE_CSS = `
 .ss-k-dst { --k: var(--dst); --kb: var(--dst-bg); }
 .ss-k-exe { --k: var(--exe); --kb: var(--exe-bg); }
 .ss-k-frag { --k: var(--frag); --kb: var(--frag-bg); }
-.ss-klabel { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--k); }
+.ss-klabel { font-size: 11px; font-weight: 500; color: var(--k); }
 
 /* -------------------------------- detail ------------------------------- */
 .ss-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: ss-fade .25s var(--ease); }
@@ -365,7 +394,7 @@ const PANE_CSS = `
   background: var(--wash); border: 1px solid var(--line); }
 .ss-ep { min-width: 0; }
 .ss-ep.is-r { text-align: right; }
-.ss-ep-h { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); margin-bottom: 4px; }
+.ss-ep-h { font-size: 12px; font-weight: 500; color: var(--ink-3); margin-bottom: 4px; }
 .ss-ep-row { display: flex; align-items: center; gap: 9px; min-width: 0; margin-top: 5px; }
 .ss-ep.is-r .ss-ep-row { flex-direction: row-reverse; }
 .ss-ep-row button { min-width: 0; text-align: inherit; }
@@ -470,10 +499,10 @@ const PANE_CSS = `
 .ss-ptable { margin-top: 16px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
 .ss-prow { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; padding: 11px 16px; border-top: 1px solid var(--line); align-items: start; }
 .ss-prow:hover { background: var(--wash); }
-.ss-prow-head { border-top: 0; background: var(--wash); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); padding: 10px 16px; }
+.ss-prow-head { border-top: 0; background: var(--wash); font-size: 11px; font-weight: 500; color: var(--mute); padding: 10px 16px; }
 .ss-pname { font: 12px var(--mono); word-break: break-all; }
 .ss-pval { font: 12px var(--mono); word-break: break-all; white-space: pre-wrap; }
-.ss-pval .ss-muted, .ss-pval .ss-secret { font-family: 'JohnsonText', Arial, sans-serif; }
+.ss-pval .ss-muted, .ss-pval .ss-secret { font-family: var(--sans); }
 .ss-secret { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--ink-3); font-size: 12px; }
 .ss-secret-val { font: 700 11.5px/1.6 var(--mono); padding: 0 7px; border-radius: 5px; background: var(--red-wash); border: 1px solid var(--red-line); color: var(--ink); white-space: pre-wrap; word-break: break-all; }
 .ss-secret .ss-res-btn.is-hide { color: var(--ink-2); background: var(--wash-2); border-color: var(--line-2); }
@@ -495,7 +524,7 @@ const PANE_CSS = `
 .ss-dr-top h3 { margin: 2px 0; font-size: 16px; font-weight: 700; word-break: break-word; }
 .ss-dr-top small { font-size: 12px; color: var(--ink-2); }
 .ss-dr-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 40px; display: flex; flex-direction: column; gap: 20px; }
-.ss-sec-h { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.ss-sec-h { font-size: 12.5px; font-weight: 600; color: var(--ink); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
 .ss-sec-h em { font-style: normal; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 0 7px; letter-spacing: 0; }
 .ss-sec-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .ss-what { padding: 14px 16px; border-radius: 14px; background: var(--kb); border: 1px solid color-mix(in srgb, var(--k) 24%, var(--line)); }
@@ -571,7 +600,7 @@ const PANE_CSS = `
 .ss-rv-kv { display: grid; gap: 4px; }
 .ss-rv-scroll { overflow-x: auto; }
 .ss-rv-t { width: 100%; border-collapse: collapse; font-size: 12px; }
-.ss-rv-t th { text-align: left; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--mute); padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+.ss-rv-t th { text-align: left; font-size: 12px; font-weight: 500; color: var(--mute); padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
 .ss-rv-t td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--wash-2); vertical-align: top; }
 .ss-rv-t tr:last-child td { border-bottom: 0; }
 .ss-rv-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; margin: 0; }
@@ -657,7 +686,7 @@ const PANE_CSS = `
 .ss-pal-in input:focus-visible { outline: none; }
 .ss-pal-in:focus-within { box-shadow: inset 0 -2px 0 var(--focus); }
 .ss-pal-list { max-height: 52vh; overflow-y: auto; padding: 6px; }
-.ss-pal-g { padding: 10px 10px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); }
+.ss-pal-g { padding: 10px 10px 4px; font-size: 12px; font-weight: 500; color: var(--mute); }
 .ss-pal-item { width: 100%; display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 10px; text-align: left; }
 .ss-pal-item.is-on { background: var(--wash-2); }
 .ss-pal-item b { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -677,7 +706,7 @@ const PANE_CSS = `
 .ss-state p { margin: 0 auto 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
 .ss-state code { background: var(--wash-2); padding: 1px 5px; border-radius: 4px; }
 
-/* Short screens (1366x768 cloud desktops): give the flow the height, not the header. */
+/* Short screens (1366x768 cloud desktops, 125-150% scaling): give the content the height, not the header. */
 @media (max-height: 820px) {
   .ss-dhead { padding-top: 10px; }
   .ss-crumbs { margin-bottom: 2px; }
@@ -688,17 +717,11 @@ const PANE_CSS = `
   .ss-ep-row + .ss-ep-row, .ss-ep > small { display: none; }
   .ss-tabs { margin-top: 4px; }
   .ss-tab { height: 34px; }
-  .ss-root.has-sheet .ss-tools { display: none; }
-  .ss-band { padding-top: 10px; }
-  .ss-tools { margin-top: 10px; }
-  .ss-hero { padding: 12px 0; gap: 20px; }
-  .ss-hero-text h2 { font-size: 22px; }
-  .ss-hl { padding: 7px 12px 8px; }
-  .ss-hl b { font-size: 18px; }
-  .ss-board { padding-top: 12px; }
+  .ss-find { padding: 12px 0 10px; }
+  .ss-search input { height: 40px; }
+  .ss-row-open { min-height: 50px; padding-top: 7px; padding-bottom: 7px; }
 }
 @media (max-height: 820px) { .ss-route { display: none; } }
-@media (max-height: 700px) { .ss-hero { display: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   .ss-root *, .ss-root *::before, .ss-root *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -963,6 +986,8 @@ const Glyph = {
   copy: <path d="M5.5 5.5h8v8h-8zM3.5 10.5h-1v-8h8v1" />,
   bolt: <path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8l1-5.5Z" />,
   check: <path d="M3 8.5 6.5 12 13 4.5" />,
+  sortdown: <path d="M8 3.5v9m-3.5-3.5L8 12.5 11.5 9" />,
+  filter: <path d="M2 3.5h12M4.5 8h7M7 12.5h2" />,
   x: <path d="M4.5 4.5l7 7m0-7-7 7" />,
   plus: <path d="M8 3v10M3 8h10" />,
   flow: <path d="M1.5 4.5h3v3h-3zM11.5 2h3v3h-3zM11.5 11h3v3h-3zM4.5 6h2.5c2 0 2-2.5 4.5-2.5M7 6c2 0 2 6.5 4.5 6.5" />,
@@ -1036,143 +1061,164 @@ function Breakable({ text, q }) {
   });
 }
 
-// One memo'd card each, so ticking a box re-renders that card - not the whole board.
-const PipelineCard = memo(function PipelineCard({ p, query, isOpen, isPicked, locked, runState, maxPerRun, onPick, onOpen, infoOf, delay }) {
+// One memo'd row each, so ticking a box re-renders that row - not the whole list.
+const PipelineRow = memo(function PipelineRow({ p, query, isOpen, isPicked, locked, runState, maxPerRun, onPick, onOpen, infoOf, onAction, canExtract }) {
   const info = infoOf ? infoOf(p) : null;
-  const tone = info?.tone || 'var(--line-2)';
+  const run = runState === 'running' ? <span className="ss-badge is-run"><i />Extracting</span>
+    : runState === 'done' ? <span className="ss-badge is-pass"><i />Extracted</span>
+      : runState === 'failed' ? <span className="ss-badge is-crit"><i />Extract failed</span> : null;
   return (
-    <li className={`ss-card${isOpen ? ' is-open' : ''}${isPicked ? ' is-picked' : ''}${info?.muted ? ' is-muted' : ''}`}
-      style={{ '--tone': tone, '--d': `${delay}ms` }}>
-      <button type="button" className="ss-card-open" onClick={() => onOpen(p.id)} aria-current={isOpen ? 'true' : undefined}
+    <li className={`ss-row${isOpen ? ' is-open' : ''}${isPicked ? ' is-picked' : ''}${info?.muted ? ' is-muted' : ''}`}>
+      <span className="ss-row-pick">
+        <button type="button" role="checkbox" aria-checked={isPicked} className="ss-check" disabled={locked}
+          onClick={() => onPick(p.id)} aria-label={`Pick ${p.name} for extraction`}
+          title={locked ? `You can extract up to ${maxPerRun} pipelines at a time` : isPicked ? 'Picked for extraction' : 'Pick for extraction'}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" /></svg>
+        </button>
+      </span>
+      <button type="button" className="ss-row-open" onClick={() => onOpen(p.id)} aria-current={isOpen ? 'true' : undefined}
         title={p.modified_by ? `${p.name}\nLast changed by ${p.modified_by}` : p.name}>
-        <span className="ss-card-nm"><Breakable text={p.name} q={query} /></span>
-        {p.description && <span className="ss-card-ds"><Hl text={p.description} q={query} /></span>}
-        <span className="ss-card-route" aria-hidden="true">
-          {info?.lead || <span className="pvs-badge">SRC</span>}
-          <i />
-          <span className={`ss-card-end${info?.end === 'SF' ? ' is-sf' : ''}`}>{info?.end || '?'}</span>
+        <span className="ss-row-main">
+          <span className="ss-row-nm"><Breakable text={p.name} q={query} /></span>
+          <span className="ss-row-ds">
+            {p.description ? <span className="ss-row-dtext"><Hl text={p.description} q={query} /></span> : null}
+            {(p.labels || []).slice(0, 3).map(l => <Tag key={l} label={l} q={query} />)}
+            {info?.note}
+          </span>
         </span>
-        <span className="ss-meta">
-          {p.version && <span className="ss-vtag">v{p.version}</span>}
-          {p.last_modified && <span title={`Changed ${shortDate(p.last_modified)}${p.modified_by ? ` by ${p.modified_by}` : ''}`}>{relativeDay(p.last_modified)}</span>}
-          {(p.labels || []).slice(0, 2).map(l => <Tag key={l} label={l} q={query} />)}
-          {runState === 'running' && <span className="ss-tag ss-tag-red">● extracting</span>}
-          {runState === 'done' && <span className="ss-tag ss-tag-ok">✓ extracted</span>}
-          {runState === 'failed' && <span className="ss-tag ss-tag-bad">✕ failed</span>}
-          {info?.note}
+        <span className="ss-col ss-col-src">{info?.source || <span className="ss-muted">-</span>}</span>
+        <span className="ss-col ss-col-res">{run || info?.result || <span className="ss-muted">-</span>}</span>
+        <span className="ss-col ss-col-chg" title={p.last_modified ? `Changed ${shortDate(p.last_modified)}${p.modified_by ? ` by ${p.modified_by}` : ''}` : undefined}>
+          {p.modified_by && <span className="ss-avatar" aria-hidden="true">{initials(p.modified_by)}</span>}
+          <span>{relativeDay(p.last_modified) || '-'}</span>
         </span>
+        <span className="ss-col ss-col-ver">{p.version ? `v${p.version}` : '-'}</span>
       </button>
-      <button type="button" role="checkbox" aria-checked={isPicked} className="ss-check" disabled={locked}
-        onClick={() => onPick(p.id)} aria-label={`Pick ${p.name} for extraction`}
-        title={locked ? `You can extract up to ${maxPerRun} pipelines at a time` : isPicked ? 'Picked for extraction' : 'Pick for extraction'}>
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg>
-      </button>
-      {info?.tail && <span className="ss-card-tail">{info.tail}</span>}
+      {onAction && (
+        <span className="ss-row-acts">
+          {info?.validatable && <button type="button" className="ss-btn" onClick={() => onAction(p.id, 'validate')}><Svg name="shield" size={13} />Validate</button>}
+          <button type="button" className="ss-btn" onClick={() => onAction(p.id, 'extract')} disabled={!canExtract}
+            title={canExtract ? 'Extract this pipeline to a JSON report' : 'The extractor is busy or not available'}><Svg name="bolt" size={13} />Extract</button>
+        </span>
+      )}
     </li>
   );
 });
 
-const LANE_CAP = 120;   // cards painted per lane before "Show all"; search narrows the rest
+const LANE_CAP = 150;   // rows painted per group before "Show all"; search narrows the rest
 
-function Lane({ lane, rows, collapsed, onCollapse, cardProps }) {
+function Group({ lane, rows, collapsed, onCollapse, cardProps, header }) {
   const [all, setAll] = useState(false);
   const shown = all ? rows : rows.slice(0, LANE_CAP);
   return (
-    <section className={`ss-lane${collapsed ? ' is-collapsed' : ''}`} id={`ss-lane-${lane.id}`} aria-label={`${lane.label}: ${rows.length}`}
-      style={{ '--lane': lane.color }}>
-      <header className="ss-lane-h">
-        <button type="button" className="ss-lane-btn" onClick={() => onCollapse(lane.id)} aria-expanded={!collapsed}
-          title={collapsed ? `Show ${lane.label}` : `Fold ${lane.label} away`}>
-          <i className="ss-lane-dot" />
-          <b>{lane.label}</b>
-          <span className="ss-lane-n">{rows.length}</span>
-        </button>
-        {!collapsed && lane.hint && <small>{lane.hint}</small>}
-      </header>
+    <section className={`ss-group${collapsed ? ' is-collapsed' : ''}`} id={`ss-lane-${lane.id}`} aria-label={`${lane.label}: ${rows.length}`} style={{ '--lane': lane.color }}>
+      {header && (
+        <h3 className="ss-gh">
+          <button type="button" onClick={() => onCollapse(lane.id)} aria-expanded={!collapsed}>
+            <Svg name="chevron" size={12} className="ss-group-chev" />
+            <i className="ss-group-dot" aria-hidden="true" />
+            <b>{lane.label}</b>
+            <span className="ss-group-n">{rows.length}</span>
+            {lane.hint && <small>{lane.hint}</small>}
+          </button>
+        </h3>
+      )}
       {!collapsed && (
         rows.length ? (
-          <ul className="ss-lane-list">
-            {shown.map((p, i) => <PipelineCard key={p.id} p={p} delay={Math.min(i, 8) * 28} {...cardProps(p)} />)}
+          <ul className="ss-rows">
+            {shown.map(p => <PipelineRow key={p.id} p={p} {...cardProps(p)} />)}
             {rows.length > shown.length && (
-              <li><button type="button" className="ss-lane-more" onClick={() => setAll(true)}>Show all {rows.length}</button></li>
+              <li className="ss-row-more"><button type="button" className="ss-link" onClick={() => setAll(true)}>Show all {rows.length}</button></li>
             )}
           </ul>
-        ) : <p className="ss-lane-empty">{lane.empty || 'Nothing here'}</p>
+        ) : <p className="ss-group-empty">{lane.empty || 'Nothing here'}</p>
       )}
     </section>
   );
 }
 
-const Board = memo(function Board({ lanes, rowsByLane, collapsed, onCollapse, query, openId, picked, full, maxPerRun, runStates, onPick, onOpen, cardInfo }) {
+// Up/down walks the rows like a list in a desktop app; Home/End jump to the ends.
+const rowKeys = (e) => {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key) || !e.target.classList?.contains('ss-row-open')) return;
+  const rows = [...e.currentTarget.querySelectorAll('.ss-row-open')];
+  const i = rows.indexOf(e.target);
+  const next = e.key === 'Home' ? rows[0] : e.key === 'End' ? rows[rows.length - 1] : rows[i + (e.key === 'ArrowDown' ? 1 : -1)];
+  if (next) { e.preventDefault(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+};
+
+const PipelineList = memo(function PipelineList({ lanes, rowsByLane, collapsed, onCollapse, grouped, query, openId, picked, full, maxPerRun, runStates,
+  onPick, onOpen, cardInfo, sort, onSort, allPicked, onPickAll, canPickAll, onAction, canExtract }) {
   const cardProps = (p) => ({
     query, isOpen: p.id === openId, isPicked: picked.has(p.id), locked: full && !picked.has(p.id), runState: runStates.get(p.id),
-    maxPerRun, onPick, onOpen, infoOf: cardInfo,
+    maxPerRun, onPick, onOpen, infoOf: cardInfo, onAction, canExtract,
   });
+  const sortBtn = (key, text) => (
+    <button type="button" className={`ss-th-sort${sort === key ? ' is-on' : ''}`} onClick={() => onSort(key)} aria-pressed={sort === key}
+      title={sort === key ? `Sorted by ${text.toLowerCase()}` : `Sort by ${text.toLowerCase()}`}>
+      {text}<Svg name="sortdown" size={11} />
+    </button>
+  );
   return (
-    <div className="ss-board" role="region" aria-label="Pipelines board">
+    <div className="ss-list" role="region" aria-label="Pipelines" onKeyDown={rowKeys}>
+      <div className="ss-thead">
+        <span className="ss-row-pick">
+          <button type="button" role="checkbox" aria-checked={allPicked} className="ss-check" onClick={onPickAll} disabled={!canPickAll}
+            aria-label={allPicked ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}
+            title={allPicked ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" /></svg>
+          </button>
+        </span>
+        <span className="ss-thead-cols">
+          <span>{sortBtn('name', 'Pipeline')}</span>
+          <span className="ss-col-src">Source</span>
+          <span className="ss-col-res">Last result</span>
+          <span className="ss-col-chg">{sortBtn('modified', 'Changed')}</span>
+          <span className="ss-col-ver">Version</span>
+        </span>
+      </div>
       {lanes.map(l => (
-        <Lane key={l.id} lane={l} rows={rowsByLane.get(l.id) || []} collapsed={collapsed.has(l.id)} onCollapse={onCollapse} cardProps={cardProps} />
+        <Group key={l.id} lane={l} rows={rowsByLane.get(l.id) || []} collapsed={grouped && collapsed.has(l.id)} onCollapse={onCollapse}
+          cardProps={cardProps} header={grouped} />
       ))}
     </div>
   );
 });
 
-// The summary: the board's health in one line, a bar with each lane's share, and a figure per lane that jumps to it.
-function HeroSkeleton() {
+function ListSkeleton() {
   return (
-    <section className="ss-hero is-skel" aria-hidden="true">
-      <div className="ss-hero-text"><i style={{ width: 90, height: 10 }} /><i style={{ width: 200, height: 26 }} /><i style={{ width: '100%', height: 6 }} /></div>
-      <div className="ss-hero-lanes">{[0, 1, 2, 3].map(i => <i key={i} className="ss-hl" />)}</div>
-    </section>
-  );
-}
-
-function Hero({ lanes, rowsByLane, total, headline, onJump }) {
-  const counts = lanes.map(l => (rowsByLane.get(l.id) || []).length);
-  const title = headline?.title || plural(total, 'pipeline', 'pipelines');
-  return (
-    <section className="ss-hero" aria-label="Board overview" aria-busy={headline?.loading || undefined}>
-      <div className="ss-hero-text">
-        <div className="ss-hero-k">{headline?.kicker || 'Overview'}</div>
-        <h2>{headline?.ring != null ? <>{Math.round(headline.ring * 100)}%<small>{title}</small></> : title}</h2>
-        <p className={headline?.error ? 'is-err' : undefined} role={headline?.error ? 'alert' : undefined}>
-          {headline?.error && <Svg name="alert" size={13} />}{headline?.sub || 'on the board'}
-          {headline?.onRetry && <button type="button" className="ss-link" onClick={headline.onRetry}>Try again</button>}
-        </p>
-        {headline?.bar && (
-          <div className="ss-hero-bar" aria-hidden="true">
-            {headline.bar.map(b => b.n > 0 && <i key={b.id} style={{ '--lane': b.color, flexGrow: b.n }} />)}
-          </div>
-        )}
-      </div>
-      <div className="ss-hero-lanes" role="list" aria-label="Pipelines by lane">
-        {lanes.map((l, i) => (
-          <button key={l.id} type="button" role="listitem" className="ss-hl" disabled={!counts[i]} style={{ '--lane': l.color }}
-            onClick={() => onJump(l.id)} title={counts[i] ? `Go to ${l.label.toLowerCase()}` : `No pipelines in ${l.label.toLowerCase()}`}>
-            <span><i />{l.label}</span>
-            <b>{counts[i]}</b>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function BoardSkeleton() {
-  return (
-    <div className="ss-board" aria-hidden="true">
-      {[5, 3, 6, 4].map((n, i) => (
-        <div key={i} className="ss-lane">
-          <div className="ss-lane-h"><SkeletonLine w="120px" h={12} /></div>
-          <div className="ss-lane-list">
-            {Array.from({ length: n }).map((_, j) => (
-              <div key={j} className="ss-card ss-card-sk"><div className="ss-stack-6 ss-grow">
-                <SkeletonLine w={`${60 + ((i + j) % 3) * 12}%`} h={12} /><SkeletonLine w="85%" h={9} /><SkeletonLine w="100%" h={16} /><SkeletonLine w="40%" h={8} />
-              </div></div>
-            ))}
-          </div>
+    <div className="ss-list" aria-hidden="true">
+      <div className="ss-thead"><span className="ss-row-pick" /><span className="ss-thead-cols"><SkeletonLine w="80px" h={9} /></span></div>
+      {Array.from({ length: 12 }).map((_, i) => (
+        <div key={i} className="ss-row ss-row-sk">
+          <span className="ss-row-pick" />
+          <span className="ss-stack-6" style={{ padding: '12px 0' }}><SkeletonLine w={`${34 + (i % 4) * 9}%`} h={11} /><SkeletonLine w={`${22 + (i % 3) * 8}%`} h={8} /></span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// The health line in the header: how many pass, and every pipeline's last result as one bar.
+function Health({ headline }) {
+  if (!headline) return null;
+  if (headline.loading) return <div className="ss-health is-loading" aria-busy="true"><SkeletonLine w="150px" h={10} /><span className="ss-health-bar" /></div>;
+  if (headline.error) {
+    return (
+      <div className="ss-health is-err" role="alert">
+        <Svg name="alert" size={13} /><span>{headline.error}</span>
+        {headline.onRetry && <button type="button" className="ss-link" onClick={headline.onRetry}>Try again</button>}
+      </div>
+    );
+  }
+  const total = (headline.bar || []).reduce((n, b) => n + b.n, 0);
+  return (
+    <div className="ss-health" title={headline.sub || undefined}>
+      <span><b>{headline.lead}</b> {headline.tail}</span>
+      {total > 0 && (
+        <span className="ss-health-bar" role="img" aria-label={headline.bar.filter(b => b.n).map(b => `${b.label}: ${b.n}`).join(', ')}>
+          {headline.bar.map(b => b.n > 0 && <i key={b.id} style={{ background: b.color, flexGrow: b.n }} title={`${b.label}: ${b.n}`} />)}
+        </span>
+      )}
     </div>
   );
 }
@@ -1615,7 +1661,7 @@ const DetailView = memo(function DetailView({
     <div className="ss-detail">
       <header className="ss-dhead">
         <div className="ss-crumbs">
-          <button type="button" onClick={onClose}><Svg name="chevron" size={13} className="ss-flip" />Board</button>
+          <button type="button" onClick={onClose}><Svg name="chevron" size={13} className="ss-flip" />Pipelines</button>
           {(detail.labels || []).map(l => <Tag key={l} label={l} />)}
         </div>
         <div className="ss-dtop">
@@ -1937,6 +1983,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const sort = params.get('sssort') === 'modified' ? 'modified' : 'name';
   const label = params.get('sslabel') || null;
   const groupBy = params.get('ssgroup') || null;   // null = the board's default (it can change as permissions load)
+  const laneParam = params.get('sslane') || null;   // one status/source tab, or every group
   const [pickedOnly, setPickedOnly] = useState(false);
   const board = studio?.board || null;
   const mode = groupBy && board?.lanes[groupBy] ? groupBy : board?.defaultMode || 'all';
@@ -1995,7 +2042,8 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
 
   const setSort = useStable((v) => navigate({ sssort: v === 'modified' ? v : null }, { replace: true }));
   const setLabel = useStable((v) => navigate({ sslabel: v }, { replace: true }));
-  const setGroupBy = useStable((v) => navigate({ ssgroup: v === board?.defaultMode ? null : v }, { replace: true }));
+  const setGroupBy = useStable((v) => navigate({ ssgroup: v === board?.defaultMode ? null : v, sslane: null }, { replace: true }));
+  const setLane = useStable((v) => navigate({ sslane: v, pipeline: null, stage: null, ssview: null }, { replace: true }));
 
   const openPipeline = useStable((id) => {
     if (id === pipelineId) return;
@@ -2146,29 +2194,16 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
     visible.forEach(p => (m.get(board ? board.laneOf(p, mode) : 'all') || m.get(last)).push(p));
     return m;
   }, [visible, lanes, board, mode]);
-  // in lane order, so Enter in the search box opens the card at the top-left
-  const ordered = useMemo(() => lanes.filter(l => !collapsed.has(l.id)).flatMap(l => rowsByLane.get(l.id) || []), [lanes, rowsByLane, collapsed]);
-  const shown = ordered;   // "Pick shown" leaves folded lanes alone
+  const lane = lanes.some(l => l.id === laneParam) ? laneParam : null;
+  const grouped = lanes.length > 1 && !lane;
+  const shownLanes = useMemo(() => (lane ? lanes.filter(l => l.id === lane) : lanes), [lanes, lane]);
+  // in list order, so Enter in the search box opens the top row
+  const ordered = useMemo(() => shownLanes.filter(l => !grouped || !collapsed.has(l.id)).flatMap(l => rowsByLane.get(l.id) || []), [shownLanes, grouped, rowsByLane, collapsed]);
+  const shown = ordered;   // "Pick shown" leaves folded groups alone
   const cardInfo = useMemo(() => (board ? (p) => board.card(p, mode) : null), [board, mode]);
-  const laneReady = !board?.readyFor || board.readyFor(mode);   // lanes wait for what sorts them, rather than showing them all empty
+  const laneReady = !board?.readyFor || board.readyFor(mode);   // groups wait for what sorts them, rather than showing them all empty
   const headline = useMemo(() => board?.headline?.(visible) || null, [visible, board]);
-  // the hero folds away once the board is scrolled, and comes back at the top
-  const [lifted, setLifted] = useState(false);
-  const onBoardScroll = useStable((e) => {
-    const y = e.currentTarget.scrollTop;
-    if (!lifted && y > 60) setLifted(true);
-    else if (lifted && y < 4) setLifted(false);
-  });
   const foldLane = useStable((id) => setCollapsed(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }));
-  const jumpToLane = useStable((id) => {
-    setCollapsed(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
-    if (pipelineId) navigate({ pipeline: null, stage: null, ssview: null });
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`ss-lane-${id}`);
-      el?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
-      el?.classList.remove('is-flash'); void el?.offsetWidth; el?.classList.add('is-flash');
-    });
-  });
 
   const bump = useCallback(() => {
     setShake(n => n + 1);
@@ -2397,112 +2432,132 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   }
 
   const extractorReady = !!health?.extractor?.ready;
+  const rowAction = (id, what) => {
+    if (what === 'extract') startExtraction([id]);
+    else navigate({ pipeline: id, ssview: what, stage: null });
+  };
   const reason = health?.extractor?.reason || 'The extractor is not available on the server.';
   const liveHere = !!detail && running && run.pipelines.some(p => p.id === detail.id && (p.state === 'running' || p.state === 'queued'));
   const busy = listLoading || detailLoading;
   const notFound = detailError?.status === 404;
   const booting = phase === 'booting' || (listLoading && !pipelines.length);
   const full = selected.size >= maxPerRun;
-  const filtered = visible.length !== pipelines.length;
+  const filtered = !!(query || label || pickedOnly);
   const closeSheet = () => navigate({ pipeline: null, stage: null, ssview: null });
-  const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); };
+  const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); setLane(null); };
 
   return (
-    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${lifted ? ' is-lifted' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
+    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
       <style href="pv-pane" precedence="default">{PANE_CSS}</style>
       {busy && <div className="ss-busy" aria-hidden="true" />}
 
       <header className="ss-band">
         <div className="ss-band-top">
           <div className="ss-brand">
-            <div className="ss-brand-mark"><Svg name={studio?.brand?.icon || 'flow'} size={18} strokeWidth={2} /></div>
-            <div>
-              <h1>{studio?.brand?.title || 'StreamSets Extractor'}</h1>
-              <small>{studio?.brand?.sub || 'See how a pipeline moves data, then export its definition'}</small>
-            </div>
+            <span className="ss-brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 20 20"><path d="M3 6.5h6.5a3 3 0 0 1 3 3v1a3 3 0 0 0 3 3H17" /><circle cx="3.5" cy="6.5" r="1.6" /><circle cx="16.5" cy="13.5" r="1.6" /></svg>
+            </span>
+            <h1>{studio?.brand?.title || 'StreamSets Extractor'}</h1>
+            {health?.server && <span className="ss-brand-src" title="StreamSets Control Hub this page reads from">{health.server}</span>}
           </div>
-          <div className="ss-pills">
-            {health?.server && <span className="ss-pill" title="StreamSets Control Hub this page reads from"><span className="ss-dot" />{health.server}</span>}
+          <div className="ss-band-end">
             {health && (
               <span className="ss-pill" title={extractorReady ? `The extractor is installed on the server - up to ${maxPerRun} pipelines per run` : reason}>
                 <span className={`ss-dot${extractorReady ? '' : ' is-warn'}`} />{extractorReady ? 'Extractor ready' : 'Extractor unavailable'}
               </span>
             )}
+            <span className="ss-fetched" title={fetchedAt ? `Synced ${formatWhen(fetchedAt)}` : undefined}>
+              {booting ? 'Loading…' : fetchedAt ? `Synced ${relativeTime(fetchedAt)}` : ''}
+            </span>
+            <IconButton name="refresh" onClick={() => loadList(true)} disabled={listLoading} spinning={listLoading}
+              label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
+            <button type="button" className="ss-jump" onClick={() => setPalette(true)} title="Jump to a pipeline or stage">
+              <Svg name="search" size={14} /><span>Jump to…</span><kbd>Ctrl K</kbd>
+            </button>
           </div>
-          <button type="button" className="ss-jump" onClick={() => setPalette(true)}>
-            <Svg name="search" /><span>Jump to a pipeline or stage</span><kbd>Ctrl</kbd><kbd>K</kbd>
-          </button>
         </div>
 
-        <div className="ss-tools">
+        <div className="ss-find">
           <div className="ss-search">
-            <Svg name="search" />
-            <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search pipelines by name, ID, label or author" aria-label="Search pipelines"
+            <Svg name="search" size={17} />
+            <input ref={searchRef} value={query} onChange={e => setQuery(e.target.value)} aria-label="Search pipelines"
+              placeholder={pipelines.length ? `Search ${plural(pipelines.length, 'pipeline', 'pipelines')} by name, table, label or author` : 'Search pipelines'}
               onKeyDown={e => {
                 if (e.key === 'Enter' && ordered[0]) openPipeline(ordered[0].id);
+                if (e.key === 'ArrowDown') { e.preventDefault(); document.querySelector('.ss-row-open')?.focus(); }
                 if (e.key === 'Escape') { e.preventDefault(); setQuery(''); e.currentTarget.blur(); }
               }} />
             {query
               ? <button type="button" className="ss-search-clear" onClick={() => { setQuery(''); searchRef.current?.focus(); }} aria-label="Clear search"><Svg name="x" size={13} /></button>
               : <kbd className="ss-search-kbd">/</kbd>}
           </div>
-          {labelCounts.length > 0 && (
-            <label className="ss-select" title="Show one label">
-              <Svg name="layers" size={14} />
-              <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
-                <option value="">All labels</option>
-                {label && !labelCounts.some(([l]) => l === label) && <option value={label}>{label}</option>}
-                {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
-              </select>
-            </label>
-          )}
-          {selected.size > 0 && (
-            <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} aria-pressed={pickedOnly} onClick={() => setPickedOnly(v => !v)}>
-              <Svg name="check" size={13} />Picked <em>{selected.size}</em>
-            </button>
-          )}
-          {board && board.modes.length > 1 && (
-            <Segmented label="Group pipelines by" value={mode} onChange={setGroupBy} options={board.modes} />
-          )}
-          <Segmented label="Sort" value={sort} onChange={setSort} options={[['name', 'A–Z'], ['modified', 'Recent']]} />
-          <span className="ss-tools-end">
-            <span className="ss-fetched" title={fetchedAt ? `Synced ${formatWhen(fetchedAt)}` : undefined}>
-              {booting ? 'Loading…' : filtered ? `${visible.length} of ${pipelines.length}` : plural(pipelines.length, 'pipeline', 'pipelines')}
-            </span>
-            {filtered && <button type="button" className="ss-link" onClick={clearFilters}>Clear</button>}
-            <button type="button" className="ss-link" onClick={selectShown} disabled={!shown.length}
-              title={allShownSelected ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}>
-              {allShownSelected ? 'Unpick shown' : 'Pick shown'}
-            </button>
-            <IconButton name="refresh" onClick={() => loadList(true)} disabled={listLoading} spinning={listLoading}
-              label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
-          </span>
+          <Health headline={headline} />
         </div>
-        {booting && !listError && <HeroSkeleton />}
-        {!booting && pipelines.length > 0 && (
-          <Hero lanes={lanes} rowsByLane={rowsByLane} total={visible.length} headline={headline} onJump={jumpToLane} />
-        )}
+
+        <div className="ss-views">
+          <nav className="ss-lanetabs" aria-label="Show pipelines by status">
+            <button type="button" className={!lane ? 'is-on' : ''} aria-current={!lane ? 'true' : undefined} onClick={() => setLane(null)}>
+              All<span>{visible.length}</span>
+            </button>
+            {lanes.length > 1 && lanes.map(l => {
+              const n = (rowsByLane.get(l.id) || []).length;
+              return (
+                <button key={l.id} type="button" className={lane === l.id ? 'is-on' : ''} aria-current={lane === l.id ? 'true' : undefined}
+                  onClick={() => setLane(lane === l.id ? null : l.id)} style={{ '--lane': l.color }} title={l.hint}>
+                  <i aria-hidden="true" />{l.label}<span>{laneReady ? n : '·'}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="ss-views-end">
+            {selected.size > 0 && (
+              <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} aria-pressed={pickedOnly} onClick={() => setPickedOnly(v => !v)}>
+                <Svg name="check" size={13} />Picked<em>{selected.size}</em>
+              </button>
+            )}
+            {labelCounts.length > 0 && (
+              <label className="ss-select" title="Show one label">
+                <Svg name="layers" size={14} />
+                <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
+                  <option value="">All labels</option>
+                  {label && !labelCounts.some(([l]) => l === label) && <option value={label}>{label}</option>}
+                  {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
+                </select>
+              </label>
+            )}
+            {board && board.modes.length > 1 && (
+              <label className="ss-select" title="Group pipelines by">
+                <Svg name="list" size={14} />
+                <select value={mode} onChange={e => setGroupBy(e.target.value)} aria-label="Group pipelines by">
+                  {board.modes.map(([v, t]) => <option key={v} value={v}>Group by {t.toLowerCase()}</option>)}
+                </select>
+              </label>
+            )}
+            {filtered && <button type="button" className="ss-link" onClick={clearFilters}>Clear filters</button>}
+          </div>
+        </div>
       </header>
 
       <div className="ss-body">
-        <main className="ss-main" inert={pipelineId ? true : undefined} onScroll={onBoardScroll}>
-          {booting && !listError && <BoardSkeleton />}
+        <main className="ss-main" inert={pipelineId ? true : undefined}>
+          {(booting || (visible.length > 0 && !laneReady)) && !listError && <ListSkeleton />}
           {listError && <div className="ss-pad-s"><ErrorBox message={listError} onRetry={() => loadList(true)} /></div>}
           {phase === 'ready' && !listLoading && !listError && pipelines.length === 0 && (
-            <div className="ss-empty"><b>No pipelines to show</b><div>The StreamSets service account can&apos;t see any pipelines.</div></div>
+            <div className="ss-empty"><b>No pipelines to show</b><div>The StreamSets service account can&apos;t see any pipelines. Ask an admin to share them with it, then reload.</div></div>
           )}
           {pipelines.length > 0 && visible.length === 0 && (
             <div className="ss-empty">
               <b>No pipeline matches “{query || label || 'your filter'}”</b>
-              <div>Try a table name, a label, or someone who changed it.</div>
+              <div>Try part of a table name, a label, or the person who last changed it.</div>
               <button type="button" className="ss-btn" onClick={clearFilters}>Clear filters</button>
             </div>
           )}
-          {!booting && visible.length > 0 && !laneReady && <BoardSkeleton />}
           {!booting && visible.length > 0 && laneReady && (
-            <Board lanes={lanes} rowsByLane={rowsByLane} collapsed={collapsed} onCollapse={foldLane} query={listQuery} openId={pipelineId}
-              picked={selected} full={full} maxPerRun={maxPerRun} runStates={runStates} onPick={toggle} onOpen={openPipeline}
-              cardInfo={cardInfo} />
+            <PipelineList lanes={shownLanes} rowsByLane={rowsByLane} collapsed={collapsed} onCollapse={foldLane} grouped={grouped}
+              query={listQuery} openId={pipelineId} picked={selected} full={full} maxPerRun={maxPerRun} runStates={runStates}
+              onPick={toggle} onOpen={openPipeline} cardInfo={cardInfo} sort={sort} onSort={setSort}
+              allPicked={allShownSelected} onPickAll={selectShown} canPickAll={shown.length > 0}
+              onAction={rowAction} canExtract={extractorReady && !running} />
           )}
         </main>
 
@@ -2571,7 +2626,7 @@ const PANEL_CSS = `
 .pvs-card-h { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pvs-card-h b { font-size: 13.5px; }
 .pvs-card-b { padding: 14px 16px; }
-.pvs-micro { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 700; margin-bottom: 6px; }
+.pvs-micro { font-size: 12px; color: var(--ink-3); font-weight: 500; margin-bottom: 6px; }
 .pvs-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; margin-top: 16px; }
 .pvs-grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .pvs-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
@@ -2608,7 +2663,7 @@ const PANEL_CSS = `
 .pvs-go-btn { width: 100%; height: 40px; justify-content: center; font-size: 13.5px; border-radius: 8px; }
 .pvs-go p { margin: 7px 2px 0; font-size: 11.5px; line-height: 1.4; }
 .pvs-idle { border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; color: var(--ink-2); background: #fff; box-shadow: var(--sh-1); }
-.pvs-idle > b { display: block; font: 700 17px 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; color: var(--ink); margin-bottom: 6px; }
+.pvs-idle > b { display: block; font: 700 17px var(--sans); color: var(--ink); margin-bottom: 6px; }
 .pvs-idle p { margin: 0; max-width: 72ch; line-height: 1.6; font-size: 13px; }
 .pvs-idle ol { margin: 14px 0 0; padding: 0; list-style: none; counter-reset: st; display: grid; gap: 8px; font-size: 13px; }
 .pvs-idle li { counter-increment: st; display: flex; gap: 10px; align-items: baseline; }
@@ -2646,7 +2701,7 @@ textarea.pvs-input { height: 78px; padding: 8px 10px; font: 11px var(--mono); re
 .pvs-confirm { display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid var(--line-2); border-radius: 9px; padding: 6px 10px; font-weight: 700; cursor: pointer; }
 .pvs-confirm.is-on { border-color: var(--ok); }
 .pvs-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
-.pvs-stop { color: var(--red); border-color: var(--red); }
+.pvs-stop { color: var(--bad); border-color: #f2b8bc; }
 .pvs-spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--focus-ring); border-top-color: var(--focus); animation: ss-spin .8s linear infinite; display: inline-block; flex-shrink: 0; }
 
 /* review + log */
@@ -2670,7 +2725,7 @@ textarea.pvs-input { height: 78px; padding: 8px 10px; font: 11px var(--mono); re
 .pvs-progress { height: 3px; background: var(--line); }
 .pvs-progress i { display: block; height: 100%; background: var(--focus); transition: width .3s; }
 .pvs-tbl { border-collapse: collapse; width: 100%; font-size: 12.5px; }
-.pvs-tbl th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); text-align: left; font-weight: 700; padding: 8px 10px; border-bottom: 1px solid var(--line-2); background: var(--wash); position: sticky; top: 0; z-index: 1; }
+.pvs-tbl th { font-size: 12px; color: var(--ink-3); text-align: left; font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--line-2); background: var(--wash); position: sticky; top: 0; z-index: 1; }
 .pvs-tbl th.r, .pvs-tbl td.r { text-align: right; }
 .pvs-tbl td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .pvs-tbl tr.is-click { cursor: pointer; }
@@ -2689,14 +2744,14 @@ textarea.pvs-input { height: 78px; padding: 8px 10px; font: 11px var(--mono); re
 .pvs-st.is-nf { background: #fbf5dc; color: #7a5d00; }
 .pvs-stats { display: flex; gap: 28px; flex-wrap: wrap; }
 .pvs-stats b { display: block; font-size: 24px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.pvs-stats span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+.pvs-stats span { font-size: 12px; color: var(--ink-3); }
 .pvs-fbar { display: flex; gap: 6px; margin: 14px 0 10px; flex-wrap: wrap; align-items: center; }
 .pvs-fbar button { height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line-2); font-size: 11.5px; background: #fff; }
 .pvs-fbar button.is-on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .pvs-fbar input { margin-left: auto; width: 220px; height: 28px; }
 .pvs-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
 .pvs-metric { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: #fff; }
-.pvs-metric span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+.pvs-metric span { display: block; font-size: 12px; color: var(--ink-3); }
 .pvs-metric b { font: 600 12.5px var(--mono); }
 .pvs-empty { display: grid; place-items: center; text-align: center; color: var(--ink-3); padding: 70px 30px; }
 .pvs-empty b { display: block; font-size: 18px; color: var(--ink); margin-bottom: 6px; }
@@ -3652,9 +3707,9 @@ const PAGE_CSS = `${PANEL_CSS}
 .pvs-hnote { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 `;
 
-const SOURCE_BADGE = { Oracle: ['ORA', 'is-ora'], MariaDB: ['MDB', 'is-mdb'], 'SQL Server': ['MSS', 'is-mss'] };
 const SOURCE_LANE = { Oracle: 'oracle', MariaDB: 'mariadb', 'SQL Server': 'sqlserver' };
 const RESULT_LANE = { CRITICAL: 'attention', ERROR: 'attention', FAULTY: 'attention', WARNING: 'warn', TABLE_NOT_FOUND: 'warn', TIMEOUT: 'warn', PASSED: 'pass' };
+const SOURCE_COLOR = { Oracle: '#c2410c', MariaDB: '#2563c9', 'SQL Server': '#7c3aed' };
 const LANE = { crit: '#d92d20', warn: '#e09400', pass: '#1f9d63', fresh: '#98a0b0', cant: '#d3d7e0', ora: '#c2410c', mdb: '#2563c9', mss: '#6d48c9' };
 
 // The tabs read the validation state from context, so the pane's memoised parts don't re-render on every log line.
@@ -3724,37 +3779,43 @@ export default function PipelineValidation() {
         ready: !(canValidate && support === null) && !(canHistory && latest === null),
         headline: (ps) => {
           const err = (canHistory && latestErr) || (canValidate && supportErr);
-          if (err) return { title: plural(ps.length, 'pipeline', 'pipelines'), sub: err, ring: null, error: true, onRetry: reloadBoard };
-          if ((canHistory && latest === null) || (canValidate && support === null)) return { title: plural(ps.length, 'pipeline', 'pipelines'), sub: 'Checking sources and last results…', ring: null, loading: true };
+          if (err) return { error: err, onRetry: reloadBoard };
+          if ((canHistory && latest === null) || (canValidate && support === null)) return { loading: true };
           if (canHistory) {
-            const done = ps.map(p => last(p.name)).filter(Boolean);
-            const ok = done.filter(l => l.status === 'PASSED').length;
-            if (!done.length) return { title: plural(ps.length, 'pipeline', 'pipelines'), sub: 'None validated in the last 90 days yet', ring: null };
-            const r = ok / done.length;
             const n = {};
-            ps.forEach(p => { const k = verdict(p.id)?.ok === false && canValidate ? 'cant' : RESULT_LANE[last(p.name)?.status] || (last(p.name) ? 'attention' : 'fresh'); n[k] = (n[k] || 0) + 1; });
-            const bar = [['attention', LANE.crit], ['warn', LANE.warn], ['pass', LANE.pass], ['fresh', LANE.fresh], ['cant', LANE.cant]].map(([k, color]) => ({ id: k, color, n: n[k] || 0 }));
-            return { bar, kicker: 'Passing on last validation', title: `${ok} of ${done.length} pipelines`, sub: ps.length > done.length ? `${ps.length - done.length} not validated in the last 90 days` : 'Every pipeline has a recent result', ring: r };
+            let ok = 0, done = 0;
+            ps.forEach(p => {
+              const l = last(p.name);
+              if (l) { done += 1; if (l.status === 'PASSED') ok += 1; }
+              const k = canValidate && verdict(p.id)?.ok === false ? 'cant' : !l ? 'fresh' : RESULT_LANE[l.status] || 'attention';
+              n[k] = (n[k] || 0) + 1;
+            });
+            const bar = [['attention', 'Needs attention', LANE.crit], ['warn', 'Warnings', LANE.warn], ['pass', 'Passed', LANE.pass], ['fresh', 'Not validated', LANE.fresh], ['cant', 'Not supported', LANE.cant]]
+              .map(([id, label, color]) => ({ id, label, color, n: n[id] || 0 }));
+            if (!done) return { lead: 'None', tail: 'validated in the last 90 days', bar };
+            return { lead: `${ok} of ${done}`, tail: 'passing on their last validation', sub: ps.length > done ? `${ps.length - done} not validated in the last 90 days` : null, bar };
           }
           const ok = ps.filter(p => verdict(p.id)?.ok !== false).length;
-          return { kicker: 'Can be validated', title: `${ok} of ${ps.length} pipelines`, sub: 'Source and target the validator can read', ring: ps.length ? ok / ps.length : null };
+          return { lead: `${ok} of ${ps.length}`, tail: 'can be validated', bar: [{ id: 'ok', label: 'Can be validated', color: LANE.pass, n: ok }, { id: 'cant', label: 'Not supported', color: LANE.cant, n: ps.length - ok }] };
         },
-        card: (p, mode) => {
+        card: (p) => {
           const s = verdict(p.id);
           const l = canHistory ? last(p.name) : null;
           const cant = canValidate && s?.ok === false;
-          const [text, cls] = !canValidate ? ['SRC', 'is-any'] : !s ? [supportErr ? '?' : '··', ''] : cant ? ['—', ''] : SOURCE_BADGE[s.source] || ['SRC', 'is-any'];
-          const title = !canValidate ? 'Source' : !s ? (supportErr ? "Couldn't check the source" : 'Checking…') : cant ? `Can't validate: ${s.reason}` : `Source: ${s.source || 'decided when it runs'}`;
           const busy = running && pickedId === p.id;
+          const src = !canValidate ? null : !s ? <span className="ss-muted">{supportErr ? 'Unknown' : 'Checking…'}</span>
+            : cant ? <span className="ss-muted">-</span>
+              : <span className="ss-src" style={{ '--c': SOURCE_COLOR[s.source] || LANE.fresh }} title={`Reads from ${s.source || 'a shared connection, decided when it runs'}`}><i />{s.source || 'At run time'}</span>;
+          const st = l && (STATUS[l.status] || [l.status, '']);
           return {
-            lead: <span className={`pvs-badge ${cls}`} title={title}>{text}</span>,
-            end: cant && /target/i.test(s.reason || '') ? '?' : 'SF',
-            tone: busy ? 'var(--red)' : l ? (STATUS[l.status] || [])[2] : cant ? 'transparent' : 'var(--line-2)',
+            source: src,
+            result: busy ? <span className="ss-badge is-run"><i />Validating</span>
+              : l ? <span className="ss-res" title={`Validated ${shortDate(l.load_date)}`}><span className={`ss-badge ${st[1]}`}><i />{st[0]}</span><small>{relativeDay(String(l.load_date).replace(' ', 'T'))}</small></span>
+                : cant ? <span className="ss-cant" title={s.reason}>Can&apos;t validate</span>
+                  : canHistory ? <span className="ss-muted">Not validated</span> : null,
             muted: cant,
-            tail: l ? (mode === 'result'
-              ? <span className="pvs-when" style={{ '--c': (STATUS[l.status] || [])[2] }} title={`Validated ${shortDate(l.load_date)}`}><i />{(STATUS[l.status] || [l.status])[0]} · {relativeDay(String(l.load_date).replace(' ', 'T'))}</span>
-              : <span title={`Last validated ${shortDate(l.load_date)}`}><StatusPill s={l.status} /></span>) : null,
-            note: busy ? <span className="ss-tag ss-tag-red">● validating</span> : cant ? <span className="pvs-why">{s.reason}</span> : null,
+            validatable: canValidate && !!s && !cant,
+            note: cant ? <span className="pvs-why">{s.reason}</span> : null,
           };
         },
       } : null,
