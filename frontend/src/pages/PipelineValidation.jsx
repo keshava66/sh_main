@@ -206,18 +206,58 @@ const PANE_CSS = `
 .ss-band .ss-ibtn:hover:not(:disabled) { background: rgba(255, 255, 255, .1); color: #fff; }
 .ss-band :focus-visible { outline-color: #fff; }
 
-/* the ribbon: lanes as one line, widths by count; click a part to jump to its lane */
-.ss-ribbon { display: flex; gap: 3px; padding: 16px 0 14px; min-height: 58px; }
-.ss-rib { min-width: 128px; flex-basis: 0; text-align: left; color: #fff; padding: 0; position: relative; }
-.ss-rib::before { content: ''; display: block; height: 7px; border-radius: 4px; background: var(--lane); transform-origin: left; animation: ss-grow .7s var(--ease) var(--d, 0ms) both; }
-.ss-rib span { display: flex; align-items: baseline; gap: 6px; margin-top: 7px; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
-.ss-rib em { font-style: normal; font-weight: 400; font-size: 12px; color: rgba(255, 255, 255, .65); overflow: hidden; text-overflow: ellipsis; }
-.ss-rib:hover em { color: #fff; }
-.ss-rib:hover::before { filter: brightness(1.15); }
-.ss-rib-empty { color: rgba(255, 255, 255, .6); font-size: 12px; padding-top: 4px; }
-@keyframes ss-grow { from { transform: scaleX(0); } }
-.ss-root.has-sheet .ss-ribbon { display: none; }
-.ss-root.has-sheet .ss-band { padding-bottom: 14px; }
+/* the hero: health ring + lane chips on the left, every pipeline as a live line into Snowflake on the right */
+.ss-band { background:
+  radial-gradient(900px 260px at 78% 120%, rgba(41, 181, 232, .16), transparent 70%),
+  radial-gradient(700px 240px at 12% -30%, rgba(235, 23, 0, .26), transparent 70%),
+  #262120; }
+.ss-hero { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 28px; align-items: center; padding: 20px 0 18px;
+  max-height: 260px; overflow: hidden; transition: max-height .45s var(--ease), padding .45s var(--ease), opacity .3s; }
+.ss-root.is-lifted .ss-hero, .ss-root.has-sheet .ss-hero { max-height: 0; padding: 0; opacity: 0; }
+.ss-hero-stat { display: flex; align-items: center; gap: 20px; min-width: 0; animation: ss-rise .6s var(--ease) both; }
+.ss-hero-ring { position: relative; width: 112px; height: 112px; flex-shrink: 0; }
+.ss-hero-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ss-hero-ring circle { fill: none; stroke-width: 7; }
+.ss-hero-ring-bg { stroke: rgba(255, 255, 255, .09); }
+.ss-hero-ring-fg { stroke: var(--c); stroke-linecap: round; transition: stroke-dashoffset 1.1s var(--ease); animation: ss-ring 1.3s var(--ease) both; }
+@keyframes ss-ring { from { stroke-dashoffset: 276.5; } }
+.ss-hero-ring > div { position: absolute; inset: 0; display: grid; place-items: center; }
+.ss-hero-ring b { font: 700 34px/1 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.ss-hero-ring b small { font-size: 16px; margin-left: 1px; color: rgba(255, 255, 255, .6); }
+.ss-hero-text { min-width: 0; }
+.ss-hero-text h2 { margin: 0; font: 700 24px/1.15 'JohnsonDisplay', 'JohnsonText', Arial, sans-serif; letter-spacing: -.01em; }
+.ss-hero-text p { margin: 4px 0 12px; color: rgba(255, 255, 255, .62); font-size: 12.5px; }
+.ss-hero-lanes { display: flex; flex-wrap: wrap; gap: 6px; }
+.ss-hl { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; border-radius: 99px; border: 1px solid rgba(255, 255, 255, .12);
+  background: rgba(255, 255, 255, .05); color: rgba(255, 255, 255, .72); font-size: 12px; white-space: nowrap; animation: ss-rise .45s var(--ease) var(--d) both;
+  transition: background-color .15s, border-color .15s, color .15s; }
+.ss-hl i { width: 8px; height: 8px; border-radius: 50%; background: var(--lane); box-shadow: 0 0 0 3px color-mix(in srgb, var(--lane) 25%, transparent); }
+.ss-hl b { color: #fff; font-variant-numeric: tabular-nums; }
+.ss-hl:hover:not(:disabled), .ss-hl.is-on { background: rgba(255, 255, 255, .12); border-color: color-mix(in srgb, var(--lane) 70%, transparent); color: #fff; }
+.ss-hl:disabled { opacity: .4; cursor: default; }
+
+.ss-flow { display: grid; grid-template-columns: 132px 1fr 118px; height: 196px; min-width: 0; position: relative; }
+.ss-flow-src { position: relative; }
+.ss-flow-src span { position: absolute; right: 10px; transform: translateY(-50%); display: flex; align-items: baseline; gap: 6px; white-space: nowrap; font-size: 12px;
+  color: rgba(255, 255, 255, .72); transition: opacity .2s; animation: ss-fade .5s var(--ease) var(--d) both; }
+.ss-flow-src span b { color: var(--c); font-size: 14px; font-variant-numeric: tabular-nums; }
+.ss-flow-src span.is-dim { opacity: .3; }
+.ss-flow-cv { position: relative; min-width: 0; }
+.ss-flow-cv canvas { display: block; }
+.ss-flow-tip { position: absolute; transform: translate(-50%, calc(-100% - 12px)); pointer-events: none; z-index: 2; max-width: 300px; padding: 7px 10px; border-radius: 9px;
+  background: #fff; color: var(--ink); box-shadow: 0 10px 24px -8px rgba(0, 0, 0, .55); font-size: 12px; animation: ss-fade .12s; }
+.ss-flow-tip.is-below { transform: translate(-50%, 14px); }
+.ss-flow-tip b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-flow-tip span { display: flex; align-items: center; gap: 6px; color: var(--ink-2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-flow-tip i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ss-flow-dst { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 3px; padding-left: 12px; }
+.ss-flow-sf { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: #29b5e8; color: #fff; margin-bottom: 4px;
+  box-shadow: 0 0 0 6px rgba(41, 181, 232, .14), 0 8px 22px -6px rgba(41, 181, 232, .7); }
+.ss-flow-dst b { font-size: 14px; }
+.ss-flow-dst small { color: rgba(255, 255, 255, .6); font-size: 11.5px; }
+@container ss-pane (max-width: 1180px) { .ss-hero { grid-template-columns: 270px 1fr; gap: 18px; } .ss-hero-ring { display: none; } .ss-flow { grid-template-columns: 112px 1fr 100px; } }
+@container ss-pane (max-width: 820px) { .ss-hero { grid-template-columns: 1fr; } .ss-flow { display: none; } }
+@media (prefers-reduced-motion: reduce) { .ss-hero, .ss-hero *, .ss-hero-ring-fg { animation: none !important; transition: none !important; } }
 @container ss-pane (max-width: 1250px) { .ss-pills { display: none; } .ss-brand small { display: none; } }
 @container ss-pane (max-width: 1000px) { .ss-jump { min-width: 0; } .ss-jump span { display: none; } .ss-search { flex-basis: 100%; } }
 
@@ -361,7 +401,17 @@ const PANE_CSS = `
 .ss-commit q { quotes: none; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ss-dactions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 
-.ss-route { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 1.1fr) minmax(0, 1fr); align-items: center; gap: 18px; padding: 13px 16px; border-radius: 16px; background: var(--wash); border: 1px solid var(--line); }
+.ss-route { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 1.1fr) minmax(0, 1fr); align-items: center; gap: 18px; padding: 14px 18px; border-radius: 16px; color: #fff;
+  background: radial-gradient(520px 160px at 100% 120%, rgba(41, 181, 232, .2), transparent 70%), radial-gradient(420px 160px at 0% -40%, rgba(235, 23, 0, .24), transparent 70%), #262120;
+  box-shadow: 0 14px 30px -18px rgba(38, 33, 32, .8); }
+.ss-route .ss-ep-h { color: rgba(255, 255, 255, .5); }
+.ss-route .ss-ep-row b { color: #fff; }
+.ss-route .ss-ep-row button:hover b { color: #ffb4a6; }
+.ss-route .ss-ep-row small, .ss-route .ss-ep-more { color: rgba(255, 255, 255, .6); }
+.ss-route .ss-track-sum { color: rgba(255, 255, 255, .72); }
+.ss-route .ss-track-line::before { background: rgba(255, 255, 255, .18); }
+.ss-route :focus-visible { outline-color: #fff; }
+.ss-route .ss-track-line span::after { background: #7cc4ff; box-shadow: 0 0 0 3px rgba(88, 166, 255, .22); }
 .ss-ep { min-width: 0; }
 .ss-ep.is-r { text-align: right; }
 .ss-ep-h { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); margin-bottom: 4px; }
@@ -971,6 +1021,7 @@ const Glyph = {
   file: <path d="M4 1.5h5l3 3v10H4zM9 1.5v3h3" />,
   shield: <path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.8-5.5 7-3.2-1.2-5.5-3.8-5.5-7v-4L8 1.5ZM5.5 8l1.8 1.8L10.8 6" />,
   clock: <path d="M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13ZM8 4.5V8l2.5 1.5" />,
+  snow: <path d="M8 1.5v13M2.4 4.75l11.2 6.5M2.4 11.25l11.2-6.5M6.2 2.6 8 4.2l1.8-1.6M6.2 13.4 8 11.8l1.8 1.6" />,
 };
 function Svg({ name, size = 15, className = '', strokeWidth = 1.6 }) {
   return (
@@ -1108,22 +1159,268 @@ const Board = memo(function Board({ lanes, rowsByLane, collapsed, onCollapse, qu
   );
 });
 
-// The ribbon: every pipeline on the board as one line, split by lane - the board's health at a glance.
-function Ribbon({ lanes, rowsByLane, total, onJump }) {
+// The hero: the board's health as a number, the lanes as chips, and every pipeline drawn as a live line
+// from its source into Snowflake, coloured by its last result. Hover a line to see it, click to open it.
+const FLOW_H = 196;
+const FLOW_STEPS = 48;
+const reducedMotion = () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const easeOut = (t) => 1 - (1 - t) ** 3;
+
+function useCountUp(value, ms = 900) {
+  const [shown, setShown] = useState(value);
+  const from = useRef(0);
+  useEffect(() => {
+    if (reducedMotion()) { setShown(value); from.current = value; return undefined; }
+    const start = performance.now(); const a = from.current;
+    let raf = 0;
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / ms);
+      setShown(a + (value - a) * easeOut(t));
+      if (t < 1) raf = requestAnimationFrame(tick); else from.current = value;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); from.current = value; };
+  }, [value, ms]);
+  return shown;
+}
+
+function flowLayout(items, sources, cw) {
+  const H = FLOW_H, pad = 12, gap = 10;
+  const used = sources.map(s => ({ ...s, rows: items.filter(i => i.src === s.id) })).filter(s => s.rows.length);
+  const total = used.reduce((n, s) => n + s.rows.length, 0);
+  if (!total || cw < 80) return null;
+  const minH = 22;
+  const room = Math.max(0, H - pad * 2 - gap * (used.length - 1) - minH * used.length);
+  let y = pad;
+  const nodes = used.map(s => {
+    const h = minH + room * (s.rows.length / total);
+    const node = { ...s, y, h, mid: y + h / 2 };
+    y += h + gap;
+    return node;
+  });
+  // Snowflake side: the lines re-sort by result, so the weave in the middle shows where each source's problems are
+  const live = [];
+  nodes.forEach(n => n.rows.forEach((it, j) => { if (!it.dead) live.push({ it, ya: n.y + n.h * ((j + 0.5) / n.rows.length) }); }));
+  nodes.forEach(n => n.rows.forEach((it, j) => { if (it.dead) live.push({ it, ya: n.y + n.h * ((j + 0.5) / n.rows.length), dead: true }); }));
+  const alive = live.filter(x => !x.dead).sort((p, q) => p.it.rank - q.it.rank || p.ya - q.ya);
+  const groups = new Set(alive.map(x => x.it.rank)).size;
+  const dgap = 6;
+  const dh = Math.min(H - pad * 2, Math.max(48, alive.length * 3 + dgap * (groups - 1)));
+  const d0 = (H - dh) / 2;
+  const unit = alive.length ? (dh - dgap * (groups - 1)) / alive.length : 0;
+  const segs = [];
+  let yb = d0, prev = null;
+  alive.forEach(x => {
+    if (prev !== null && x.it.rank !== prev) yb += dgap;
+    if (x.it.rank !== prev) segs.push({ y: yb, h: 0, color: x.it.gcolor || x.it.color });
+    x.yb = yb + unit / 2; yb += unit; segs[segs.length - 1].h += unit; prev = x.it.rank;
+  });
+  live.filter(x => x.dead).forEach(x => { x.yb = x.ya; });
+  // every line shares the same x(t), so hover only needs the t for a given x
+  const xs = new Float32Array(FLOW_STEPS + 1);
+  const x0 = 6, x3 = cw - 8;
+  for (let k = 0; k <= FLOW_STEPS; k++) {
+    const t = k / FLOW_STEPS, u = 1 - t;
+    xs[k] = u * u * u * x0 + 3 * u * u * t * (x0 + (x3 - x0) * 0.5) + 3 * u * t * t * (x0 + (x3 - x0) * 0.5) + t * t * t * x3;
+  }
+  const lines = live.map(({ it, ya, yb: yz }) => {
+    const ys = new Float32Array(FLOW_STEPS + 1);
+    for (let k = 0; k <= FLOW_STEPS; k++) {
+      const t = k / FLOW_STEPS, u = 1 - t;
+      ys[k] = (u * u * u + 3 * u * u * t) * ya + (3 * u * t * t + t * t * t) * yz;
+    }
+    return { ...it, ys, seed: Math.random(), speed: 0.06 + Math.random() * 0.07 };
+  });
+  return { nodes, lines, xs, segs, dest: { y: d0, h: dh }, total };
+}
+
+function FlowField({ items, sources, focus, paused, onOpen, destLabel = 'Snowflake' }) {
+  const wrapRef = useRef(null);
+  const cvRef = useRef(null);
+  const [cw, setCw] = useState(0);
+  const [tip, setTip] = useState(null);
+  const hotRef = useRef(null);
+  const drawRef = useRef(() => {});
+  const bornRef = useRef({ geo: null, at: 0 });
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(([e]) => setCw(Math.round(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const geo = useMemo(() => flowLayout(items, sources, cw), [items, sources, cw]);
+
+  useEffect(() => {
+    const cv = cvRef.current;
+    if (!cv || !geo) return undefined;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = cw * dpr; cv.height = FLOW_H * dpr;
+    const ctx = cv.getContext('2d');
+    const { lines, xs, nodes } = geo;
+    const still = reducedMotion();
+    if (bornRef.current.geo !== geo) bornRef.current = { geo, at: performance.now() };   // the intro plays once per layout, not per hover
+    const born = bornRef.current.at;
+    let raf = 0; let last = performance.now(); let seen = true;
+    // each line starts neutral and takes on its result colour as it nears Snowflake
+    const grads = new Map(lines.map(l => {
+      const g = ctx.createLinearGradient(0, 0, l.dead ? cw * 0.5 : cw, 0);
+      if (l.dead) { g.addColorStop(0, l.color); g.addColorStop(1, 'rgba(110, 98, 89, 0)'); }
+      else { g.addColorStop(0, 'rgba(255, 255, 255, .35)'); g.addColorStop(0.55, l.color); g.addColorStop(1, l.color); }
+      return [l, g];
+    }));
+
+    const stroke = (l, upto, alpha, width, solid) => {
+      ctx.globalAlpha = alpha; ctx.lineWidth = width; ctx.strokeStyle = solid ? l.color : grads.get(l);
+      ctx.beginPath(); ctx.moveTo(xs[0], l.ys[0]);
+      const end = Math.min(FLOW_STEPS, Math.max(1, Math.round(upto * FLOW_STEPS)));
+      for (let k = 1; k <= end; k++) ctx.lineTo(xs[k], l.ys[k]);
+      ctx.stroke();
+    };
+    const at = (l, t) => {
+      const f = t * FLOW_STEPS; const k = Math.min(FLOW_STEPS - 1, Math.floor(f)); const r = f - k;
+      return [xs[k] + (xs[k + 1] - xs[k]) * r, l.ys[k] + (l.ys[k + 1] - l.ys[k]) * r];
+    };
+
+    const draw = (now) => {
+      const age = still ? 1 : Math.min(1, (now - born) / 1100);
+      const grow = easeOut(age);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cw, FLOW_H);
+      const hot = hotRef.current;
+      const dim = (l) => (focus && l.lane !== focus) || (hot && hot !== l);
+      // source and destination bars
+      ctx.globalAlpha = 1; ctx.setLineDash([]);
+      nodes.forEach(n => { ctx.fillStyle = n.color; ctx.globalAlpha = focus && !n.rows.some(r => r.lane === focus) ? 0.3 : 1; ctx.beginPath(); ctx.roundRect(0, n.y, 4, n.h, 2); ctx.fill(); });
+      ctx.globalAlpha = 1;
+      geo.segs.forEach(g => { ctx.fillStyle = g.color; ctx.beginPath(); ctx.roundRect(cw - 5, g.y, 5, Math.max(2, g.h), 2); ctx.fill(); });
+      lines.forEach(l => stroke(l, l.dead ? grow * 0.45 : grow, dim(l) ? 0.05 : l.dead ? 0.22 : 0.42, 1));
+      if (hot) stroke(hot, 1, 1, 2.4, true);
+      // the data: a bead per pipeline, travelling at its own pace
+      if (age >= 1) {
+        const dt = (now - last) / 1000;
+        lines.forEach(l => {
+          if (l.dead) return;
+          if (!still) l.seed = (l.seed + dt * l.speed) % 1;
+          const [x, y] = at(l, l.seed);
+          const fade = Math.min(1, l.seed * 8, (1 - l.seed) * 8);
+          const a = dim(l) ? 0.12 : 1;
+          ctx.fillStyle = l.color;
+          ctx.globalAlpha = 0.16 * fade * a; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 0.95 * fade * a; ctx.beginPath(); ctx.arc(x, y, 1.9, 0, Math.PI * 2); ctx.fill();
+        });
+      }
+      ctx.globalAlpha = 1;
+      last = now;
+    };
+    drawRef.current = () => draw(performance.now());
+
+    const loop = (now) => {
+      draw(now);
+      if (!still && seen && !paused && !document.hidden) raf = requestAnimationFrame(loop);
+      else if (still && now - born < 0) raf = requestAnimationFrame(loop);
+    };
+    const kick = () => { cancelAnimationFrame(raf); last = performance.now(); raf = requestAnimationFrame(loop); };
+    const io = new IntersectionObserver(([e]) => { seen = e.isIntersecting; if (seen) kick(); });
+    io.observe(cv);
+    const vis = () => { if (!document.hidden) kick(); };
+    document.addEventListener('visibilitychange', vis);
+    kick();
+    return () => { cancelAnimationFrame(raf); io.disconnect(); document.removeEventListener('visibilitychange', vis); };
+  }, [geo, cw, focus, paused]);
+
+  const pick = (e) => {
+    if (!geo) return null;
+    const r = cvRef.current.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const { xs, lines } = geo;
+    let k = 0;
+    while (k < FLOW_STEPS && xs[k + 1] < x) k++;
+    let best = null, bd = 7;
+    lines.forEach(l => {
+      if (focus && l.lane !== focus) return;
+      const d = Math.abs(l.ys[k] - y);
+      if (d < bd) { bd = d; best = l; }
+    });
+    return best ? { l: best, x, y } : null;
+  };
+  const onMove = (e) => {
+    const hit = pick(e);
+    const l = hit?.l || null;
+    if (hotRef.current !== l) {
+      hotRef.current = l;
+      setTip(hit ? { l, x: hit.x, y: hit.y } : null);
+      if (reducedMotion() || paused) drawRef.current();
+    } else if (hit) setTip(t => (t && Math.abs(t.x - hit.x) < 2 ? t : { l, x: hit.x, y: hit.y }));
+  };
+  const onLeave = () => { hotRef.current = null; setTip(null); if (reducedMotion() || paused) drawRef.current(); };
+
   return (
-    <div className="ss-ribbon" role="list" aria-label="Pipelines by lane">
-      {lanes.map((l, i) => {
-        const n = (rowsByLane.get(l.id) || []).length;
-        if (!n) return null;
-        return (
-          <button key={l.id} type="button" role="listitem" className="ss-rib" style={{ flexGrow: n, '--lane': l.color, '--d': `${i * 70}ms` }}
-            onClick={() => onJump(l.id)} title={`${n} ${l.label.toLowerCase()} - show`}>
-            <span>{n}<em>{l.label}</em></span>
-          </button>
-        );
-      })}
-      {!total && <span className="ss-rib-empty">No pipeline matches</span>}
+    <div className="ss-flow">
+      <div className="ss-flow-src" aria-hidden="true">
+        {geo?.nodes.map((n, i) => (
+          <span key={n.id} style={{ top: n.mid, '--c': n.color, '--d': `${i * 80}ms` }} className={focus && !n.rows.some(r => r.lane === focus) ? 'is-dim' : ''}>
+            <b>{n.rows.length}</b>{n.label}
+          </span>
+        ))}
+      </div>
+      <div className="ss-flow-cv" ref={wrapRef}>
+        <canvas ref={cvRef} style={{ width: cw, height: FLOW_H, cursor: tip ? 'pointer' : 'default' }}
+          onMouseMove={onMove} onMouseLeave={onLeave} onClick={() => tip && onOpen(tip.l.id)}
+          role="img" aria-label={`${geo?.total || 0} pipelines flowing from their sources into ${destLabel}`} />
+        {tip && (
+          <div className={`ss-flow-tip${tip.y < 64 ? ' is-below' : ''}`} style={{ left: Math.min(Math.max(tip.x, 120), cw - 120), top: tip.y }}>
+            <b>{tip.l.name}</b>
+            <span><i style={{ background: tip.l.color }} />{tip.l.status}</span>
+          </div>
+        )}
+      </div>
+      <div className="ss-flow-dst" aria-hidden="true">
+        <span className="ss-flow-sf"><Svg name="snow" size={16} strokeWidth={1.8} /></span>
+        <b>{destLabel}</b>
+        <small>{geo ? plural(geo.lines.filter(l => !l.dead).length, 'pipeline', 'pipelines') : ''}</small>
+      </div>
     </div>
+  );
+}
+
+function Hero({ lanes, rowsByLane, total, headline, flowItems, flowSources, paused, onJump, onOpen }) {
+  const [focus, setFocus] = useState(null);
+  const pct = useCountUp(headline?.ring != null ? Math.round(headline.ring * 100) : total);
+  const ring = headline?.ring ?? 1;
+  const C = 2 * Math.PI * 44;
+  return (
+    <section className="ss-hero" aria-label="Board overview">
+      <div className="ss-hero-stat">
+        <div className="ss-hero-ring" style={{ '--c': headline?.color || '#53ce76' }}>
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <circle cx="50" cy="50" r="44" className="ss-hero-ring-bg" />
+            <circle cx="50" cy="50" r="44" className="ss-hero-ring-fg" style={{ strokeDasharray: C, strokeDashoffset: C * (1 - ring) }} />
+          </svg>
+          <div><b>{Math.round(pct)}{headline?.ring != null ? <small>%</small> : null}</b></div>
+        </div>
+        <div className="ss-hero-text">
+          <h2>{headline?.title || plural(total, 'pipeline', 'pipelines')}</h2>
+          <p>{headline?.sub || 'on the board'}</p>
+          <div className="ss-hero-lanes" role="list" aria-label="Pipelines by lane">
+            {lanes.map((l, i) => {
+              const n = (rowsByLane.get(l.id) || []).length;
+              return (
+                <button key={l.id} type="button" role="listitem" className={`ss-hl${focus === l.id ? ' is-on' : ''}`} disabled={!n}
+                  style={{ '--lane': l.color, '--d': `${200 + i * 60}ms` }}
+                  onMouseEnter={() => setFocus(l.id)} onMouseLeave={() => setFocus(null)} onFocus={() => setFocus(l.id)} onBlur={() => setFocus(null)}
+                  onClick={() => onJump(l.id)} title={n ? `Go to ${l.label.toLowerCase()}` : `No pipelines in ${l.label.toLowerCase()}`}>
+                  <i /><b>{n}</b>{l.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      {flowItems && <FlowField items={flowItems} sources={flowSources} focus={focus} paused={paused} onOpen={onOpen} />}
+    </section>
   );
 }
 
@@ -2108,6 +2405,19 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const ordered = useMemo(() => lanes.filter(l => !collapsed.has(l.id)).flatMap(l => rowsByLane.get(l.id) || []), [lanes, rowsByLane, collapsed]);
   const shown = ordered;   // "Pick shown" leaves folded lanes alone
   const cardInfo = useMemo(() => (board ? (p) => board.card(p, mode) : null), [board, mode]);
+  const flow = useMemo(() => {
+    if (!board?.flow) return null;
+    const items = visible.map(p => ({ id: p.id, name: p.name, lane: board.laneOf(p, mode), ...board.flow(p) }));
+    items.sort((a, b) => a.rank - b.rank);
+    return { items, sources: board.flowSources, headline: board.headline(visible) };
+  }, [visible, board, mode]);
+  // the hero folds away once the board is scrolled, and comes back at the top
+  const [lifted, setLifted] = useState(false);
+  const onBoardScroll = useStable((e) => {
+    const y = e.currentTarget.scrollTop;
+    if (!lifted && y > 60) setLifted(true);
+    else if (lifted && y < 4) setLifted(false);
+  });
   const foldLane = useStable((id) => setCollapsed(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }));
   const jumpToLane = useStable((id) => {
     setCollapsed(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
@@ -2357,7 +2667,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); };
 
   return (
-    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
+    <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${lifted ? ' is-lifted' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
       <style href="pv-pane" precedence="default">{PANE_CSS}</style>
       {busy && <div className="ss-busy" aria-hidden="true" />}
 
@@ -2426,11 +2736,14 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
               label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
           </span>
         </div>
-        {!booting && pipelines.length > 0 && <Ribbon lanes={lanes} rowsByLane={rowsByLane} total={visible.length} onJump={jumpToLane} />}
+        {!booting && pipelines.length > 0 && (
+          <Hero lanes={lanes} rowsByLane={rowsByLane} total={visible.length} headline={flow?.headline}
+            flowItems={flow?.items} flowSources={flow?.sources} paused={!!pipelineId || lifted} onJump={jumpToLane} onOpen={openPipeline} />
+        )}
       </header>
 
       <div className="ss-body">
-        <main className="ss-main" inert={pipelineId ? true : undefined}>
+        <main className="ss-main" inert={pipelineId ? true : undefined} onScroll={onBoardScroll}>
           {booting && !listError && <BoardSkeleton />}
           {listError && <div className="ss-pad-s"><ErrorBox message={listError} onRetry={() => loadList(true)} /></div>}
           {phase === 'ready' && !listLoading && !listError && pipelines.length === 0 && (
@@ -3604,6 +3917,8 @@ const PAGE_CSS = `${PANEL_CSS}
 const SOURCE_BADGE = { Oracle: ['ORA', 'is-ora'], MariaDB: ['MDB', 'is-mdb'], 'SQL Server': ['MSS', 'is-mss'] };
 const SOURCE_LANE = { Oracle: 'oracle', MariaDB: 'mariadb', 'SQL Server': 'sqlserver' };
 const RESULT_LANE = { CRITICAL: 'attention', ERROR: 'attention', FAULTY: 'attention', WARNING: 'warn', TABLE_NOT_FOUND: 'warn', TIMEOUT: 'warn', PASSED: 'pass' };
+const LANE_GLOW = { attention: '#ff3b22', warn: '#e0a100', pass: '#53ce76' };
+const FLOW = { ora: '#ff6a4d', mdb: '#58a6ff', mss: '#b197ff', other: '#c9c2bb', cant: '#6e6259', fresh: '#a39992' };
 const LANE = { crit: '#d4351c', warn: '#c98a00', pass: '#3f8f22', fresh: '#81766f', cant: '#b8afa7', ora: '#eb1700', mdb: '#0f68b2', mss: '#6b46c1' };
 const when = (s) => {
   const d = new Date(String(s || '').replace(' ', 'T'));
@@ -3671,6 +3986,36 @@ export default function PipelineValidation() {
           if (mode === 'source') return SOURCE_LANE[s?.source] || 'other';
           const l = last(p.name);
           return !l ? 'fresh' : RESULT_LANE[l.status] || 'attention';
+        },
+        flowSources: canValidate
+          ? [['oracle', 'Oracle', FLOW.ora], ['mariadb', 'MariaDB', FLOW.mdb], ['sqlserver', 'SQL Server', FLOW.mss], ['other', 'Decided at run', FLOW.other], ['cant', 'Not supported', FLOW.cant]]
+            .map(([id, label, color]) => ({ id, label, color }))
+          : [{ id: 'all', label: 'StreamSets', color: FLOW.other }],
+        flow: (p) => {
+          const s = verdict(p.id);
+          const l = canHistory ? last(p.name) : null;
+          const dead = canValidate && s?.ok === false;
+          const src = !canValidate ? 'all' : dead ? 'cant' : SOURCE_LANE[s?.source] || 'other';
+          const st = l ? STATUS[l.status] : null;
+          return {
+            src, dead,
+            color: dead ? FLOW.cant : st ? st[2] : FLOW.fresh,
+            gcolor: l ? (LANE_GLOW[RESULT_LANE[l.status]] || st?.[2]) : FLOW.fresh,
+            status: dead ? `Can't validate: ${s.reason}` : l ? `${st?.[0] || l.status} · ${relativeDay(String(l.load_date).replace(' ', 'T'))}` : canHistory ? 'Not validated yet' : (s?.source || 'Source decided at run'),
+            rank: dead ? 5 : !l ? 4 : ({ CRITICAL: 0, ERROR: 0, FAULTY: 0, WARNING: 1, TABLE_NOT_FOUND: 1, TIMEOUT: 1, PASSED: 2 }[l.status] ?? 3),
+          };
+        },
+        headline: (ps) => {
+          if (canHistory) {
+            const done = ps.map(p => last(p.name)).filter(Boolean);
+            const ok = done.filter(l => l.status === 'PASSED').length;
+            if (!done.length) return { title: plural(ps.length, 'pipeline', 'pipelines'), sub: 'None validated in the last 90 days yet', ring: null };
+            const r = ok / done.length;
+            return { title: `${ok} of ${done.length} passing`, sub: ps.length > done.length ? `on their last validation · ${ps.length - done.length} not validated yet` : 'on their last validation', ring: r,
+              color: r >= 0.8 ? '#53ce76' : r >= 0.5 ? '#e0a100' : '#ff3b22' };
+          }
+          const ok = ps.filter(p => verdict(p.id)?.ok !== false).length;
+          return { title: `${ok} can be validated`, sub: `of ${plural(ps.length, 'pipeline', 'pipelines')} on the board`, ring: ps.length ? ok / ps.length : null, color: '#53ce76' };
         },
         card: (p, mode) => {
           const s = verdict(p.id);
