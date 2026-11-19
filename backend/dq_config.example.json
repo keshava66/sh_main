@@ -320,6 +320,16 @@
     "run_timeout_seconds": 1800
   },
 
+  "_comment_it_validation": "IT Checks (scheduled run) and Pipeline Studio validation. script_path = DQ_IT_Validation/Src_to_Trgt_Validation_Script.py. One validation config per database, same shape as DQ_IT_Validation/validation_config.example.json; the source section in it decides what Pipeline Studio connects to: 'oracle' (Insight7, RIMDocs), 'mariadb' (HAQ), 'sqlserver' (LIFT). Leave out a database you don't use - the page shows it as not set up. run_timeout_seconds caps one Pipeline Studio run.",
+  "it_validation": {
+    "script_path": "C:/PycharmProjects/dqe/DQ_IT_Validation/Src_to_Trgt_Validation_Script.py",
+    "run_timeout_seconds": 3600,
+    "insight7": { "config_path": "C:/PycharmProjects/dqe/DQ_IT_Validation/insight_config.json" },
+    "rimdocs": { "config_path": "C:/PycharmProjects/dqe/DQ_IT_Validation/rimdocs_config.json" },
+    "mariadb": { "config_path": "C:/PycharmProjects/dqe/DQ_IT_Validation/mariadb_config.json" },
+    "lift": { "config_path": "C:/PycharmProjects/dqe/DQ_IT_Validation/lift_config.json" }
+  },
+
   "_comment_data_shuttle": "Optional - Data Shuttle (Data Studio tab). Copies tables between Postgres and Snowflake either way. It reuses the logins above: Snowflake reads with snowflake_query_runner and writes with its sqrn_write block (or the same login if there is none), statements may run for copy_timeout_seconds; Postgres uses postgres_query_runner (pick the connection on the page when there are numbered ones). Both sides must have allow_writes on for the side being written. Files are staged under the Snowflake user stage (@~/data_shuttle) and in work_dir on the portal server (default: the system temp folder); a copy will not start with less than min_free_disk_gb free there. Copy history is saved to the portal database (shuttle_jobs); if that database cannot be reached, the history waits in work_dir/history_pending and is retried (3 quick tries, then every 30 minutes 3 times, then hourly) until it saves or someone aborts it on the page - so point work_dir at a folder that is not wiped on reboot if that matters. max_concurrent_jobs copies run at once, the rest queue. max_pg_connections and max_sf_connections are hard caps on connections the shuttle holds open, counted separately; a table waits for free connections rather than going over, and its workers are cut down to fit the lower cap (each worker needs one connection on each side, plus one main connection per side). Minimum 2 each.",
   "data_shuttle": {
     "work_dir": "",
