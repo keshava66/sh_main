@@ -35,6 +35,7 @@ const SPRITE = `
 <symbol id="itc-db" viewBox="0 0 32 32"><path d="M2,2v6.51c0,1.09,0.89,1.98,1.98,1.98h24.03c1.1,0,1.98-0.89,1.98-1.98V2H2z M5,6.99c-0.55,0-1-0.45-1-1 c0-0.55,0.45-1,1-1s1,0.45,1,1C6,6.54,5.55,6.99,5,6.99z M8,6.99c-0.55,0-1-0.45-1-1c0-0.55,0.45-1,1-1s1,0.45,1,1 C9,6.54,8.55,6.99,8,6.99z M11,6.99c-0.55,0-1-0.45-1-1c0-0.55,0.45-1,1-1s1,0.45,1,1C12,6.54,11.55,6.99,11,6.99z M28,6.99H16v-2 h12V6.99z M2,18.26c0,1.1,0.89,1.98,1.98,1.98h24.03c1.1,0,1.98-0.89,1.98-1.98v-6.51H2V18.26z M16,14.74h12v2H16V14.74z M11,14.74 c0.55,0,1,0.45,1,1s-0.45,1-1,1s-1-0.45-1-1S10.45,14.74,11,14.74z M8,14.74c0.55,0,1,0.45,1,1s-0.45,1-1,1s-1-0.45-1-1 S7.45,14.74,8,14.74z M5,14.74c0.55,0,1,0.45,1,1s-0.45,1-1,1s-1-0.45-1-1S4.45,14.74,5,14.74z M2,28.02C2,29.11,2.89,30,3.98,30 h24.03c1.1,0,1.98-0.89,1.98-1.98v-6.51H2V28.02z M16,24.5h12v2H16V24.5z M11,24.5c0.55,0,1,0.45,1,1c0,0.55-0.45,1-1,1s-1-0.45-1-1 C10,24.95,10.45,24.5,11,24.5z M8,24.5c0.55,0,1,0.45,1,1c0,0.55-0.45,1-1,1s-1-0.45-1-1C7,24.95,7.45,24.5,8,24.5z M5,24.5 c0.55,0,1,0.45,1,1c0,0.55-0.45,1-1,1s-1-0.45-1-1C4,24.95,4.45,24.5,5,24.5z" fill="currentColor" stroke="none" fill-rule="evenodd"/></symbol>
 <symbol id="itc-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></symbol>
 <symbol id="itc-oracle" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
+<symbol id="itc-sqlserver" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
 <symbol id="itc-mariadb" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13"/><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
 <symbol id="itc-sf" viewBox="0 0 64 64"><path fill="#29b5e8" stroke="none" d="M 61.063 28.296 L 53.74 32.44 L 61.064 36.583 C 62.927 37.63 63.547005 39.946 62.479 41.749 C 61.412 43.553005 59.053 44.161995 57.191006 43.139 L 44.055996 35.729 C 43.216393 35.26535 42.585705 34.498367 42.293 33.585 C 42.169 33.171 42.094 32.756 42.119 32.366 C 42.119 32.074 42.169 31.781 42.243 31.465 C 42.516 30.538 43.113003 29.709997 44.031 29.198 L 57.165997 21.789 C 59.003 20.741 61.387 21.375 62.455006 23.179 C 63.523 24.983 62.902 27.297 61.039 28.345 Z M 54.111 48.378 L 40.976 40.97 C 40.297543 40.584988 39.518135 40.415157 38.741 40.483 C 36.731 40.629 35.166 42.262 35.166 44.236 L 35.166 59.054005 C 35.166 61.15 36.879 62.831 39.039 62.831 C 41.199 62.831 42.913 61.15 42.913 59.054005 L 42.913 50.768 L 50.263 54.911003 C 52.1 55.959 54.483 55.349 55.550995 53.545998 C 56.619 51.741997 55.998005 49.427002 54.136 48.379 Z M 38.965 33.902 L 33.502 39.239 C 33.353 39.385 33.055 39.531 32.807 39.531 L 31.193 39.531 C 30.97 39.531 30.672 39.41 30.498 39.239 L 25.035 33.902 C 24.873531 33.71902 24.777493 33.487545 24.762 33.244 L 24.762 31.684002 C 24.762 31.464 24.886002 31.172 25.035 31.002003 L 30.498 25.664 C 30.647 25.518002 30.97 25.395998 31.193 25.395998 L 32.807 25.395998 C 33.03 25.395998 33.328 25.518002 33.502 25.664 L 38.965 31.002003 C 39.114 31.148 39.238 31.465 39.238 31.684002 L 39.238 33.244 C 39.238 33.464 39.114 33.755 38.965 33.902 M 34.595 32.415 C 34.595 32.195 34.471 31.903 34.297 31.733 L 32.707 30.197 C 32.559 30.051 32.236 29.929 32.012 29.929 L 31.938 29.929 C 31.715 29.929 31.417002 30.051 31.268 30.197 L 29.678001 31.733 C 29.529 31.903 29.404999 32.196 29.404999 32.415 L 29.404999 32.464 C 29.404999 32.684 29.529 32.976 29.678001 33.122 L 31.268 34.657 C 31.416 34.804 31.739 34.925 31.938 34.925 L 32.012 34.925 C 32.236 34.925 32.534 34.804 32.708 34.657 L 34.297 33.122 C 34.446 32.976 34.595 32.659 34.595 32.464 Z M 9.889 16.476 L 23.024 23.886002 C 23.719 24.276 24.514 24.445997 25.259 24.373 C 27.269 24.226 28.834 22.593 28.834 20.595 L 28.834 5.778 C 28.834 3.706 27.096 2 24.961 2 C 22.826 2 21.087 3.682 21.087 5.778 L 21.087 14.064 L 13.737001 9.921 C 11.9 8.873 9.542 9.506 8.45 11.31 C 7.382 13.113 8.003 15.428 9.865 16.476 Z M 38.741 24.397 C 39.51732 24.4528 40.293274 24.28372 40.976 23.91 L 54.111 16.5 C 55.972996 15.453 56.594 13.138 55.526 11.334 C 54.458 9.531 52.1 8.921 50.238 9.945 L 42.888 14.088 L 42.888 5.802 C 42.888 3.73 41.15 2.024 39.014 2.024 C 36.879 2.024 35.141 3.706 35.141 5.802 L 35.141 20.619 C 35.141 22.618 36.705 24.251 38.717 24.397 Z M 25.284 40.482 C 24.506866 40.414158 23.727457 40.58399 23.049002 40.969 L 9.914 48.38 C 8.077 49.427002 7.431 51.741997 8.499 53.545998 C 9.566 55.349 11.924999 55.959 13.787001 54.911003 L 21.137 50.768 L 21.137 59.054005 C 21.137 61.15 22.875 62.831 25.01 62.831 C 27.145 62.831 28.884 61.15 28.884 59.054005 L 28.884 44.235004 C 28.884 42.237 27.294 40.604 25.308 40.482 Z M 21.708002 33.56 C 21.832 33.146 21.882 32.732 21.882 32.342 C 21.882 32.05 21.832 31.757 21.732 31.44 C 21.467594 30.473928 20.82282 29.656324 19.945 29.174 L 6.81 21.763998 C 4.948 20.717 2.59 21.351 1.521 23.154 C 0.454 24.958 1.075 27.273 2.937 28.321 L 10.262 32.464 L 2.937 36.607 C 1.075 37.655 0.454 39.97 1.52 41.774 C 2.586 43.578 4.947 44.186 6.81 43.163 L 19.944 35.753 C 20.789692 35.296703 21.422684 34.526917 21.707 33.609 Z"/></symbol>`;
 
@@ -188,11 +189,11 @@ function sourceOf(raw) {
   if (s.includes('haq')) return 'HAQ';
   return raw || 'Unknown';
 }
-// ponytail: report rows don't carry the source engine, so map by name. Add here if more MariaDB sources show up.
-const engineOf = (src) => (/^haq/i.test(src || '') ? 'MariaDB' : 'Oracle');
+// ponytail: old report rows don't carry the source engine, so map by name. Add here if more sources show up.
+const engineOf = (src) => (/^haq/i.test(src || '') ? 'MariaDB' : /lift/i.test(src || '') ? 'SQL Server' : 'Oracle');
 // ponytail: logos load from public/icons/oracle.svg and mariadb.svg
 function SrcIco({ src }) {
-  const e = engineOf(src); const k = e.toLowerCase();
+  const e = engineOf(src); const k = e.toLowerCase().replace(/\s/g, '');
   const [img, setImg] = useState(true); // falls back to the plain icon until the logo file exists
   return (
     <span className={`db eng ${k}${img ? ' logo' : ''}`} title={e}>
@@ -746,7 +747,9 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
                       <td className="t">{c.source_type || '—'} → {c.snowflake_type || '—'}</td>
                       <td className={`r mono${dOk ? '' : ' bad-t'}`}><Num v={v.od} />{!dOk && <> → <Num v={v.sd} /></>}</td>
                       <td className={`r mono${nOk ? '' : ' bad-t'}`}><Num v={v.on} />{!nOk && <> → <Num v={v.sn} /></>}</td>
-                      <td className="r">{dOk && nOk ? <span className="ok-t"><Ico n="check" style={{ width: 14, height: 14 }} /></span> : <span className="bad-t"><Ico n="alert" style={{ width: 14, height: 14 }} /></span>}</td>
+                      <td className="r">{dOk && nOk ? <span className="ok-t"><Ico n="check" style={{ width: 14, height: 14 }} /></span>
+                        : c.expected ? <span className="muted" title={`Expected: ${c.expected}`}><Ico n="check" style={{ width: 14, height: 14 }} /></span>
+                          : <span className="bad-t"><Ico n="alert" style={{ width: 14, height: 14 }} /></span>}</td>
                     </tr>
                   );
                 })}
@@ -838,13 +841,25 @@ function Drawer({ t, tab, setTab, busy, canRefresh, onClose, onRevalidate, onCop
     );
   } else {
     // a row-count difference (or a failed check) is critical; anything else is a warning
-    pane = issues.length ? issues.map((iss, i) => {
-      const warn = t.status === 'WARNING' || (t.status === 'CRITICAL' && !/^Row count mismatch/.test(iss));
-      return (
-        <div className={`issue${warn ? ' warn' : ''}`} key={i}><Ico n={warn ? 'alert' : 'xc'} /><div><p>{iss}</p>{t._t > 0 && <small>Detected {ago(t._t)} · {stamp(t._t)}</small>}</div></div>
-      );
-    }) : (
-      <div className="card allgood"><div className="art"><Ico n="check" /></div><h3>No issues</h3><p>Every check passed on the last run.</p></div>
+    // differences the pipeline makes on purpose (columns it adds, values it rewrites...) - Pipeline Studio runs list them
+    const expected = t.expected_differences || [];
+    const notes = t.transformation_notes || [];
+    pane = (
+      <>
+        {issues.length ? issues.map((iss, i) => {
+          const warn = t.status === 'WARNING' || (t.status === 'CRITICAL' && !/^Row count mismatch/.test(iss));
+          return (
+            <div className={`issue${warn ? ' warn' : ''}`} key={i}><Ico n={warn ? 'alert' : 'xc'} /><div><p>{iss}</p>{t._t > 0 && <small>Detected {ago(t._t)} · {stamp(t._t)}</small>}</div></div>
+          );
+        }) : (
+          <div className="card allgood"><div className="art"><Ico n="check" /></div><h3>No issues</h3><p>{expected.length ? 'Every difference is one the pipeline makes on purpose.' : 'Every check passed on the last run.'}</p></div>
+        )}
+        {notes.map((n) => <div className="issue warn" key={n}><Ico n="alert" /><div><p>{n}</p></div></div>)}
+        {expected.length > 0 && (
+          <><div className="gap" /><div className="card blk"><h4><span className="ok-t"><Ico n="check" /></span>Expected - made by the pipeline ({expected.length})</h4>
+            {expected.map((x) => <p key={x} className="muted" style={{ margin: '6px 0 0' }}>{x}</p>)}</div></>
+        )}
+      </>
     );
   }
 

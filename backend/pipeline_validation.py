@@ -1,7 +1,10 @@
 """Centralised StreamSets ingestion validator: pick a pipeline -> extract it -> validate source vs Snowflake ->
 show the result, and optionally append the report to Snowflake so the IT Checks page shows it.
 
-Sources: Oracle and MariaDB/MySQL (detected from the pipeline's JDBC URL). Target: Snowflake.
+Sources: Oracle, MariaDB/MySQL and SQL Server (from the pipeline's JDBC URL or origin type), read by JDBC Multitable /
+Query, SQL Server CDC / Change Tracking, Oracle CDC or MySQL binlog origins. Target: Snowflake.
+The pipeline's processors are read too (pipeline_transforms.py): differences they cause on purpose - columns added,
+removed or renamed, values rewritten, rows filtered - are reported as expected instead of as problems.
 Reads only, on source and target. The one write is opt-in ("Write to Snowflake"): CREATE TABLE IF NOT EXISTS
 + a single INSERT into {snowflake_save.database}.{core_schema}.DQ_IT_VALIDATION_REPORT - no updates, no deletes.
 
@@ -21,7 +24,6 @@ import time
 import traceback
 from collections import Counter
 from datetime import datetime
-from decimal import Decimal
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -31,33 +33,10 @@ from decimal import Decimal
 # SQL runs as is because the session uses ANSI_QUOTES ("SCHEMA"."TABLE" works) and the
 # cursor adds the derived-table aliases MariaDB insists on.
 # ═══════════════════════════════════════════════════════════════════════════════
-_SQL_KEYWORDS = {"where", "group", "order", "having", "limit", "union", "join", "left", "right",
-                 "inner", "outer", "cross", "on", "for", "window", "except", "intersect"}
-
-
-def _alias_derived(sql: str) -> str:
-    """'FROM (subquery)' with no alias -> 'FROM (subquery) AS _dN' (Oracle allows it, MariaDB doesn't)."""
-    spots = []
-    for m in re.finditer(r"\bFROM\s*\(", sql, re.I):
-        depth, i = 0, m.end() - 1
-        while i < len(sql):
-            depth += {"(": 1, ")": -1}.get(sql[i], 0)
-            if depth == 0:
-                break
-            i += 1
-        if depth:
-            continue   # unbalanced - leave it alone
-        nxt = re.match(r"\s*(\w+)", sql[i + 1:])
-        if not nxt or nxt.group(1).lower() in _SQL_KEYWORDS:
-            spots.append(i + 1)
-    for n, at in enumerate(sorted(spots, reverse=True)):   # back to front keeps earlier offsets valid
-        sql = f"{sql[:at]} AS _d{n}{sql[at:]}"
-    return sql
-
-
-def _num(x):
-    # MariaDB SUM() comes back as Decimal; the script compares and JSON-dumps plain ints
-    return int(x) if isinstance(x, Decimal) and x == x.to_integral_value() else x
+from pipeline_sources import (_alias_derived, _num, _like, LABELS, SUPPORTED, driver_kind, origin_family, FAMILY_KIND,
+                             FAMILY_LABEL, source_stage, normalize_origin, discover_tables, pick_schema,
+                             sqlserver_settings, sqlserver_connector)
+import pipeline_transforms as ptx
 
 
 class _MariaCursor:
@@ -94,19 +73,19 @@ class _MariaConn:
 
 
 def _source_of(pipeline: dict):
-    """(kind, jdbc url, username) from the extracted source stage. kind is 'oracle' or 'mariadb' when
-    supported, otherwise a name for the error message ('sqlserver', 'Amazon S3', ...)."""
+    """(kind, jdbc url, username) from the extracted source stage. kind is 'oracle' / 'mariadb' / 'sqlserver'
+    when supported, otherwise a name for the error message ('teradata', 'Amazon S3', ...), or None when the
+    pipeline doesn't say (shared connection / runtime resource) - the caller then decides from the login."""
     sources = (pipeline.get("pipeline_flow") or {}).get("sources") or []
-    for s in sources:
-        cfg = s.get("configuration") or {}
-        url = next((v for v in cfg.values() if isinstance(v, str) and v.lower().startswith("jdbc:")), "")
-        if url:
-            driver = url.split(":")[1].lower()   # jdbc:<driver>:...
-            kind = "mariadb" if driver in ("mariadb", "mysql") else driver
-            return kind, url, cfg.get("Username")
-    if sources and not any(s.get("technology") == "JDBC/Database" for s in sources):
-        return sources[0].get("technology") or "unknown", "", None   # files, S3, APIs ...
-    return "oracle", "", None   # JDBC source with no URL in the report: keep the original Oracle behaviour
+    s = source_stage(pipeline)
+    if not s:
+        return (sources[0].get("technology") or "unknown") if sources else "unknown", "", None   # files, S3, APIs ...
+    cfg = s.get("configuration") or {}
+    user = (cfg.get("Username") or "").strip() or None
+    url = next((v.strip() for v in cfg.values() if isinstance(v, str) and v.strip().lower().startswith("jdbc:")), "")
+    if url:
+        return driver_kind(url), url, user
+    return FAMILY_KIND.get(origin_family(s.get("type"))), "", user   # CDC origins name their database
 
 
 def _mariadb_connector(v):
@@ -266,10 +245,15 @@ def _jdbc_database(url):
     return hit.group(1) if hit else None
 
 
-def _prepare(pipeline, database):
+_PLAIN_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*\Z")
+
+
+def _prepare(pipeline, database, why="from the JDBC URL"):
     """Fill gaps the script expects, on a copy of the extracted pipeline:
-    - blank Tableconfigs schema -> the database from the JDBC URL (MariaDB pipelines leave it blank)
-    - Snowflake 'Uppercaseschema' on -> upper-case target table names, as StreamSets created them"""
+    - blank Tableconfigs schema -> `database` (MariaDB pipelines leave it blank; SQL Server defaults to dbo)
+    - Snowflake 'Uppercaseschema' on -> upper-case target table names, as StreamSets created them
+    - Snowflake database/schema typed in lower case (rid_prod) -> upper case: StreamSets doesn't quote them, so
+      Snowflake resolves them in upper case; the script quotes them, so it has to be told the real name"""
     p = json.loads(json.dumps(pipeline))
     flow = p.get("pipeline_flow") or {}
     for s in flow.get("sources") or []:
@@ -279,19 +263,18 @@ def _prepare(pipeline, database):
             for t in tc:
                 if not (t.get("schema") or "").strip():
                     t["schema"] = database
-                    print(f"ℹ️  Source schema blank in pipeline - using database '{database}' from the JDBC URL")
+                    print(f"ℹ️  Source schema blank in pipeline - using '{database}' {why}")
             cfg["Tableconfigs"] = json.dumps(tc)
     for t in flow.get("targets") or []:
         cfg = t.get("configuration") or {}
-        if t.get("technology") == "Snowflake" and str(cfg.get("Uppercaseschema")).lower() == "true" \
-                and cfg.get("Table(s)") and "${" not in cfg["Table(s)"]:
+        if t.get("technology") != "Snowflake":
+            continue
+        if str(cfg.get("Uppercaseschema")).lower() == "true" and cfg.get("Table(s)") and "${" not in cfg["Table(s)"]:
             cfg["Table(s)"] = cfg["Table(s)"].upper()
+        for k in ("Database", "Schema"):
+            if isinstance(cfg.get(k), str) and _PLAIN_ID.match(cfg[k].strip()) and cfg[k] != cfg[k].upper():
+                cfg[k] = cfg[k].strip().upper()
     return p
-
-
-def _like(pattern):
-    """SQL LIKE pattern (StreamSets 'Table' field) -> case-insensitive regex."""
-    return re.compile("".join(".*" if c == "%" else "." if c == "_" else re.escape(c) for c in pattern) + r"\Z", re.I)
 
 
 def _follow_table_switch(p, connector_cls, creds):
@@ -307,6 +290,8 @@ def _follow_table_switch(p, connector_cls, creds):
     tc = tcs[0]   # ponytail: the script only reads the first table config; same here
     if tc.get("isTablePatternListProvided") is not False or not creds:
         return p
+    if tc.get("_discover"):
+        return _discover(p, src, tcs, connector_cls, creds)
     pattern, schema = tc.get("tablePattern") or "%", tc.get("schema")
     conn = connector_cls(creds["username"], creds["password"], creds["dsn"], schema)
     if not conn.connect():
@@ -345,6 +330,57 @@ def _follow_table_switch(p, connector_cls, creds):
     return p
 
 
+def _discover(p, src, tcs, connector_cls, creds):
+    """CDC / Change Tracking / binlog origins: the tables they read come from the source itself (capture instances,
+    table patterns), so read them now and write them into the table list + an exact Snowflake name for each."""
+    tc, cfg = tcs[0], src["configuration"]
+    conn = connector_cls(creds["username"], creds["password"], creds["dsn"], tc.get("schema") or "")
+    if not conn.connect():
+        tc["tablePatternList"] = []   # the script reports the connection error
+        cfg["Tableconfigs"] = json.dumps(tcs)
+        return p
+    try:
+        pairs, notes = discover_tables(tc, conn)
+    except Exception as e:
+        print(f"❌ Couldn't list the tables this {FAMILY_LABEL.get(tc['_discover'], 'origin')} reads: {type(e).__name__}: {e}")
+        pairs, notes = [], []
+    finally:
+        conn.disconnect()
+    for n in notes:
+        print(f"ℹ️  {n}")
+    schema, tables, others = pick_schema(pairs, tc.get("schema") or "")
+    if others:   # ponytail: the script validates one schema per pipeline
+        print(f"   ⚠️  The pipeline also reads schema(s) {', '.join(others)} - only {schema} is validated in this run")
+    print(f"ℹ️  {FAMILY_LABEL.get(tc['_discover'])}: validating {len(tables)} table(s) in {schema or '?'}")
+
+    flow = p.get("pipeline_flow") or {}
+    mapping = {}
+    for t in flow.get("targets") or []:
+        tcfg = t.get("configuration") or {}
+        names = re.sub(r"\s*\(unable to resolve\)\s*$", "", tcfg.get("Table(s)") or "").strip()
+        if t.get("technology") != "Snowflake" or not names:
+            continue
+        upper = str(tcfg.get("Uppercaseschema")).lower() == "true"
+        if "${" in names:   # PREFIX${record:attribute('jdbc.cdc.source_name')} -> PREFIX + table name
+            prefix = names.split("${")[0].strip()
+            mapping = {x: prefix + x for x in tables}
+        else:
+            listed = {x.strip().upper(): x.strip() for x in names.split("\n") if x.strip()}
+            mapping = {x: listed[x.upper()] for x in tables if x.upper() in listed}
+            if len(mapping) < len(tables):
+                print(f"   ⚠️  {len(tables) - len(mapping)} table(s) aren't in the pipeline's Snowflake table list")
+        if upper:
+            mapping = {k: val.upper() for k, val in mapping.items()}
+        tcfg["Table(s)"] = "\n".join(mapping.values())
+        print(f"   Snowflake names: {'prefix + ' if '${' in names and names.split('${')[0].strip() else ''}table name"
+              f"{' (upper case)' if upper else ''}")
+        break
+    p["_table_map"] = mapping   # exact names; the script's suffix matching could pick the wrong table
+    tc.update(schema=schema, tablePatternList=tables, isTablePatternListProvided=True)
+    cfg["Tableconfigs"] = json.dumps(tcs)
+    return p
+
+
 def _jdbc_host_port(url):
     """jdbc:mariadb://host:3306/db?x=y -> ('host', '3306'); (None, None) if it isn't one."""
     hit = re.match(r"jdbc:(?:mariadb|mysql)://([^:/?,;]+)(?::(\d+))?", url or "", re.I)
@@ -367,7 +403,7 @@ def _oracle_dsn(conn: str):
 
 
 def _with_source(config, kind, src):
-    """Swap the config's source login for the one the user typed (this run only). Returns (config, error)."""
+    """Swap the config's source login for the one the user typed or captured (this run only). Returns (config, error)."""
     conn = (src.get("connection") or "").strip()
     if kind == "oracle":
         dsn = _oracle_dsn(conn) if conn else (config.get("oracle") or {}).get("dsn")
@@ -375,6 +411,15 @@ def _with_source(config, kind, src):
             return config, ("Enter the Oracle connection (host:port/service, host:port:SID or jdbc:oracle:thin:@...)"
                             if not conn else "That connection isn't an Oracle one - this pipeline's source is Oracle")
         return {**config, "oracle": {"username": src["user"], "password": src["password"], "dsn": dsn}}, None
+    if kind == "sqlserver":
+        m = {**(config.get("sqlserver") or {}), "user": src["user"], "password": src["password"]}
+        if conn:
+            if driver_kind(conn) != "sqlserver":
+                return config, "That connection isn't a SQL Server one - use jdbc:sqlserver://host:1433;databaseName=DB"
+            m["jdbc_url"] = conn
+            for k in ("host", "port", "instance", "database", "domain"):
+                m.pop(k, None)   # the typed URL decides; a domain in it (domain=NA) still applies
+        return {**config, "sqlserver": m}, None
     m = {**(config.get("mariadb") or {}), "user": src["user"], "password": src["password"]}
     if conn:
         if not re.match(r"jdbc:(mariadb|mysql)://", conn, re.I):
@@ -384,73 +429,118 @@ def _with_source(config, kind, src):
     return {**config, "mariadb": m}, None
 
 
-def _setup(v, pipeline, config, index, oracle_connector, mariadb_connector, source=None):
+def _kind_for(pipeline, config, source):
+    """Which database the source is: the pipeline's URL, else its origin type (CDC origins name it), else the
+    connection typed/captured for this run, else the one source section the validation config has."""
+    kind, url, user = _source_of(pipeline)
+    typed = driver_kind((source or {}).get("connection", ""))
+    if not url and typed:
+        kind = typed
+    if not kind:
+        have = [k for k in SUPPORTED if k in config]
+        kind = have[0] if len(have) == 1 else "oracle"   # several or none: the original Oracle behaviour
+    return kind, url, user
+
+
+def _setup(v, pipeline, config, index, conns, source=None):
     """Everything before the comparison: which source, which login, which tables. Shared by the review (--plan)
     and the validation, so what the user confirms is exactly what gets validated.
-    Returns {"error": result} or {"p": prepared pipeline, "cfg": config to validate with, "label": "Oracle"/"MariaDB"}."""
-    kind, url, report_user = _source_of(pipeline)
-    typed = (source or {}).get("connection", "").strip().lower()
-    if not url and typed.startswith("jdbc:"):
-        kind = "mariadb" if re.match(r"jdbc:(mariadb|mysql):", typed) else typed.split(":")[1]   # user said what it is
-    elif not url and "mariadb" in config and "oracle" not in config:
-        kind = "mariadb"   # pipeline uses a shared StreamSets connection, so no URL in the extract - trust the config
+    conns: {'oracle': cls, 'mariadb': cls, 'sqlserver': cls}.
+    Returns {"error": result} or {"p": prepared pipeline, "cfg": config to validate with, "label": "Oracle"/...}."""
+    pipeline = normalize_origin(pipeline)   # CDC / CT / binlog table settings -> tables discovered from the source
+    kind, url, report_user = _kind_for(pipeline, config, source)
+    label = LABELS.get(kind, kind)
     fail = lambda msg, st: (print(f"❌ {msg}"), {"error": {"pipeline_name": pipeline.get("pipeline_name"), "pipeline_number": index,
                                                            "status": "ERROR", "error": msg, "validation_results": None,
                                                            "source_type": st, "_own_error": True}})[1]
-    if kind not in ("oracle", "mariadb"):
-        return fail(f"Source '{kind}' isn't supported yet - only Oracle and MariaDB/MySQL sources can be validated", kind)
+    if kind not in SUPPORTED:
+        return fail(f"Source '{kind}' isn't supported yet - only Oracle, MariaDB/MySQL and SQL Server sources can be validated", kind)
+    s = source_stage(pipeline)
+    fam = origin_family((s or {}).get("type"))
+    if fam not in ("multitable", "query", "other"):
+        print(f"ℹ️  Origin: {FAMILY_LABEL[fam]}")
     if source:
         config, err = _with_source(config, kind, source)
         if err:
-            return fail(err, "Oracle" if kind == "oracle" else "MariaDB")
+            return fail(err, label)
         print(f"🔑 Using the source login entered for this run ({source['user']})")
     if kind == "oracle":
-        v.OracleConnector = oracle_connector
+        v.OracleConnector = conns["oracle"]
         if not (config.get("oracle") or {}).get("password"):
-            return fail("Source is Oracle but there's no Oracle login - the validation config has no 'oracle' section", "Oracle")
-        p = _prepare(_follow_table_switch(_prepare(pipeline, None), oracle_connector, config.get("oracle")), None)
-        return {"p": p, "cfg": config, "label": "Oracle"}
+            return fail("Source is Oracle but there's no Oracle login - the validation config has no 'oracle' section", label)
+        p = _prepare(_follow_table_switch(_prepare(pipeline, None), conns["oracle"], config.get("oracle")), None)
+        return {"p": p, "cfg": config, "label": label}
+
+    if kind == "sqlserver":
+        m = config.get("sqlserver") or {}
+        o = sqlserver_settings(m, url)
+        if not m.get("password") and not o["trusted"]:
+            return fail("Source is SQL Server but there's no SQL Server login - add a 'sqlserver' section (user, password) "
+                        "to the validation config, pick the LIFT option, or enter / capture the login", label)
+        if not o["host"]:
+            return fail("SQL Server host unknown - add 'jdbc_url' (jdbc:sqlserver://host:1433;databaseName=DB) to the "
+                        "'sqlserver' section of the config, or enter the connection", label)
+        user = m.get("user") or report_user
+        print(f"🗄️  SQL Server source: {o['host']}{chr(92) + o['instance'] if o['instance'] else ''}:{o['port']} "
+              f"database {o['database'] or '(login default)'} via {o['driver']}"
+              f"{', Windows login ' + o['domain'] + chr(92) + str(user) if o['domain'] else ''}{', encrypted' if o['encrypt'] else ''}")
+        cls = conns["sqlserver"]
+        cls.opts = o
+        v.OracleConnector = cls
+        # trusted login sends no user/password; the script still wants both filled in
+        cfg = {**config, "oracle": {"username": user or "(trusted)", "password": m.get("password") or "(trusted)",
+                                    "dsn": f"{o['host']}:{o['port']}"}}
+        p = _prepare(_follow_table_switch(_prepare(pipeline, "dbo", "(SQL Server default)"), cls, cfg["oracle"]), None)
+        return {"p": p, "cfg": cfg, "label": label}
 
     m = config.get("mariadb") or {}
     if not m.get("password"):
-        return fail("Source is MariaDB but the validation config has no 'mariadb' section (user, password) - pick the MariaDB option", "MariaDB")
+        return fail("Source is MariaDB but the validation config has no 'mariadb' section (user, password) - pick the MariaDB option", label)
     # where to connect, first one set wins: config jdbc_url, config host/port, the pipeline's own JDBC URL
     cfg_host, cfg_port = _jdbc_host_port(m.get("jdbc_url"))
     pipe_host, pipe_port = _jdbc_host_port(url)
     host = cfg_host or m.get("host") or pipe_host
     port = cfg_port or m.get("port") or pipe_port or 3306
     if not host:
-        return fail("MariaDB host unknown - add 'jdbc_url' (jdbc:mariadb://host:3306/db) to the 'mariadb' section of the config", "MariaDB")
+        return fail("MariaDB host unknown - add 'jdbc_url' (jdbc:mariadb://host:3306/db) to the 'mariadb' section of the config", label)
     print(f"🐬 MariaDB source: {host}:{port}")
-    v.OracleConnector = mariadb_connector
+    maria = conns["mariadb"]
+    v.OracleConnector = maria
     ssl_url = m.get("jdbc_url") or url
-    mariadb_connector.use_ssl = bool(m["ssl"]) if "ssl" in m else bool(re.search(r"use_?ssl=true|sslmode=(?!disable)", ssl_url or "", re.I))
-    print(f"🔒 SSL {'on' if mariadb_connector.use_ssl else 'off'}")
+    maria.use_ssl = bool(m["ssl"]) if "ssl" in m else bool(re.search(r"use_?ssl=true|sslmode=(?!disable)", ssl_url or "", re.I))
+    print(f"🔒 SSL {'on' if maria.use_ssl else 'off'}")
     cfg = {**config, "oracle": {"username": m.get("user") or report_user, "password": m["password"], "dsn": f"{host}:{port}"}}
     database = _jdbc_database(m.get("jdbc_url")) or _jdbc_database(url)
     # fill the schema first (the table lookup needs it), then upper-case the Snowflake names it adds
-    p = _prepare(_follow_table_switch(_prepare(pipeline, database), mariadb_connector, cfg["oracle"]), database)
-    return {"p": p, "cfg": cfg, "label": "MariaDB"}
+    p = _prepare(_follow_table_switch(_prepare(pipeline, database), maria, cfg["oracle"]), database)
+    return {"p": p, "cfg": cfg, "label": label}
 
 
-def _validate(v, pipeline, config, index, oracle_connector, mariadb_connector, source=None):
-    st = _setup(v, pipeline, config, index, oracle_connector, mariadb_connector, source)
+def _validate(v, pipeline, config, index, conns, source=None):
+    st = _setup(v, pipeline, config, index, conns, source)
     if "error" in st:
         return st["error"]
-    result = v.validate_single_pipeline(st["p"], st["cfg"], index)
+    tx = ptx.analyze(st["p"])
+    ptx.use_renames(v, tx)   # columns a Field Renamer renamed are compared under their Snowflake name
+    for line in ptx.describe(tx):
+        print(f"🔧 {line}")
+    try:
+        result = v.validate_single_pipeline(st["p"], st["cfg"], index)
+    finally:
+        ptx.use_renames(v, None)
     result["source_type"] = st["label"]
-    return result
+    return ptx.apply(result, tx)
 
 
 def _first_role(role):
     return role[0] if isinstance(role, list) and role else role
 
 
-def _plan(v, pipeline, config, index, oracle_connector, mariadb_connector, source=None):
+def _plan(v, pipeline, config, index, conns, source=None):
     """What a validation would compare, for the user to confirm: source and Snowflake details, both logins tested,
     and every source table with the Snowflake table it's checked against. Reads only."""
     name = pipeline.get("pipeline_name")
-    st = _setup(v, pipeline, config, index, oracle_connector, mariadb_connector, source)
+    st = _setup(v, pipeline, config, index, conns, source)
     if "error" in st:
         return {"pipeline_name": name, "ok": False, "error": st["error"]["error"], "problems": [st["error"]["error"]],
                 "source_type": st["error"]["source_type"], "_own_error": True}
@@ -464,10 +554,15 @@ def _plan(v, pipeline, config, index, oracle_connector, mariadb_connector, sourc
     schema = cl.get_oracle_schema()
     plan = {"pipeline_name": name, "ok": True, "format": fmt, "excluded_columns": (cfg.get("validation") or {}).get("excluded_columns") or [],
             "source": {"type": label, "connection": ora.get("dsn"), "user": ora.get("username"), "schema": schema},
+            "transformations": ptx.describe_steps(ptx.analyze(p)),
             "target": {"account": sfc.get("account"), "user": sfc.get("user"), "role": _first_role(sfc.get("role")),
                        "roles": sfc.get("role") if isinstance(sfc.get("role"), list) else None, "warehouse": sfc.get("warehouse"),
                        "database": sf_db, "schema": sf_schema, "login": "user/password" if sfc.get("private_key_path") == PASSWORD_LOGIN else "key-pair"}}
 
+    so = getattr(v.OracleConnector, "opts", None) if label == "SQL Server" else None
+    if so:
+        plan["source"]["connection"] = f"{ora.get('dsn')}/{so.get('database') or ''}"
+        plan["source"]["user"] = v.OracleConnector(ora.get("username"), "", "", "")._login_name()
     # test both logins (connect + disconnect, nothing else)
     src = v.OracleConnector(ora.get("username"), ora.get("password"), ora.get("dsn"), schema or "")
     plan["source"]["login_ok"] = bool(src.connect())
@@ -583,6 +678,17 @@ def _write_report(v, config, results, database_name, report_path, seconds):
             "pipelines": [r["pipeline_name"] for r in ok]}
 
 
+def _exact_table_names(v):
+    """Where table discovery worked out each Snowflake name exactly (p['_table_map']), use it as is: the script's
+    own matching falls back to 'ends with', which can pair ALERT with REQUESTALERT."""
+    own = v.ConfigLoader.create_table_mapping
+
+    def create_table_mapping(self, tables):
+        exact = self.config.get("_table_map")
+        return {t: exact[t] for t in tables if t in exact} if exact else own(self, tables)
+    v.ConfigLoader.create_table_mapping = create_table_mapping
+
+
 def _runner_main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True)
@@ -626,16 +732,17 @@ def _runner_main():
             t = {**{k: val for k, val in t.items() if k != "password"}, "private_key_path": PASSWORD_LOGIN, "private_key_password": t["password"]}
         read_config = {**config, "snowflake": {**(config.get("snowflake") or {}), **t}}
         print(f"🔑 Using a Snowflake login for this run ({t['user']}, role {read_config['snowflake'].get('role') or '?'})")
-    oracle, maria = v.OracleConnector, _mariadb_connector(v)
+    conns = {"oracle": v.OracleConnector, "mariadb": _mariadb_connector(v), "sqlserver": sqlserver_connector(v)}
+    _exact_table_names(v)
     if a.plan:
-        plans = _neutral([_plan(v, p, read_config, i, oracle, maria, overrides.get("source")) for i, p in enumerate(pipelines, 1)])
+        plans = _neutral([_plan(v, p, read_config, i, conns, overrides.get("source")) for i, p in enumerate(pipelines, 1)])
         tmp = a.output + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"plan": plans}, f, default=str)
         os.replace(tmp, a.output)
         print(f"✅ Review ready for {len(plans)} pipeline(s)")
         return 0
-    raw = [_validate(v, p, read_config, i, oracle, maria, overrides.get("source")) for i, p in enumerate(pipelines, 1)]
+    raw = [_validate(v, p, read_config, i, conns, overrides.get("source")) for i, p in enumerate(pipelines, 1)]
     print(f"✅ Validation finished for {len(raw)} pipeline(s)")
 
     write = None
@@ -697,7 +804,7 @@ pipeline_validation_router = APIRouter(prefix="/api/pipeline-validation", tags=[
 
 RUNNER = os.path.abspath(__file__)
 # which validation config to use (it_validation.<id>.config_path); "mariadb" = a config with a 'mariadb' section
-DBS = {"insight7": "Insight7", "rimdocs": "RIMDocs", "mariadb": "MariaDB"}
+DBS = {"insight7": "Insight7", "rimdocs": "RIMDocs", "mariadb": "MariaDB", "lift": "LIFT"}   # lift = a config with a 'sqlserver' section
 HEARTBEAT = 15
 
 _it: Dict[str, Any] = {}
@@ -895,8 +1002,8 @@ def _verdict(pipeline_id: str, commit_id: Optional[str]) -> Dict[str, Any]:
         v = no("No source stage")
     else:
         o = origins[0]
-        name = str(o.get("stageName") or "").lower()
-        if "origin_jdbc" not in name or "cdc" in name:   # JDBC Multitable / Query Consumer only
+        fam = origin_family(o.get("stageName"))
+        if fam not in FAMILY_LABEL:   # JDBC Multitable / Query, SQL Server CDC / CT, Oracle CDC, MySQL binlog
             v = no(f"Source is {ssx._type_name(o.get('stageName') or '')}", ssx._technology(o))
         else:
             cfg = {c.get("name"): c.get("value") for c in o.get("configuration") or [] if isinstance(c, dict)}
@@ -905,9 +1012,9 @@ def _verdict(pipeline_id: str, commit_id: Optional[str]) -> Dict[str, Any]:
             ref = re.fullmatch(r"\$\{\s*([A-Za-z_][\w.]*)\s*\}", url.strip())
             if ref:
                 url = constants.get(ref.group(1), url)   # ${PARAM} -> pipeline parameter value
-            driver = url.split(":")[1].lower() if url.lower().startswith("jdbc:") and ":" in url[5:] else None
-            if driver in ("oracle", "mariadb", "mysql"):
-                v = {"ok": True, "reason": None, "source": "MariaDB" if driver != "oracle" else "Oracle"}
+            driver = driver_kind(url) or FAMILY_KIND.get(fam)   # CDC origins name their database
+            if driver in SUPPORTED:
+                v = {"ok": True, "reason": None, "source": LABELS[driver]}
             elif driver:
                 v = no(f"Source '{driver}' isn't supported yet", driver)
             else:   # shared connection or runtime resource: can't see the URL until it runs
@@ -1003,8 +1110,7 @@ def _capture(pipeline_id: str, commit_id: Optional[str] = None) -> Dict[str, Any
         return val, {"value": val, "from": where, "error": why}
 
     # source: the JDBC origin
-    o = next((st for st in stages if ssx._kind(st) == "SOURCE" and "origin_jdbc" in str(st.get("stageName", "")).lower()
-              and "cdc" not in str(st.get("stageName", "")).lower()), None)
+    o = next((st for st in stages if ssx._kind(st) == "SOURCE" and origin_family(st.get("stageName")) in FAMILY_LABEL), None)
     if not o:
         public["source"] = {"ok": False, "reason": "No JDBC source stage in this pipeline"}
     else:
@@ -1018,12 +1124,11 @@ def _capture(pipeline_id: str, commit_id: Optional[str] = None) -> Dict[str, Any
                 url_f["value"] = re.sub(r"((?:password|pwd)=)[^&;]*", r"\1********", re.sub(r"(//[^/:@]+:)[^@/]+@", r"\1********@", url), flags=re.I)
             user, user_f = field(cfg, "username", constants)
             pw, pw_f = field(cfg, "password", constants)
-            kind = ("MariaDB" if re.match(r"jdbc:(mariadb|mysql):", url or "", re.I) else
-                    "Oracle" if (url or "").lower().startswith("jdbc:oracle:") else None)
+            kind = LABELS.get(driver_kind(url))
             missing = [n for n, f in (("connection", url_f), ("username", user_f), ("password", pw_f)) if f["error"]]
             reason = "; ".join(f"{n}: {f['error']}" for n, f in (("connection", url_f), ("username", user_f), ("password", pw_f)) if f["error"])
             if url and not kind:
-                missing, reason = missing + ["connection"], (reason + "; " if reason else "") + "the connection isn't Oracle or MariaDB/MySQL"
+                missing, reason = missing + ["connection"], (reason + "; " if reason else "") + "the connection isn't Oracle, MariaDB/MySQL or SQL Server"
             public["source"] = {"ok": not missing, "reason": reason or None, "kind": kind, "stage": o.get("uiInfo", {}).get("label"),
                                 "connection": url_f, "user": user_f,
                                 "password": {"found": pw is not None, "from": pw_f["from"], "error": pw_f["error"]}}
@@ -1173,7 +1278,7 @@ def _kill_later(procs: list, work: str):
 
 
 class SourceLogin(BaseModel):
-    """Source login typed for one run (Oracle or MariaDB). connection is optional: blank = the config's/pipeline's."""
+    """Source login typed for one run (Oracle, MariaDB or SQL Server). connection is optional: blank = the config's/pipeline's."""
     user: str = Field(..., min_length=1, max_length=128)
     password: str = Field(..., min_length=1, max_length=1024)
     connection: str = Field("", max_length=2048, description="host:port/service, host:port:SID, jdbc:oracle:thin:@..., jdbc:mariadb://...")
@@ -1199,7 +1304,7 @@ class CapturedLogins(BaseModel):
 
 class RunRequest(BaseModel):
     pipeline_id: str = Field(..., min_length=1, max_length=300)
-    db: str = Field(..., description="insight7 | rimdocs | mariadb - picks the validation config")
+    db: str = Field(..., description="insight7 | rimdocs | mariadb | lift - picks the validation config")
     write: bool = Field(False, description="append the report to Snowflake CORE so IT Checks shows it")
     source: Optional[SourceLogin] = None
     target: Optional[TargetLogin] = None

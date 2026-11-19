@@ -427,6 +427,8 @@ function DataQualityEngine() {
     if (!hasPermission('runITChecks')) return 'hidden';
     // Re-validate only speaks Oracle; MariaDB sources (HAQ) would hit the Oracle default and fail.
     if (/^haq/i.test(table.source_db || '')) return 'no-connection';
+    // same for SQL Server (LIFT): validate those again from Pipeline Studio
+    if ((table._source_type || table.source_type) === 'SQL Server' || /lift/i.test(table.source_db || '')) return 'no-connection';
     if (oracleConnections.configured.length === 0 && !oracleConnections.has_default) return 'no-connection';
     if (oracleConnections.has_default) return 'active';
     const key = (table.source_db || table.target_database || '').toUpperCase();

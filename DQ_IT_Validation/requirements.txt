@@ -3,4 +3,4 @@ cryptography
 pandas
 requests
 oracledb
-paramiko
+paramikopymssql>=2.3

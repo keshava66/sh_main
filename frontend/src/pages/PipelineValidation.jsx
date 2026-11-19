@@ -2580,7 +2580,8 @@ const EMPTY_SRC = { user: '', password: '', connection: '' };
 const EMPTY_TGT = { account: '', user: '', role: '', warehouse: '', private_key: '', private_key_password: '' };
 const MAX_LOG = 3000;
 const failRunning = (r) => Object.fromEntries(['extract', 'review', 'validate', 'write'].map((k) => [k, r[k] === 'running' || r[k] === 'pending' ? 'failed' : r[k]]));
-const guessDb = (name = '') => (/maria|mysql/i.test(name) ? 'mariadb' : /rim/i.test(name) ? 'rimdocs' : 'insight7');
+const guessDb = (name = '') => (/maria|mysql/i.test(name) ? 'mariadb' : /lift|mssql|sqlsvr|sql_?server/i.test(name) ? 'lift' : /rim/i.test(name) ? 'rimdocs' : 'insight7');
+const DB_FOR_SOURCE = { MariaDB: 'mariadb', 'SQL Server': 'lift' };
 const errText = (e, fallback) => e?.detail || e?.message || fallback;
 
 function credsProblem(srcMode, src, tgtMode, tgt, cap, auto) {
@@ -2669,7 +2670,7 @@ function useValidation({ canValidate, canHistory }) {
     es.current?.close();
     setRun(null);
     setPicked({ id: p.id, name: p.name });
-    setDb(support?.[p.id]?.source === 'MariaDB' ? 'mariadb' : guessDb(p.name));
+    setDb(DB_FOR_SOURCE[support?.[p.id]?.source] || guessDb(p.name));
   }, [running, picked?.id, support]);
 
   // POST bodies: logins must never end up in a URL (proxy / server access logs)
@@ -2830,10 +2831,13 @@ function connRows(conn) {
   const m = c.match(/^\/*([^:/]+)(?::(\d+))?(?:\/(.+))?$/);   // host[:port][/service]
   return m ? [['Host', m[1]], ['Port', m[2]], ['Service name', m[3]]] : [['Connection', c]];
 }
-// jdbc:mariadb://host:3306/db?a=b&c=d -> labelled parts
+// jdbc:mariadb://host:3306/db?a=b&c=d or jdbc:sqlserver://host:1433;databaseName=db;... -> labelled parts
 function jdbcParts(conn) {
-  const m = String(conn || '').trim().match(/^jdbc:(\w+):\/\/([^:/?]+)(?::(\d+))?(?:\/([^?;]*))?(?:[?;](.*))?$/i);
-  return m ? { host: m[2], port: m[3], db: m[4], opts: (m[5] || '').split(/[&;]/).filter(Boolean) } : null;
+  const m = String(conn || '').trim().match(/^jdbc:(\w+):\/\/([^:/?;]+)(?::(\d+))?(?:\/([^?;]*))?(?:[?;](.*))?$/i);
+  if (!m) return null;
+  const opts = (m[5] || '').split(/[&;]/).filter(Boolean);
+  const dbOpt = opts.find((o) => /^database(name)?=/i.test(o));
+  return { host: m[2], port: m[3], db: m[4] || dbOpt?.split('=')[1], opts: opts.filter((o) => o !== dbOpt) };
 }
 
 function CapturedConnection({ f }) {
@@ -2924,7 +2928,7 @@ function LoginSide({ v, side, disabled }) {
     if (isSrc) { v.setSrcMode(m); if (m !== 'custom') v.setSrc(EMPTY_SRC); } else { v.setTgtMode(m); if (m !== 'custom') v.setTgt(EMPTY_TGT); }
   };
   const set = (k) => (e) => (isSrc ? v.setSrc : v.setTgt)((x) => ({ ...x, [k]: e.target.value }));
-  const srcName = v.support?.[v.picked?.id]?.source || 'Oracle / MariaDB';
+  const srcName = v.support?.[v.picked?.id]?.source || 'Oracle / MariaDB / SQL Server';
   return (
     <div className="pvs-login">
       <div className="pvs-login-h">
@@ -2943,7 +2947,7 @@ function LoginSide({ v, side, disabled }) {
           <LoginField label="Username"><input className="pvs-input" value={v.src.user} onChange={set('user')} disabled={disabled} autoComplete="off" /></LoginField>
           <LoginField label="Password"><input className="pvs-input" type="password" value={v.src.password} onChange={set('password')} disabled={disabled} autoComplete="new-password" /></LoginField>
           <LoginField label="Connection" hint="optional - blank uses the pipeline's / config's">
-            <input className="pvs-input" value={v.src.connection} onChange={set('connection')} disabled={disabled} autoComplete="off" placeholder="jdbc:mariadb://host:3306/db or host:1521/service" />
+            <input className="pvs-input" value={v.src.connection} onChange={set('connection')} disabled={disabled} autoComplete="off" placeholder="jdbc:sqlserver://host:1433;databaseName=db, jdbc:mariadb://host:3306/db or host:1521/service" />
           </LoginField>
         </>
       )}
@@ -3036,7 +3040,8 @@ function ReviewPlan({ plan, hideProblems }) {
       {p.source && p.target && (
         <div className="pvs-grid2" style={{ marginTop: 0, gap: 10 }}>
           <ReviewSide title={`Source · ${p.source.type}`} ok={p.source.login_ok}
-            rows={[...connRows(p.source.connection), [p.source.type === 'Oracle' ? 'Schema' : 'Database', p.source.schema], ['User', p.source.user]]} />
+            rows={[...(p.source.type === 'SQL Server' ? sqlRows(p.source.connection) : connRows(p.source.connection)),
+              [p.source.type === 'MariaDB' ? 'Database' : 'Schema', p.source.schema], ['User', p.source.user]]} />
           <ReviewSide title="Target · Snowflake" ok={p.target.login_ok}
             rows={[['Account', p.target.account], ['Database.schema', [p.target.database, p.target.schema].filter(Boolean).join('.')],
               ['User', p.target.user], ['Role', p.target.roles ? p.target.roles.join(', ') : p.target.role], ['Warehouse', p.target.warehouse], ['Sign-in', p.target.login]]} />
@@ -3045,8 +3050,33 @@ function ReviewPlan({ plan, hideProblems }) {
       {p.query && <div style={{ marginTop: 10 }}><b className="pvs-sub">Source query</b><pre className="pvs-pre">{p.query}</pre></div>}
       {p.tables && <TableMap tables={p.tables} />}
       {p.excluded_columns?.length > 0 && <p className="pvs-hint">Left out of every comparison: {p.excluded_columns.join(', ')}</p>}
+      <Transformations steps={p.transformations} />
     </div>
   ));
+}
+
+// SQL Server review connection is host:port/database
+const sqlRows = (c) => { const [hp, db] = String(c || '').split('/'); const [h, port] = hp.split(':'); return [['Host', h], ['Port', port], ['Database', db]]; };
+
+// What the pipeline does to the data on the way (from its processors). Differences these explain are shown as expected.
+function Transformations({ steps }) {
+  if (!steps?.length) return null;
+  const did = steps.filter((x) => x.stage);
+  const notes = steps.filter((x) => !x.stage);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <b className="pvs-sub">What the pipeline changes on the way</b>
+      {did.length > 0 && (
+        <table className="pvs-tbl" style={{ marginTop: 6 }}>
+          <tbody>{did.map((x, i) => (
+            <tr key={i}><td style={{ width: '30%' }}><b>{x.stage}</b></td><td style={{ width: '18%' }}>{x.kind}</td><td className="pvs-mono" style={{ wordBreak: 'break-word' }}>{x.detail}</td></tr>
+          ))}</tbody>
+        </table>
+      )}
+      {notes.map((x) => <p key={x.detail} className="pvs-hint" style={{ margin: '6px 0 0' }}>{x.detail}</p>)}
+      <p className="pvs-hint" style={{ margin: '6px 0 0' }}>Differences these explain are listed as expected, not as issues.</p>
+    </div>
+  );
 }
 
 /* -------------------------------- live log ------------------------------- */
@@ -3128,7 +3158,12 @@ function TableRow({ t }) {
             {ca.source_only_columns?.length > 0 && <p style={{ margin: '8px 0 0' }}>Only in source: <span className="pvs-bad">{ca.source_only_columns.join(', ')}</span></p>}
             {ca.snowflake_only_columns?.length > 0 && <p style={{ margin: '4px 0 0' }}>Only in Snowflake: <span style={{ color: 'var(--proc)' }}>{ca.snowflake_only_columns.join(', ')}</span></p>}
             {issues.length > 0 && <ul className="pvs-bad" style={{ margin: '8px 0 0', paddingLeft: 18 }}>{issues.map((x, k) => <li key={k}>{x}</li>)}</ul>}
-            {!issues.length && t.status === 'PASSED' && <p className="pvs-ok" style={{ margin: '8px 0 0' }}>Every check matches.</p>}
+            {t.transformation_notes?.map((x) => <p key={x} style={{ margin: '6px 0 0', color: 'var(--warn)' }}>{x}</p>)}
+            {t.expected_differences?.length > 0 && (
+              <div style={{ marginTop: 8 }}><span className="pvs-sub">Expected - made by the pipeline:</span>
+                <ul className="pvs-sub" style={{ margin: '4px 0 0', paddingLeft: 18 }}>{t.expected_differences.map((x, k) => <li key={k}>{x}</li>)}</ul></div>
+            )}
+            {!issues.length && t.status === 'PASSED' && <p className="pvs-ok" style={{ margin: '8px 0 0' }}>{t.expected_differences?.length ? 'Every difference is one the pipeline makes on purpose.' : 'Every check matches.'}</p>}
           </td>
         </tr>
       )}
@@ -3204,7 +3239,7 @@ function ValidatePanel({ v, detail, onOpenPipeline }) {
     return <div className="pvs-empty"><div><b>Validation is locked</b><p>You need the <code>runITChecks</code> permission. You can still view and extract this pipeline.</p></div></div>;
   }
   if (sv?.ok === false) {
-    return <div className="pvs-empty"><div><b>This pipeline can&apos;t be validated</b><p>{sv.reason}. Only Oracle or MariaDB → Snowflake pipelines are supported. You can still view and extract it.</p></div></div>;
+    return <div className="pvs-empty"><div><b>This pipeline can&apos;t be validated</b><p>{sv.reason}. Only Oracle, MariaDB or SQL Server → Snowflake pipelines are supported. You can still view and extract it.</p></div></div>;
   }
   if (v.running && v.picked && v.picked.id !== detail.id) {
     return (
@@ -3448,6 +3483,7 @@ const PAGE_CSS = `${PANEL_CSS}
 .pvs-badge { width: 34px; height: 30px; margin-top: -2px; border-radius: 8px; display: grid; place-items: center; font-size: 10px; font-weight: 700; flex-shrink: 0; background: var(--wash-2); color: var(--mute); letter-spacing: .02em; }
 .pvs-badge.is-ora { background: #fdecea; color: var(--red); }
 .pvs-badge.is-mdb { background: var(--proc-bg); color: var(--proc); }
+.pvs-badge.is-mss { background: var(--blue-soft, #e8f0fe); color: var(--blue, #1a56db); }
 .pvs-badge.is-any { background: var(--src-bg); color: var(--ok); }
 .pvs-last { align-self: center; flex-shrink: 0; }
 .pvs-why { color: var(--warn); }
@@ -3457,7 +3493,7 @@ const PAGE_CSS = `${PANEL_CSS}
 .pvs-hnote { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 `;
 
-const SOURCE_BADGE = { Oracle: ['ORA', 'is-ora'], MariaDB: ['MDB', 'is-mdb'] };
+const SOURCE_BADGE = { Oracle: ['ORA', 'is-ora'], MariaDB: ['MDB', 'is-mdb'], 'SQL Server': ['MSS', 'is-mss'] };
 const when = (s) => {
   const d = new Date(String(s || '').replace(' ', 'T'));
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
@@ -3499,7 +3535,7 @@ export default function PipelineValidation() {
         { id: 'history', label: 'History', icon: 'clock', locked: canHistory ? null : 'Needs the viewITChecks permission',
           render: (detail) => <HistoryTab detail={detail} /> },
       ],
-      heroStep: ['shield', 'ok', 'Validate', 'Compare an Oracle or MariaDB pipeline with Snowflake table by table, and add the result to IT Checks if you want.'],
+      heroStep: ['shield', 'ok', 'Validate', 'Compare an Oracle, MariaDB or SQL Server pipeline with Snowflake table by table, and add the result to IT Checks if you want.'],
       filter: canValidate ? { label: 'Can validate', count: supportedCount, test: (p) => verdict(p.id)?.ok !== false } : null,
       railNote: canValidate && (
         <div className="pvs-meter">
