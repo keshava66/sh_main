@@ -2482,6 +2482,13 @@ function ExtractViewer({ meta, url, title, onClose }) {
             <div className="flex flex-col items-center justify-center text-center gap-2 py-16">
               <div className="text-[15px] font-johnson-text font-bold text-jj-gray-08">No extracted content</div>
               <div className="text-[13px] font-johnson-text text-jj-gray-07 max-w-[420px]">{data.reason}</div>
+              {data.ingestion && (
+                <div className="text-[12px] font-johnson-text text-jj-gray-07">
+                  Ingestion: <span className="font-bold text-jj-gray-08">{data.ingestion.status || 'unknown'}</span>
+                  {data.ingestion.updated_at && <> · updated {fmtDate(data.ingestion.updated_at)}</>}
+                </div>
+              )}
+              {data.ingestion?.error && <div className="text-[12px] font-mono text-jj-maroon-05 max-w-[600px] break-words">{data.ingestion.error}</div>}
               {data.s3_path && <div className="text-[11.5px] font-mono text-jj-gray-06 break-all">{data.s3_path}</div>}
             </div>
           )}

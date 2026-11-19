@@ -974,6 +974,7 @@ def get_record(tid: str, key: str = Query(..., min_length=1, max_length=100), au
 STATUS_TABLE = f"{DB}.{SCHEMA}.PILLAR_DOCS_STATUS_S3"
 PG_DATABASE = "regulatory"
 PG_TABLE = "rimdocs_extracts_core.doc_chunks_cortellis"
+LOG_TABLE = "rimdocs_extracts_core.ingestion_log_cortellis"
 MAX_CHUNKS = 1000
 
 _pg_config: Dict[str, Any] | None = None
@@ -1074,7 +1075,26 @@ def get_extract(tid: str, url: str = Query(..., min_length=1, max_length=500),
     out["columns"] = list(names)
     out["chunks"] = [{n: _pg_json(v) for n, v in zip(names, r)} for r in rows]
     out["found"] = bool(rows)
-    if not rows:
-        out["reason"] = "Downloaded, but not extracted yet."
-    _cache_set(key, out)
-    return out
+    if rows:
+        _cache_set(key, out)
+        return out
+    # no chunks yet, the ingestion log says why (RUNNING, FAILED + error)
+    out["reason"] = "Downloaded, but not extracted yet."
+    try:
+        _, log = _pg_run(f"SELECT status, error_message, updated_at FROM {LOG_TABLE} WHERE file_name = %s "
+                         "ORDER BY updated_at DESC NULLS LAST LIMIT 1", (s3_path.rsplit("/", 1)[-1],))
+    except HTTPException:
+        log = []
+    if log:
+        st, err, when = log[0]
+        out["ingestion"] = {"status": st, "error": err, "updated_at": _pg_json(when)}
+        u = str(st or "").upper()
+        if u in ("RUNNING", "PENDING", "QUEUED", "PROCESSING"):
+            out["reason"] = "Extraction is still running for this document. Check back later."
+        elif u in ("FAILED", "ERROR"):
+            out["reason"] = "Extraction failed for this document."
+        else:
+            out["reason"] = f"Extraction status is {st}, but no text was saved."
+    else:
+        out["reason"] = "Downloaded, but extraction hasn't started yet."
+    return out   # not cached, it'll change once ingestion finishes
