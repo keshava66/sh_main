@@ -54,7 +54,7 @@ const saveSelection = (ids) => {
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const shortDate = (iso) => {
   if (!iso) return '';
-  const d = new Date(iso);
+  const d = new Date(String(iso).replace(' ', 'T'));   // the validation history writes "YYYY-MM-DD HH:MM:SS"
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 };
 const initials = (name) => String(name || '?').split(/[\s._@-]+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase();
@@ -211,7 +211,7 @@ const PANE_CSS = `
   radial-gradient(900px 260px at 78% 120%, rgba(41, 181, 232, .16), transparent 70%),
   radial-gradient(700px 240px at 12% -30%, rgba(235, 23, 0, .26), transparent 70%),
   #262120; }
-.ss-hero { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 28px; align-items: center; padding: 20px 0 18px;
+.ss-hero { display: grid; grid-template-columns: minmax(320px, 480px) 1fr; gap: 28px; align-items: center; padding: 20px 0 18px;
   max-height: 260px; overflow: hidden; transition: max-height .45s var(--ease), padding .45s var(--ease), opacity .3s; }
 .ss-root.is-lifted .ss-hero, .ss-root.has-sheet .ss-hero { max-height: 0; padding: 0; opacity: 0; }
 .ss-hero-stat { display: flex; align-items: center; gap: 20px; min-width: 0; animation: ss-rise .6s var(--ease) both; }
@@ -257,6 +257,15 @@ const PANE_CSS = `
 .ss-flow-dst small { color: rgba(255, 255, 255, .6); font-size: 11.5px; }
 @container ss-pane (max-width: 1180px) { .ss-hero { grid-template-columns: 270px 1fr; gap: 18px; } .ss-hero-ring { display: none; } .ss-flow { grid-template-columns: 112px 1fr 100px; } }
 @container ss-pane (max-width: 820px) { .ss-hero { grid-template-columns: 1fr; } .ss-flow { display: none; } }
+.ss-hero-ring.is-loading svg { animation: ss-spin 1.4s linear infinite; }
+.ss-hero-ring.is-loading .ss-hero-ring-bg { stroke: rgba(255, 255, 255, .14); stroke-dasharray: 60 216; stroke-linecap: round; }
+.ss-hero.is-skel .ss-hero-text { display: grid; gap: 10px; }
+.ss-hero.is-skel .ss-hero-text i { display: block; max-width: 100%; border-radius: 6px; background: rgba(255, 255, 255, .08); animation: ss-pulse 1.4s ease-in-out infinite; }
+.ss-hero-text p.is-err { color: #ffb4a6; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ss-hero-text p .ss-link { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+.ss-flow-wait { height: 196px; border-radius: 14px; border: 1px dashed rgba(255, 255, 255, .14); display: grid; place-items: center; color: rgba(255, 255, 255, .5); font-size: 12.5px;
+  background: repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 28px); }
+@container ss-pane (max-width: 820px) { .ss-flow-wait { display: none; } }
 @media (prefers-reduced-motion: reduce) { .ss-hero, .ss-hero *, .ss-hero-ring-fg { animation: none !important; transition: none !important; } }
 @container ss-pane (max-width: 1250px) { .ss-pills { display: none; } .ss-brand small { display: none; } }
 @container ss-pane (max-width: 1000px) { .ss-jump { min-width: 0; } .ss-jump span { display: none; } .ss-search { flex-basis: 100%; } }
@@ -266,7 +275,7 @@ const PANE_CSS = `
 /* -------------------------------- board -------------------------------- */
 .ss-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: auto; background: var(--wash-2); }
 .ss-board { display: flex; align-items: flex-start; gap: 14px; padding: 18px 22px 140px; min-height: 100%; width: max-content; min-width: 100%; }
-.ss-lane { flex: 1 1 0; min-width: 268px; max-width: 440px; display: flex; flex-direction: column; border-radius: 16px; transition: box-shadow .3s; }
+.ss-lane { flex: 1 1 0; min-width: 268px; max-width: 600px; display: flex; flex-direction: column; border-radius: 16px; transition: box-shadow .3s; }
 .ss-lane.is-flash { animation: ss-flash 1.1s var(--ease); }
 @keyframes ss-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--lane); } 100% { box-shadow: 0 0 0 3px transparent; } }
 .ss-lane-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 4px 4px 10px; background: var(--wash-2); }
@@ -407,7 +416,7 @@ const PANE_CSS = `
 .ss-route .ss-ep-h { color: rgba(255, 255, 255, .5); }
 .ss-route .ss-ep-row b { color: #fff; }
 .ss-route .ss-ep-row button:hover b { color: #ffb4a6; }
-.ss-route .ss-ep-row small, .ss-route .ss-ep-more { color: rgba(255, 255, 255, .6); }
+.ss-route .ss-ep-row small { color: rgba(255, 255, 255, .6); }
 .ss-route .ss-track-sum { color: rgba(255, 255, 255, .72); }
 .ss-route .ss-track-line::before { background: rgba(255, 255, 255, .18); }
 .ss-route :focus-visible { outline-color: #fff; }
@@ -740,7 +749,22 @@ const PANE_CSS = `
   .ss-tab { height: 34px; }
   .ss-root.has-sheet .ss-tools { display: none; }
   .ss-band { padding-top: 10px; }
+  .ss-tools { margin-top: 10px; }
+  .ss-hero { padding: 12px 0 12px; gap: 20px; }
+  .ss-flow, .ss-flow-wait { height: 132px; }
+  .ss-hero-ring { width: 84px; height: 84px; }
+  .ss-hero-ring b { font-size: 26px; }
+  .ss-hero-text h2 { font-size: 20px; }
+  .ss-hero-text p { margin: 2px 0 8px; }
+  .ss-hero-stat { gap: 16px; }
+  .ss-hl { height: 24px; font-size: 11.5px; }
+  .ss-flow-src span { font-size: 11.5px; }
+  .ss-flow-src span b { font-size: 12.5px; }
+  .ss-flow-sf { width: 28px; height: 28px; margin-bottom: 2px; }
+  .ss-board { padding-top: 12px; }
 }
+@media (max-height: 820px) { .ss-route { display: none; } }
+@media (max-height: 700px) { .ss-hero-lanes { display: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   .ss-root *, .ss-root *::before, .ss-root *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -1161,7 +1185,20 @@ const Board = memo(function Board({ lanes, rowsByLane, collapsed, onCollapse, qu
 
 // The hero: the board's health as a number, the lanes as chips, and every pipeline drawn as a live line
 // from its source into Snowflake, coloured by its last result. Hover a line to see it, click to open it.
-const FLOW_H = 196;
+const FLOW_TALL = 196;
+const FLOW_SHORT = 132;   // short screens (laptops at 125-150% scaling) keep the board in view
+const SHORT_Q = '(max-height: 820px)';
+function useShortScreen() {
+  const [short, setShort] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.(SHORT_Q).matches);
+  useEffect(() => {
+    const m = window.matchMedia?.(SHORT_Q);
+    if (!m) return undefined;
+    const on = () => setShort(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, []);
+  return short;
+}
 const FLOW_STEPS = 48;
 const reducedMotion = () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 const easeOut = (t) => 1 - (1 - t) ** 3;
@@ -1184,12 +1221,12 @@ function useCountUp(value, ms = 900) {
   return shown;
 }
 
-function flowLayout(items, sources, cw) {
-  const H = FLOW_H, pad = 12, gap = 10;
+function flowLayout(items, sources, cw, H) {
+  const pad = H < 160 ? 6 : 12, gap = H < 160 ? 5 : 10;
   const used = sources.map(s => ({ ...s, rows: items.filter(i => i.src === s.id) })).filter(s => s.rows.length);
   const total = used.reduce((n, s) => n + s.rows.length, 0);
   if (!total || cw < 80) return null;
-  const minH = 22;
+  const minH = H < 160 ? 14 : 22;
   const room = Math.max(0, H - pad * 2 - gap * (used.length - 1) - minH * used.length);
   let y = pad;
   const nodes = used.map(s => {
@@ -1251,13 +1288,14 @@ function FlowField({ items, sources, focus, paused, onOpen, destLabel = 'Snowfla
     return () => ro.disconnect();
   }, []);
 
-  const geo = useMemo(() => flowLayout(items, sources, cw), [items, sources, cw]);
+  const H = useShortScreen() ? FLOW_SHORT : FLOW_TALL;
+  const geo = useMemo(() => flowLayout(items, sources, cw, H), [items, sources, cw, H]);
 
   useEffect(() => {
     const cv = cvRef.current;
     if (!cv || !geo) return undefined;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    cv.width = cw * dpr; cv.height = FLOW_H * dpr;
+    cv.width = cw * dpr; cv.height = H * dpr;
     const ctx = cv.getContext('2d');
     const { lines, xs, nodes } = geo;
     const still = reducedMotion();
@@ -1288,7 +1326,7 @@ function FlowField({ items, sources, focus, paused, onOpen, destLabel = 'Snowfla
       const age = still ? 1 : Math.min(1, (now - born) / 1100);
       const grow = easeOut(age);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, cw, FLOW_H);
+      ctx.clearRect(0, 0, cw, H);
       const hot = hotRef.current;
       const dim = (l) => (focus && l.lane !== focus) || (hot && hot !== l);
       // source and destination bars
@@ -1329,7 +1367,7 @@ function FlowField({ items, sources, focus, paused, onOpen, destLabel = 'Snowfla
     document.addEventListener('visibilitychange', vis);
     kick();
     return () => { cancelAnimationFrame(raf); io.disconnect(); document.removeEventListener('visibilitychange', vis); };
-  }, [geo, cw, focus, paused]);
+  }, [geo, cw, H, focus, paused]);
 
   const pick = (e) => {
     if (!geo) return null;
@@ -1367,7 +1405,7 @@ function FlowField({ items, sources, focus, paused, onOpen, destLabel = 'Snowfla
         ))}
       </div>
       <div className="ss-flow-cv" ref={wrapRef}>
-        <canvas ref={cvRef} style={{ width: cw, height: FLOW_H, cursor: tip ? 'pointer' : 'default' }}
+        <canvas ref={cvRef} style={{ width: cw, height: H, cursor: tip ? 'pointer' : 'default' }}
           onMouseMove={onMove} onMouseLeave={onLeave} onClick={() => tip && onOpen(tip.l.id)}
           role="img" aria-label={`${geo?.total || 0} pipelines flowing from their sources into ${destLabel}`} />
         {tip && (
@@ -1386,24 +1424,39 @@ function FlowField({ items, sources, focus, paused, onOpen, destLabel = 'Snowfla
   );
 }
 
+function HeroSkeleton() {
+  return (
+    <section className="ss-hero is-skel" aria-hidden="true">
+      <div className="ss-hero-stat">
+        <div className="ss-hero-ring is-loading"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" className="ss-hero-ring-bg" /></svg></div>
+        <div className="ss-hero-text"><i style={{ width: 200, height: 22 }} /><i style={{ width: 240, height: 12 }} /><i style={{ width: 260, height: 26 }} /></div>
+      </div>
+      <div className="ss-flow-wait"><span>Mapping pipelines…</span></div>
+    </section>
+  );
+}
+
 function Hero({ lanes, rowsByLane, total, headline, flowItems, flowSources, paused, onJump, onOpen }) {
   const [focus, setFocus] = useState(null);
   const pct = useCountUp(headline?.ring != null ? Math.round(headline.ring * 100) : total);
-  const ring = headline?.ring ?? 1;
+  const ring = headline?.ring ?? 0;
   const C = 2 * Math.PI * 44;
   return (
-    <section className="ss-hero" aria-label="Board overview">
+    <section className="ss-hero" aria-label="Board overview" aria-busy={headline?.loading || undefined}>
       <div className="ss-hero-stat">
-        <div className="ss-hero-ring" style={{ '--c': headline?.color || '#53ce76' }}>
+        <div className={`ss-hero-ring${headline?.loading ? ' is-loading' : ''}`} style={{ '--c': headline?.color || '#53ce76' }}>
           <svg viewBox="0 0 100 100" aria-hidden="true">
             <circle cx="50" cy="50" r="44" className="ss-hero-ring-bg" />
-            <circle cx="50" cy="50" r="44" className="ss-hero-ring-fg" style={{ strokeDasharray: C, strokeDashoffset: C * (1 - ring) }} />
+            {headline?.ring != null && <circle cx="50" cy="50" r="44" className="ss-hero-ring-fg" style={{ strokeDasharray: C, strokeDashoffset: C * (1 - ring) }} />}
           </svg>
           <div><b>{Math.round(pct)}{headline?.ring != null ? <small>%</small> : null}</b></div>
         </div>
         <div className="ss-hero-text">
           <h2>{headline?.title || plural(total, 'pipeline', 'pipelines')}</h2>
-          <p>{headline?.sub || 'on the board'}</p>
+          <p className={headline?.error ? 'is-err' : undefined} role={headline?.error ? 'alert' : undefined}>
+            {headline?.error && <Svg name="alert" size={13} />}{headline?.sub || 'on the board'}
+            {headline?.onRetry && <button type="button" className="ss-link" onClick={headline.onRetry}>Try again</button>}
+          </p>
           <div className="ss-hero-lanes" role="list" aria-label="Pipelines by lane">
             {lanes.map((l, i) => {
               const n = (rowsByLane.get(l.id) || []).length;
@@ -1419,7 +1472,9 @@ function Hero({ lanes, rowsByLane, total, headline, flowItems, flowSources, paus
           </div>
         </div>
       </div>
-      {flowItems && <FlowField items={flowItems} sources={flowSources} focus={focus} paused={paused} onOpen={onOpen} />}
+      {flowItems
+        ? <FlowField items={flowItems} sources={flowSources} focus={focus} paused={paused} onOpen={onOpen} />
+        : flowSources && <div className="ss-flow-wait"><span>{headline?.error ? 'The map needs to know each pipeline’s source' : 'Mapping pipelines…'}</span></div>}
     </section>
   );
 }
@@ -2199,11 +2254,12 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const [listError, setListError] = useState(null);
 
   const [query, setQuery] = useState(urlQuery);
-  const [sort, setSort] = useState('name');
-  const [label, setLabel] = useState(null);
+  // how the board is scoped lives in the address too, so a view can be shared, bookmarked or gone back to
+  const sort = params.get('sssort') === 'modified' ? 'modified' : 'name';
+  const label = params.get('sslabel') || null;
+  const groupBy = params.get('ssgroup') || null;   // null = the board's default (it can change as permissions load)
   const [pickedOnly, setPickedOnly] = useState(false);
   const board = studio?.board || null;
-  const [groupBy, setGroupBy] = useState(null);   // null = the board's default (it can change as permissions load)
   const mode = groupBy && board?.lanes[groupBy] ? groupBy : board?.defaultMode || 'all';
   const [collapsed, setCollapsed] = useState(() => new Set(board?.folded || []));
   // permissions can arrive after the first render: fold the board's default lanes once it exists
@@ -2257,6 +2313,10 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
       return next;
     }, { replace });
   }, [setParams]);
+
+  const setSort = useStable((v) => navigate({ sssort: v === 'modified' ? v : null }, { replace: true }));
+  const setLabel = useStable((v) => navigate({ sslabel: v }, { replace: true }));
+  const setGroupBy = useStable((v) => navigate({ ssgroup: v === board?.defaultMode ? null : v }, { replace: true }));
 
   const openPipeline = useStable((id) => {
     if (id === pipelineId) return;
@@ -2377,6 +2437,12 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   useEffect(() => {
     if (detail && stagePath && !found) navigate({ stage: null }, { replace: true });
   }, [detail, stagePath, found, navigate]);
+  // tidy addresses that can't mean anything: an unknown tab, or a tab or stage with no pipeline open
+  const rawView = params.get('ssview');
+  useEffect(() => {
+    const stray = (rawView && (!pipelineId || !views.some(v => v.id === rawView))) || (stagePath && !pipelineId);
+    if (stray) navigate({ ssview: pipelineId && views.some(v => v.id === rawView) ? rawView : null, ...(pipelineId ? {} : { stage: null }) }, { replace: true });
+  }, [rawView, pipelineId, stagePath, views, navigate]);
 
   /* ------------------------------ selection ------------------------------- */
 
@@ -2405,11 +2471,13 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const ordered = useMemo(() => lanes.filter(l => !collapsed.has(l.id)).flatMap(l => rowsByLane.get(l.id) || []), [lanes, rowsByLane, collapsed]);
   const shown = ordered;   // "Pick shown" leaves folded lanes alone
   const cardInfo = useMemo(() => (board ? (p) => board.card(p, mode) : null), [board, mode]);
+  const laneReady = !board?.readyFor || board.readyFor(mode);   // lanes wait for what sorts them, rather than showing them all empty
   const flow = useMemo(() => {
     if (!board?.flow) return null;
     const items = visible.map(p => ({ id: p.id, name: p.name, lane: board.laneOf(p, mode), ...board.flow(p) }));
     items.sort((a, b) => a.rank - b.rank);
-    return { items, sources: board.flowSources, headline: board.headline(visible) };
+    const headline = board.headline(visible);
+    return { items: board.ready && board.flowOk ? items : null, sources: board.flowSources, headline };
   }, [visible, board, mode]);
   // the hero folds away once the board is scrolled, and comes back at the top
   const [lifted, setLifted] = useState(false);
@@ -2710,6 +2778,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
               <Svg name="layers" size={14} />
               <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
                 <option value="">All labels</option>
+                {label && !labelCounts.some(([l]) => l === label) && <option value={label}>{label}</option>}
                 {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
               </select>
             </label>
@@ -2719,7 +2788,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
               <Svg name="check" size={13} />Picked <em>{selected.size}</em>
             </button>
           )}
-          {board && Object.keys(board.lanes).length > 1 && (
+          {board && board.modes.length > 1 && (
             <Segmented label="Group pipelines by" value={mode} onChange={setGroupBy} options={board.modes} />
           )}
           <Segmented label="Sort" value={sort} onChange={setSort} options={[['name', 'A–Z'], ['modified', 'Recent']]} />
@@ -2736,6 +2805,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
               label={`Reload from StreamSets${fetchedAt ? ` (synced ${formatWhen(fetchedAt)})` : ''}`} />
           </span>
         </div>
+        {booting && !listError && <HeroSkeleton />}
         {!booting && pipelines.length > 0 && (
           <Hero lanes={lanes} rowsByLane={rowsByLane} total={visible.length} headline={flow?.headline}
             flowItems={flow?.items} flowSources={flow?.sources} paused={!!pipelineId || lifted} onJump={jumpToLane} onOpen={openPipeline} />
@@ -2756,7 +2826,8 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
               <button type="button" className="ss-btn" onClick={clearFilters}>Clear filters</button>
             </div>
           )}
-          {!booting && visible.length > 0 && (
+          {!booting && visible.length > 0 && !laneReady && <BoardSkeleton />}
+          {!booting && visible.length > 0 && laneReady && (
             <Board lanes={lanes} rowsByLane={rowsByLane} collapsed={collapsed} onCollapse={foldLane} query={listQuery} openId={pipelineId}
               picked={selected} full={full} maxPerRun={maxPerRun} runStates={runStates} onPick={toggle} onOpen={openPipeline}
               cardInfo={cardInfo} />
@@ -2829,7 +2900,6 @@ const PANEL_CSS = `
 .pvs-card-h b { font-size: 13.5px; }
 .pvs-card-b { padding: 14px 16px; }
 .pvs-micro { font-size: 10px; text-transform: uppercase; letter-spacing: .16em; color: var(--ink-3); font-weight: 700; margin-bottom: 6px; }
-.pvs-h4 { margin: 18px 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-3); font-weight: 700; }
 .pvs-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; margin-top: 16px; }
 .pvs-grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .pvs-hint { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
@@ -2877,11 +2947,6 @@ const PANEL_CSS = `
 @container ss-pane (max-width: 1180px) { .pvs-layout { grid-template-columns: 1fr; } .pvs-ctl { position: static; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); } .pvs-runbar { flex-wrap: wrap; } .pvs-go { flex-basis: 100%; padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--line); } }
 
 /* settings */
-.pvs-opt { display: flex; gap: 8px; }
-.pvs-radio { flex: 1; border: 1.5px solid var(--line-2); border-radius: 10px; padding: 8px 11px; text-align: left; background: #fff; }
-.pvs-radio.is-on { border-color: var(--red); background: var(--red-wash); }
-.pvs-radio b { display: block; font-size: 12.5px; }
-.pvs-radio span { font-size: 11px; color: var(--ink-3); }
 .pvs-input { height: 36px; border: 1px solid var(--line-2); border-radius: 9px; padding: 0 10px; width: 100%; background: #fff; font: inherit; color: inherit; }
 .pvs-input:focus { outline: none; border-color: var(--red); box-shadow: 0 0 0 3px rgba(235,23,0,.1); }
 .pvs-input:disabled { background: var(--wash); }
@@ -3002,7 +3067,9 @@ function useValidation({ canValidate, canHistory }) {
   const [setup, setSetup] = useState(null);
   const [setupErr, setSetupErr] = useState('');
   const [support, setSupport] = useState(null);   // {id: {ok, reason, source}}; null while checking
-  const [latest, setLatest] = useState({});       // pipeline name -> {status, load_date}
+  const [supportErr, setSupportErr] = useState('');
+  const [latest, setLatest] = useState(null);     // pipeline name -> {status, load_date}; null while loading
+  const [latestErr, setLatestErr] = useState('');
 
   const [picked, setPicked] = useState(null);     // {id, name}
   const [db, setDb] = useState('insight7');
@@ -3020,7 +3087,9 @@ function useValidation({ canValidate, canHistory }) {
 
   const loadLatest = useCallback(() => {
     if (!canHistory) return;
-    apiJson('/api/pipeline-validation/latest').then((r) => setLatest(r.pipelines || {})).catch(() => setLatest({}));
+    setLatestErr('');
+    apiJson('/api/pipeline-validation/latest').then((r) => setLatest(r.pipelines || {}))
+      .catch((e) => { setLatest((prev) => prev || {}); setLatestErr(errText(e, "Couldn't load the last results")); });
   }, [canHistory]);
 
   const load = useCallback(() => {
@@ -3029,7 +3098,9 @@ function useValidation({ canValidate, canHistory }) {
     apiJson('/api/pipeline-validation/setup').then(setSetup).catch((e) => setSetupErr(errText(e, "Couldn't load the validation settings")));
     // which pipelines can be validated; the list shows right away and the badges land when this does
     setSupport(null);
-    apiJson('/api/pipeline-validation/support').then(setSupport).catch(() => setSupport({}));
+    setSupportErr('');
+    apiJson('/api/pipeline-validation/support').then(setSupport)
+      .catch((e) => { setSupport({}); setSupportErr(errText(e, "Couldn't check which pipelines can be validated")); });
   }, [canValidate]);
 
   useEffect(() => { load(); loadLatest(); }, [load, loadLatest]);
@@ -3159,10 +3230,9 @@ function useValidation({ canValidate, canHistory }) {
     return () => window.removeEventListener('beforeunload', warn);
   }, [running]);
 
-  const supportedCount = useMemo(() => (support ? Object.values(support).filter((x) => x?.ok !== false).length : null), [support]);
-
+  const reloadBoard = useCallback(() => { load(); loadLatest(); }, [load, loadLatest]);
   return {
-    canValidate, canHistory, setup, setupErr, support, supportedCount, latest, reload: load,
+    canValidate, canHistory, setup, setupErr, support, supportErr, latest, latestErr, reload: load, reloadBoard,
     picked, pick, running, run, awaiting, confirmBlocked, blocked, loginProblem,
     db, setDb, dbInfo, canWrite, wantWrite, setWriteOn, runMode, setRunMode,
     srcMode, setSrcMode, src, setSrc, tgtMode, setTgtMode, tgt, setTgt, targetRole, setTargetRole,
@@ -3899,7 +3969,6 @@ const Validation = createContext(null);
 const StudioPane = memo(StreamsetsPane);
 
 const PAGE_CSS = `${PANEL_CSS}
-.ss-root .ss-tone-ok { background: var(--src-bg); color: var(--ok); }
 .pvs-badge { width: 34px; height: 30px; margin-top: -2px; border-radius: 8px; display: grid; place-items: center; font-size: 10px; font-weight: 700; flex-shrink: 0; background: var(--wash-2); color: var(--mute); letter-spacing: .02em; }
 .pvs-badge.is-ora { background: #fdecea; color: var(--red); }
 .pvs-badge.is-mdb { background: var(--proc-bg); color: var(--proc); }
@@ -3908,9 +3977,6 @@ const PAGE_CSS = `${PANEL_CSS}
 .pvs-when { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); white-space: nowrap; }
 .pvs-when i { width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--line-2)); }
 .pvs-why { color: var(--warn); }
-.pvs-meter { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-3); }
-.pvs-meter div { flex: 1; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
-.pvs-meter i { display: block; height: 100%; border-radius: 4px; background: var(--ok); transition: width .6s; }
 .pvs-hnote { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 `;
 
@@ -3920,10 +3986,6 @@ const RESULT_LANE = { CRITICAL: 'attention', ERROR: 'attention', FAULTY: 'attent
 const LANE_GLOW = { attention: '#ff3b22', warn: '#e0a100', pass: '#53ce76' };
 const FLOW = { ora: '#ff6a4d', mdb: '#58a6ff', mss: '#b197ff', other: '#c9c2bb', cant: '#6e6259', fresh: '#a39992' };
 const LANE = { crit: '#d4351c', warn: '#c98a00', pass: '#3f8f22', fresh: '#81766f', cant: '#b8afa7', ora: '#eb1700', mdb: '#0f68b2', mss: '#6b46c1' };
-const when = (s) => {
-  const d = new Date(String(s || '').replace(' ', 'T'));
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-};
 
 // The tabs read the validation state from context, so the pane's memoised parts don't re-render on every log line.
 function ValidateTab({ detail, navigate }) {
@@ -3941,7 +4003,7 @@ export default function PipelineValidation() {
   const canValidate = hasPermission('runITChecks');
   const canHistory = hasPermission('viewITChecks');
   const v = useValidation({ canValidate, canHistory });
-  const { support, latest, running } = v;
+  const { support, latest, running, supportErr, latestErr, reloadBoard } = v;
   const pickedId = v.picked?.id;
   const stopRef = useRef(v.stop);
   stopRef.current = v.stop;   // header / list are memoised; this always calls the current run's stop
@@ -3961,8 +4023,10 @@ export default function PipelineValidation() {
           render: (detail) => <HistoryTab detail={detail} /> },
       ],
       board: (canValidate || canHistory) ? {
-        modes: [...(canHistory ? [['result', 'Last result']] : []), ...(canValidate ? [['source', 'Source']] : [])],
-        defaultMode: canHistory ? 'result' : 'source',
+        // if the last results can't be read, the board sorts by source instead of showing every lane empty
+        modes: [...(canHistory && !(latestErr && canValidate) ? [['result', 'Last result']] : []), ...(canValidate ? [['source', 'Source']] : [])],
+        defaultMode: canHistory && !(latestErr && canValidate) ? 'result' : 'source',
+        readyFor: (m) => (m === 'result' ? latest !== null : m === 'source' ? support !== null : true),
         folded: ['cant'],
         lanes: {
           ...(canHistory ? { result: [
@@ -4005,7 +4069,12 @@ export default function PipelineValidation() {
             rank: dead ? 5 : !l ? 4 : ({ CRITICAL: 0, ERROR: 0, FAULTY: 0, WARNING: 1, TABLE_NOT_FOUND: 1, TIMEOUT: 1, PASSED: 2 }[l.status] ?? 3),
           };
         },
+        ready: !(canValidate && support === null) && !(canHistory && latest === null),
+        flowOk: !(canValidate && supportErr),
         headline: (ps) => {
+          const err = (canHistory && latestErr) || (canValidate && supportErr);
+          if (err) return { title: plural(ps.length, 'pipeline', 'pipelines'), sub: err, ring: null, error: true, onRetry: reloadBoard };
+          if ((canHistory && latest === null) || (canValidate && support === null)) return { title: plural(ps.length, 'pipeline', 'pipelines'), sub: 'Checking sources and last results…', ring: null, loading: true };
           if (canHistory) {
             const done = ps.map(p => last(p.name)).filter(Boolean);
             const ok = done.filter(l => l.status === 'PASSED').length;
@@ -4021,8 +4090,8 @@ export default function PipelineValidation() {
           const s = verdict(p.id);
           const l = canHistory ? last(p.name) : null;
           const cant = canValidate && s?.ok === false;
-          const [text, cls] = !canValidate ? ['SRC', 'is-any'] : !s ? ['··', ''] : cant ? ['—', ''] : SOURCE_BADGE[s.source] || ['SRC', 'is-any'];
-          const title = !canValidate ? 'Source' : !s ? 'Checking…' : cant ? `Can't validate: ${s.reason}` : `Source: ${s.source || 'decided when it runs'}`;
+          const [text, cls] = !canValidate ? ['SRC', 'is-any'] : !s ? [supportErr ? '?' : '··', ''] : cant ? ['—', ''] : SOURCE_BADGE[s.source] || ['SRC', 'is-any'];
+          const title = !canValidate ? 'Source' : !s ? (supportErr ? "Couldn't check the source" : 'Checking…') : cant ? `Can't validate: ${s.reason}` : `Source: ${s.source || 'decided when it runs'}`;
           const busy = running && pickedId === p.id;
           return {
             lead: <span className={`pvs-badge ${cls}`} title={title}>{text}</span>,
@@ -4030,8 +4099,8 @@ export default function PipelineValidation() {
             tone: busy ? 'var(--red)' : l ? (STATUS[l.status] || [])[2] : cant ? 'transparent' : 'var(--line-2)',
             muted: cant,
             tail: l ? (mode === 'result'
-              ? <span className="pvs-when" style={{ '--c': (STATUS[l.status] || [])[2] }} title={`Validated ${when(l.load_date)}`}><i />{(STATUS[l.status] || [l.status])[0]} · {relativeDay(String(l.load_date).replace(' ', 'T'))}</span>
-              : <span title={`Last validated ${when(l.load_date)}`}><StatusPill s={l.status} /></span>) : null,
+              ? <span className="pvs-when" style={{ '--c': (STATUS[l.status] || [])[2] }} title={`Validated ${shortDate(l.load_date)}`}><i />{(STATUS[l.status] || [l.status])[0]} · {relativeDay(String(l.load_date).replace(' ', 'T'))}</span>
+              : <span title={`Last validated ${shortDate(l.load_date)}`}><StatusPill s={l.status} /></span>) : null,
             note: busy ? <span className="ss-tag ss-tag-red">● validating</span> : cant ? <span className="pvs-why">{s.reason}</span> : null,
           };
         },
@@ -4064,7 +4133,7 @@ export default function PipelineValidation() {
             {canValidate && s?.ok === false && <><span className="pvs-pill is-warn">Can&apos;t validate: {s.reason}</span><span className="pvs-sub">You can still view and extract it</span></>}
             {canValidate && s && s.ok !== false && <span className="pvs-pill is-src">{s.source || 'Source'} → Snowflake · can be validated</span>}
             {busy && <span className="pvs-sub"><span className="pvs-spin" /> Validating now</span>}
-            {l && <span>Last validated {when(l.load_date)} <StatusPill s={l.status} /></span>}
+            {l && <span>Last validated {shortDate(l.load_date)} <StatusPill s={l.status} /></span>}
           </div>
         );
       },
@@ -4078,7 +4147,7 @@ export default function PipelineValidation() {
         );
       },
     };
-  }, [canValidate, canHistory, support, latestByName, running, pickedId]);
+  }, [canValidate, canHistory, support, latest, latestByName, supportErr, latestErr, reloadBoard, running, pickedId]);
 
   return (
     <Validation.Provider value={v}>
