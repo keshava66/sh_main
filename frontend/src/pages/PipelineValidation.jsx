@@ -534,14 +534,11 @@ const PANE_CSS = `
 /* ------------------------ canvas, Pipeline Studio ------------------------ */
 /* Numbered step bands behind each column, Dashboard-style cards, a flowing red line along a traced path. */
 .ss-canvas.is-studio { container: ss-cv / size; background: radial-gradient(120% 90% at 50% 0%, #fff 0%, #faf9f7 45%, #f4f1ed 100%); }
-.ss-canvas.is-studio .react-flow__node-band { cursor: default; }
-.ss-band-col { width: 100%; height: 100%; border-radius: 26px; background: linear-gradient(180deg, rgba(255, 255, 255, .78), rgba(255, 255, 255, .28) 60%, rgba(255, 255, 255, .08));
-  border: 1px solid rgba(110, 98, 89, .1); }
-.ss-band-h { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 16px; }
-.ss-band-h b { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 700 11.5px var(--display); color: #fff; background: var(--ink); box-shadow: 0 6px 12px -6px rgba(49, 44, 42, .8); }
-.ss-band-h span { font: 700 15px var(--display); letter-spacing: -.01em; color: var(--ink); }
-.ss-band-h em { margin-left: auto; font-style: normal; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); }
-
+.ss-canvas.is-studio .react-flow__node-step { cursor: default; }
+.ss-step-h { display: flex; align-items: center; gap: 9px; height: 30px; padding-left: 4px; }
+.ss-step-h b { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 700 11px var(--display); color: #fff; background: var(--ink); box-shadow: 0 6px 12px -6px rgba(49, 44, 42, .8); }
+.ss-step-h span { font: 700 14px var(--display); letter-spacing: -.01em; color: var(--ink); }
+.ss-step-h em { font-style: normal; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
 .ss-canvas.is-studio .ss-node { border-radius: 18px; border: 1px solid var(--line); background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%);
   box-shadow: 0 18px 34px -26px rgba(49, 44, 42, .55); overflow: visible; transition: border-color .25s, box-shadow .3s, opacity .25s, transform .3s var(--ease); }
 .ss-canvas.is-studio .ss-node::after { content: ''; position: absolute; left: 18px; right: 18px; top: -1px; height: 3px; border-radius: 0 0 3px 3px; background: var(--k); opacity: .85; transform: scaleX(.28); transform-origin: left; transition: transform .45s var(--ease); }
@@ -573,13 +570,7 @@ const PANE_CSS = `
 .ss-canvas.is-studio .ss-legend span[class] { background: var(--kb); color: var(--k); }
 .ss-canvas.is-studio .ss-legend i { border-radius: 50%; width: 7px; height: 7px; }
 .ss-canvas.is-studio .ss-cv-hint { bottom: 16px; padding: 7px 14px; font-size: 11.5px; box-shadow: 0 14px 30px -22px rgba(49, 44, 42, .6); }
-.ss-minimap.react-flow__minimap { margin: 16px; border-radius: 16px; overflow: hidden; background: rgba(255, 255, 255, .92); border: 1px solid var(--line); box-shadow: 0 20px 40px -26px rgba(49, 44, 42, .6); }
-.ss-minimap .react-flow__minimap-mask { stroke: var(--red); stroke-width: 2; }
 @container ss-cv (max-width: 1250px) { .ss-canvas.is-studio .ss-legend { display: none; } }
-@container ss-cv (max-width: 1000px) or (max-height: 560px) { .ss-minimap { display: none; } }
-.ss-minimap.react-flow__minimap { width: 200px; height: 120px; }
-.ss-minimap svg { width: 200px; height: 120px; }
-
 /* --------------------------- stages + params --------------------------- */
 .ss-toolrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ss-finput { position: relative; width: 300px; max-width: 100%; display: inline-block; }

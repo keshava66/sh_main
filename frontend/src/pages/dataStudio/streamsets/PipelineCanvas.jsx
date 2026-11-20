@@ -1,13 +1,41 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ReactFlow, ReactFlowProvider, Background, Handle, Position, MarkerType, MiniMap, useReactFlow,
+  ReactFlow, ReactFlowProvider, Background, Handle, Position, MarkerType, useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { kindOf, canvasLayout, stageSubtitle, lineage, techMeta, NODE_W } from './streamsetsModel';
 
 const FIT = { padding: 0.12, maxZoom: 1, minZoom: 0.55, duration: 0 };   // never fit so small the text can't be read
-const FIT_STUDIO = { padding: 0.06, maxZoom: 1.15, minZoom: 0.7, duration: 0 };   // Pipeline Studio: bigger, starts at the source if long
-const BAND_PAD = 12, BAND_HEAD = 54;   // step bands drawn behind each column (studio)
+// Pipeline Studio: keep the stages clear of the floating controls (top) and the hint (bottom)
+const FIT_STUDIO = { padding: { top: '76px', bottom: '64px', left: '40px', right: '40px' }, maxZoom: 1.2, minZoom: 0.6, duration: 0 };
+const STEP_HEAD = 44;   // room for the "1 Read" heading above each column (studio)
+const ROW_GAP_S = 110;  // between rows when a long pipeline wraps (studio)
+const COL_GAP_S = 64;
+
+// Studio: a long pipeline wraps into rows that run left-to-right, then right-to-left (a snake), with a U-turn
+// between rows, so the cards stay big instead of shrinking to fit one long line. Picks the row length that
+// gives the biggest zoom for the space the canvas has.
+function snake(layout, box) {
+  const cols = Math.max(0, ...layout.nodes.map(n => n.col)) + 1;
+  const tall = Math.max(0, ...layout.nodes.map(n => n.y + n.h)) + STEP_HEAD;
+  const colW = NODE_W + COL_GAP_S;
+  let best = { k: cols, zoom: 0 };
+  if (box.w && box.h) {
+    for (let k = cols; k >= Math.min(cols, 2); k -= 1) {
+      const rows = Math.ceil(cols / k);
+      const w = k * colW - COL_GAP_S;
+      const h = rows * tall + (rows - 1) * ROW_GAP_S;
+      const zoom = Math.min((box.w - 80) / w, (box.h - 140) / h, FIT_STUDIO.maxZoom);
+      if (zoom > best.zoom + 0.04) best = { k, zoom };
+    }
+  }
+  const k = best.k;
+  const nodes = layout.nodes.map(n => {
+    const row = Math.floor(n.col / k), i = n.col % k, back = row % 2 === 1;
+    return { ...n, row, back, x: (back ? k - 1 - i : i) * colW, y: n.y + STEP_HEAD + row * (tall + ROW_GAP_S) };
+  });
+  return { ...layout, nodes, perRow: k };
+}
 
 // What a column does, from the stages in it: Read / Transform / Fragment / Write / Finish.
 function bandLabel(stages) {
@@ -20,11 +48,9 @@ function bandLabel(stages) {
   return 'Transform';
 }
 
-function BandNode({ data }) {
+function StepNode({ data }) {
   return (
-    <div className="ss-band-col" aria-hidden="true">
-      <div className="ss-band-h"><b>{data.n}</b><span>{data.label}</span><em>{data.count} stage{data.count === 1 ? '' : 's'}</em></div>
-    </div>
+    <div className="ss-step-h" aria-hidden="true"><b>{data.n}</b><span>{data.label}</span>{data.count > 1 && <em>{data.count} stages</em>}</div>
   );
 }
 
@@ -46,11 +72,11 @@ const TRACE_DELAY_MS = 90;
 const traceable = (layout) => layout.nodes.length <= MAX_TRACE_NODES;
 
 function StageNode({ data }) {
-  const { stage, selected, live, dim, lit, summary, studio } = data;
+  const { stage, selected, live, dim, lit, summary, studio, back } = data;
   const k = kindOf(stage);
   return (
     <div className={`ss-node ss-k-${k.cls}${selected ? ' is-sel' : ''}${dim ? ' is-dim' : ''}${lit ? ' is-lit' : ''}`} title={summary}>
-      <Handle type="target" position={Position.Left} style={handleStyle} isConnectable={false} />
+      <Handle type="target" position={back ? Position.Right : Position.Left} style={handleStyle} isConnectable={false} />
       <span className="ss-node-bar" />
       <div className="ss-node-in">
         <Tile tech={stage.technology} kind={studio ? k : null} />
@@ -61,19 +87,19 @@ function StageNode({ data }) {
         </div>
         {live && <span className="ss-live-dot" aria-label="Extracting" />}
       </div>
-      <Handle type="source" position={Position.Right} style={handleStyle} isConnectable={false} />
+      <Handle type="source" position={back ? Position.Left : Position.Right} style={handleStyle} isConnectable={false} />
     </div>
   );
 }
 
 function FragmentNode({ data }) {
-  const { stage, selected, expanded, onToggle, onSelect, selectedPath, dim, lit, summary, summaries } = data;
+  const { stage, selected, expanded, onToggle, onSelect, selectedPath, dim, lit, summary, summaries, back } = data;
   const frag = stage.fragment;
   const inner = frag.stages || [];
   const fragHandle = { ...handleStyle, top: 50, borderColor: '#c9a5e3' };
   return (
     <div className={`ss-node ss-node-frag ss-k-frag${selected ? ' is-sel' : ''}${dim ? ' is-dim' : ''}${lit ? ' is-lit' : ''}`} title={summary}>
-      <Handle type="target" position={Position.Left} style={fragHandle} isConnectable={false} />
+      <Handle type="target" position={back ? Position.Right : Position.Left} style={fragHandle} isConnectable={false} />
       <div className="ss-node-in ss-node-in-frag">
         <Tile tech="Fragment" />
         <div className="ss-node-txt">
@@ -109,7 +135,7 @@ function FragmentNode({ data }) {
           })}
         </div>
       )}
-      <Handle type="source" position={Position.Right} style={fragHandle} isConnectable={false} />
+      <Handle type="source" position={back ? Position.Left : Position.Right} style={fragHandle} isConnectable={false} />
     </div>
   );
 }
@@ -128,8 +154,7 @@ function Tile({ tech, small = false, kind = null }) {
   return <span className={`ss-tile${small ? ' ss-tile-sm' : ''}`} style={{ '--t': color }} aria-hidden="true">{mark}</span>;
 }
 
-const nodeTypes = { stage: memo(StageNode), fragment: memo(FragmentNode), band: memo(BandNode) };
-const MINI_COLOR = { src: '#328714', proc: '#0f68b2', dst: '#d9620f', exe: '#81766f', frag: '#8c3bbb' };
+const nodeTypes = { stage: memo(StageNode), fragment: memo(FragmentNode), step: memo(StepNode) };
 
 function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
   const studio = variant === 'studio';
@@ -153,7 +178,9 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
     setExpanded(prev => (prev.has(selectedTop) ? prev : new Set(prev).add(selectedTop)));
   }, [selectedPath, selectedTop]);
 
-  const layout = useMemo(() => canvasLayout(detail.stages, expanded, studio ? { colGap: 56 } : undefined), [detail.stages, expanded, studio]);
+  const [box, setBox] = useState({ w: 0, h: 0 });   // canvas size, rounded, for the studio snake
+  const flat = useMemo(() => canvasLayout(detail.stages, expanded, studio ? { colGap: COL_GAP_S } : undefined), [detail.stages, expanded, studio]);
+  const layout = useMemo(() => (studio ? snake(flat, box) : flat), [studio, flat, box]);
   const traced = useMemo(() => (hover && traceable(layout) ? lineage(layout.edges, hover) : null), [hover, layout]);
   const hoverOn = useCallback((id) => {
     clearTimeout(hoverTimer.current);
@@ -162,18 +189,18 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
   const hoverOff = useCallback(() => { clearTimeout(hoverTimer.current); setHover(null); }, []);
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
-  // Studio: a numbered band behind every column, as tall as the tallest column, saying what that step does.
+  // Studio: "1 Read", "2 Transform"... right above each column's first stage.
   const bands = useMemo(() => {
     if (!studio || !layout.nodes.length) return [];
-    const top = Math.min(...layout.nodes.map(n => n.y));
-    const bottom = Math.max(...layout.nodes.map(n => n.y + n.h));
     const cols = new Map();
     layout.nodes.forEach(n => (cols.get(n.col) || cols.set(n.col, []).get(n.col)).push(n));
+    if (cols.size < 2) return [];
+    const rowTop = new Map();   // headings sit on one line per row, above its highest stage
+    layout.nodes.forEach(n => rowTop.set(n.row, Math.min(rowTop.get(n.row) ?? Infinity, n.y)));
     return [...cols.entries()].sort((a, b) => a[0] - b[0]).map(([c, ns], i) => ({
-      id: `band:${c}`, type: 'band', zIndex: -1, draggable: false, selectable: false, focusable: false,
-      position: { x: ns[0].x - BAND_PAD, y: top - BAND_HEAD },
-      width: NODE_W + BAND_PAD * 2, height: bottom - top + BAND_HEAD + BAND_PAD,
-      style: { width: NODE_W + BAND_PAD * 2, height: bottom - top + BAND_HEAD + BAND_PAD, pointerEvents: 'none' },
+      id: `step:${c}`, type: 'step', draggable: false, selectable: false, focusable: false,
+      position: { x: ns[0].x, y: rowTop.get(ns[0].row) - STEP_HEAD },
+      width: NODE_W, height: 30, style: { width: NODE_W, height: 30, pointerEvents: 'none' },
       data: { n: i + 1, label: bandLabel(ns.map(x => x.stage)), count: ns.length },
     }));
   }, [studio, layout]);
@@ -200,6 +227,7 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
       onToggle: toggle,
       onSelect,
       studio,
+      back: !!n.back,
     },
   })), [layout, selectedTop, selectedPath, expanded, live, traced, summaries, toggle, onSelect, studio]);
   const nodes = useMemo(() => (bands.length ? [...bands, ...stageNodes] : stageNodes), [bands, stageNodes]);
@@ -236,7 +264,7 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
   const fit = useCallback(() => Promise.resolve(fitView(fitOpts)).then(() => {
     const vp = getViewport();
     const width = wrapRef.current?.clientWidth || 0;
-    if (width && contentWidth * vp.zoom + 48 > width) setViewport({ x: 24, y: vp.y, zoom: vp.zoom });
+    if (width && contentWidth * vp.zoom + 48 > width) setViewport({ x: 24, y: vp.y, zoom: vp.zoom });   // still too long: start at the source
     setZoom(vp.zoom);
   }), [fitView, getViewport, setViewport, contentWidth, fitOpts]);
   const refit = useCallback(() => { if (!userMoved.current) fit(); }, [fit]);
@@ -244,10 +272,19 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
     const el = wrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return undefined;
     let frame = 0;
-    const ro = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(refit); });
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (studio) {   // round to 40px so small jiggles don't re-lay the snake
+          const w = Math.round(el.clientWidth / 40) * 40, h = Math.round(el.clientHeight / 40) * 40;
+          setBox(b => (b.w === w && b.h === h ? b : { w, h }));
+        }
+        refit();
+      });
+    });
     ro.observe(el);
     return () => { cancelAnimationFrame(frame); ro.disconnect(); };
-  }, [refit]);
+  }, [refit, studio]);
   useEffect(() => {
     const frame = requestAnimationFrame(refit);
     return () => cancelAnimationFrame(frame);
@@ -263,8 +300,8 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodeClick={(_, node) => node.type !== 'band' && onSelect(node.id)}
-        onNodeMouseEnter={(_, node) => node.type !== 'band' && hoverOn(node.id)}
+        onNodeClick={(_, node) => node.type !== 'step' && onSelect(node.id)}
+        onNodeMouseEnter={(_, node) => node.type !== 'step' && hoverOn(node.id)}
         onNodeMouseLeave={hoverOff}
         onPaneClick={() => selectedPath && onSelect(selectedPath)}
         nodesDraggable={false}
@@ -281,11 +318,6 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={studio ? 20 : 22} size={studio ? 1.2 : 1.1} color={studio ? '#d9d2cb' : '#ddd7d1'} />
-        {studio && layout.nodes.length > 4 && (
-          <MiniMap className="ss-minimap" pannable zoomable ariaLabel="Overview of the whole pipeline"
-            nodeColor={(n) => (n.type === 'band' ? 'transparent' : MINI_COLOR[kindOf(n.data.stage).cls] || '#a39992')}
-            nodeBorderRadius={6} maskColor="rgba(244, 241, 237, .72)" nodeStrokeWidth={0} />
-        )}
       </ReactFlow>
 
       <div className="ss-cv-tools">
