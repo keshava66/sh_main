@@ -146,7 +146,7 @@ export function nodeHeight(stage, expanded) {
  * column stages sit in the average row of what feeds them, which keeps most
  * edges straight and stops them crossing. Columns are centred on each other.
  */
-export function canvasLayout(stages, expandedSet) {
+export function canvasLayout(stages, expandedSet, { colGap = COL_GAP } = {}) {
   const list = stages || [];
   const known = new Set(list.map(s => s.instance));
   const inputs = (s) => [...(s.upstream || []), ...(s.triggered_by || [])].filter(i => known.has(i));
@@ -177,7 +177,7 @@ export function canvasLayout(stages, expandedSet) {
     let y = (tallest - heights[ci]) / 2;
     c.forEach(({ s }) => {
       const h = nodeHeight(s, expandedSet.has(s.instance));
-      nodes.push({ id: s.instance, x: ci * (NODE_W + COL_GAP), y, w: NODE_W, h, col: ci, stage: s });
+      nodes.push({ id: s.instance, x: ci * (NODE_W + colGap), y, w: NODE_W, h, col: ci, stage: s });
       y += h + ROW_GAP;
     });
   });

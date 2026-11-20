@@ -531,6 +531,55 @@ const PANE_CSS = `
 .ss-legend i { width: 9px; height: 9px; border-radius: 3px; background: var(--k); }
 .ss-cv-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5; font-size: 11.5px; color: var(--ink-3); padding: 6px 12px; border-radius: 99px; background: #fff; border: 1px solid var(--line); white-space: nowrap; pointer-events: none; animation: ss-out .4s ease 7s forwards; }
 
+/* ------------------------ canvas, Pipeline Studio ------------------------ */
+/* Numbered step bands behind each column, Dashboard-style cards, a flowing red line along a traced path. */
+.ss-canvas.is-studio { container: ss-cv / size; background: radial-gradient(120% 90% at 50% 0%, #fff 0%, #faf9f7 45%, #f4f1ed 100%); }
+.ss-canvas.is-studio .react-flow__node-band { cursor: default; }
+.ss-band-col { width: 100%; height: 100%; border-radius: 26px; background: linear-gradient(180deg, rgba(255, 255, 255, .78), rgba(255, 255, 255, .28) 60%, rgba(255, 255, 255, .08));
+  border: 1px solid rgba(110, 98, 89, .1); }
+.ss-band-h { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 16px; }
+.ss-band-h b { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 700 11.5px var(--display); color: #fff; background: var(--ink); box-shadow: 0 6px 12px -6px rgba(49, 44, 42, .8); }
+.ss-band-h span { font: 700 15px var(--display); letter-spacing: -.01em; color: var(--ink); }
+.ss-band-h em { margin-left: auto; font-style: normal; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); }
+
+.ss-canvas.is-studio .ss-node { border-radius: 18px; border: 1px solid var(--line); background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%);
+  box-shadow: 0 18px 34px -26px rgba(49, 44, 42, .55); overflow: visible; transition: border-color .25s, box-shadow .3s, opacity .25s, transform .3s var(--ease); }
+.ss-canvas.is-studio .ss-node::after { content: ''; position: absolute; left: 18px; right: 18px; top: -1px; height: 3px; border-radius: 0 0 3px 3px; background: var(--k); opacity: .85; transform: scaleX(.28); transform-origin: left; transition: transform .45s var(--ease); }
+.ss-canvas.is-studio .react-flow__node:hover .ss-node { transform: translateY(-2px); border-color: color-mix(in srgb, var(--k) 40%, var(--line)); box-shadow: 0 24px 40px -24px color-mix(in srgb, var(--k) 55%, rgba(49, 44, 42, .5)); }
+.ss-canvas.is-studio .react-flow__node:hover .ss-node::after, .ss-canvas.is-studio .ss-node.is-sel::after, .ss-canvas.is-studio .ss-node.is-lit::after { transform: scaleX(1); }
+.ss-canvas.is-studio .ss-node.is-sel { border-color: var(--k); box-shadow: 0 0 0 4px color-mix(in srgb, var(--k) 16%, transparent), 0 24px 40px -24px color-mix(in srgb, var(--k) 60%, transparent); }
+.ss-canvas.is-studio .ss-node.is-lit { border-color: color-mix(in srgb, var(--k) 45%, var(--line)); }
+.ss-canvas.is-studio .ss-node.is-dim { opacity: .22; }
+.ss-canvas.is-studio .ss-node-in { gap: 12px; padding: 12px 14px 12px 13px; }
+.ss-canvas.is-studio .ss-tile { width: 38px; height: 38px; border-radius: 12px; font-size: 11px; background: linear-gradient(145deg, var(--t), color-mix(in srgb, var(--t) 72%, #000));
+  box-shadow: 0 8px 16px -10px var(--t), inset 0 1px 0 rgba(255, 255, 255, .25); }
+.ss-canvas.is-studio .ss-tile-sm { width: 20px; height: 20px; border-radius: 6px; font-size: 8px; box-shadow: none; }
+.ss-tile-kind svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.ss-canvas.is-studio .ss-klabel { font-size: 10px; letter-spacing: .16em; }
+.ss-canvas.is-studio .ss-node-lb { font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: -.005em; margin-top: 2px; color: var(--ink); }
+.ss-canvas.is-studio .ss-node-sub { font-size: 12.5px; font-weight: 300; color: var(--ink-2); }
+.ss-canvas.is-studio .ss-node-frag { border-top: 1px solid #e3d2f1; background: linear-gradient(160deg, #fff 0%, #fbf7fe 100%); }
+.ss-canvas.is-studio .ss-frag-toggle { border-radius: 10px; }
+.ss-canvas.is-studio .react-flow__edge.is-hot path.react-flow__edge-path { stroke-dasharray: 7 7; animation: ss-dash .9s linear infinite; }
+@keyframes ss-dash { to { stroke-dashoffset: -14; } }
+.ss-canvas.is-studio .react-flow__edge-textbg { fill: #fff; }
+.ss-canvas.is-studio .ss-cv-tools { top: 16px; left: 16px; gap: 10px; }
+.ss-canvas.is-studio .ss-cv-group { padding: 4px; border-radius: 999px; background: rgba(255, 255, 255, .92); border-color: var(--line); box-shadow: 0 14px 30px -22px rgba(49, 44, 42, .6); }
+.ss-canvas.is-studio .ss-cv-group button { height: 30px; min-width: 30px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; }
+.ss-canvas.is-studio .ss-cv-group button:hover { background: var(--red-wash); color: var(--red-d); }
+.ss-canvas.is-studio .ss-cv-zoom { font: 500 12px var(--display); color: var(--ink); min-width: 46px; }
+.ss-canvas.is-studio .ss-legend { top: 16px; right: 16px; gap: 6px; padding: 5px; border-radius: 999px; background: rgba(255, 255, 255, .92); box-shadow: 0 14px 30px -22px rgba(49, 44, 42, .6); }
+.ss-canvas.is-studio .ss-legend span { height: 26px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; }
+.ss-canvas.is-studio .ss-legend span[class] { background: var(--kb); color: var(--k); }
+.ss-canvas.is-studio .ss-legend i { border-radius: 50%; width: 7px; height: 7px; }
+.ss-canvas.is-studio .ss-cv-hint { bottom: 16px; padding: 7px 14px; font-size: 11.5px; box-shadow: 0 14px 30px -22px rgba(49, 44, 42, .6); }
+.ss-minimap.react-flow__minimap { margin: 16px; border-radius: 16px; overflow: hidden; background: rgba(255, 255, 255, .92); border: 1px solid var(--line); box-shadow: 0 20px 40px -26px rgba(49, 44, 42, .6); }
+.ss-minimap .react-flow__minimap-mask { stroke: var(--red); stroke-width: 2; }
+@container ss-cv (max-width: 1250px) { .ss-canvas.is-studio .ss-legend { display: none; } }
+@container ss-cv (max-width: 1000px) or (max-height: 560px) { .ss-minimap { display: none; } }
+.ss-minimap.react-flow__minimap { width: 200px; height: 120px; }
+.ss-minimap svg { width: 200px; height: 120px; }
+
 /* --------------------------- stages + params --------------------------- */
 .ss-toolrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ss-finput { position: relative; width: 300px; max-width: 100%; display: inline-block; }
@@ -783,6 +832,7 @@ const PANE_CSS = `
   .ss-map { max-width: 520px; }
 }
 @media (max-height: 820px) { .ss-route { display: none; } }
+.ss-route.is-flowview { display: none; }   /* the flow's Read / Write bands say the same */
 
 @media (prefers-reduced-motion: reduce) {
   .ss-root *, .ss-root *::before, .ss-root *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -1806,7 +1856,7 @@ const DetailView = memo(function DetailView({
             <div><b>{plural(c.fragment_errors, "fragment couldn't", "fragments couldn't")} be loaded from StreamSets.</b> Their steps aren&apos;t shown, and they&apos;ll be missing from an extraction too.</div>
           </div>
         )}
-        <section className="ss-route" aria-label="Route summary">
+        <section className={`ss-route${view === 'flow' ? ' is-flowview' : ''}`} aria-label="Route summary">
           <Endpoint title={route.sources.length === 1 ? 'Reads from' : `Reads from ${route.sources.length} sources`} rows={route.sources} onSelect={select} />
           <div className="ss-track">
             <div className="ss-track-sum">{middle}</div>
@@ -1834,7 +1884,7 @@ const DetailView = memo(function DetailView({
         <div className={`ss-view${view === 'flow' ? ' is-flow' : ''}`}>
           {view === 'flow' && (
             <Suspense fallback={<div className="ss-center ss-muted">Drawing the pipeline…</div>}>
-              <PipelineCanvas key={detail.id} detail={detail} selectedPath={stagePath} onSelect={onSelectStage} live={live} summaries={summaries} />
+              <PipelineCanvas key={detail.id} detail={detail} selectedPath={stagePath} onSelect={onSelectStage} live={live} summaries={summaries} variant="studio" />
             </Suspense>
           )}
           {view === 'stages' && <StagesView key={detail.id} detail={detail} selectedPath={stagePath} onSelect={onSelectStage} summaries={summaries} />}
