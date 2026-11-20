@@ -6,11 +6,12 @@ import '@xyflow/react/dist/style.css';
 import { kindOf, canvasLayout, stageSubtitle, lineage, techMeta, NODE_W } from './streamsetsModel';
 
 const FIT = { padding: 0.12, maxZoom: 1, minZoom: 0.55, duration: 0 };   // never fit so small the text can't be read
-// Pipeline Studio: keep the stages clear of the floating controls (top) and the hint (bottom)
-const FIT_STUDIO = { padding: { top: '76px', bottom: '64px', left: '40px', right: '40px' }, maxZoom: 1.2, minZoom: 0.6, duration: 0 };
-const STEP_HEAD = 44;   // room for the "1 Read" heading above each column (studio)
-const ROW_GAP_S = 110;  // between rows when a long pipeline wraps (studio)
-const COL_GAP_S = 64;
+// Pipeline Studio: roomy cards, rounded right-angle connectors, nothing on the canvas but the pipeline.
+const FIT_STUDIO = { padding: { top: '84px', bottom: '40px', left: '48px', right: '48px' }, maxZoom: 1.1, minZoom: 0.55, duration: 0 };
+const S = { nodeW: 300, stageH: 84, fragH: 112, colGap: 96, rowGap: 32, wrapGap: 72 };
+const STEP_HEAD = 0;
+const ROW_GAP_S = S.wrapGap;
+const COL_GAP_S = S.colGap;
 
 // Studio: a long pipeline wraps into rows that run left-to-right, then right-to-left (a snake), with a U-turn
 // between rows, so the cards stay big instead of shrinking to fit one long line. Picks the row length that
@@ -18,15 +19,15 @@ const COL_GAP_S = 64;
 function snake(layout, box) {
   const cols = Math.max(0, ...layout.nodes.map(n => n.col)) + 1;
   const tall = Math.max(0, ...layout.nodes.map(n => n.y + n.h)) + STEP_HEAD;
-  const colW = NODE_W + COL_GAP_S;
+  const colW = S.nodeW + COL_GAP_S;
   let best = { k: cols, zoom: 0 };
   if (box.w && box.h) {
     for (let k = cols; k >= Math.min(cols, 2); k -= 1) {
       const rows = Math.ceil(cols / k);
       const w = k * colW - COL_GAP_S;
       const h = rows * tall + (rows - 1) * ROW_GAP_S;
-      const zoom = Math.min((box.w - 80) / w, (box.h - 140) / h, FIT_STUDIO.maxZoom);
-      if (zoom > best.zoom + 0.04) best = { k, zoom };
+      const zoom = Math.min((box.w - 96) / w, (box.h - 124) / h, FIT_STUDIO.maxZoom);
+      if (zoom > best.zoom + 0.06) best = { k, zoom };   // wrap only when it clearly helps
     }
   }
   const k = best.k;
@@ -70,6 +71,74 @@ const handleStyle = { width: 9, height: 9, background: '#ffffff', border: '2px s
 const MAX_TRACE_NODES = 120;
 const TRACE_DELAY_MS = 90;
 const traceable = (layout) => layout.nodes.length <= MAX_TRACE_NODES;
+
+// Studio cards: a technology tile, the full name (wraps to two lines, never cut mid-word), and one quiet line
+// saying what kind of stage it is and what it runs. Handles are invisible - the connectors say enough.
+const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
+function StudioStage({ data }) {
+  const { stage, selected, live, dim, lit, summary, back } = data;
+  const k = kindOf(stage);
+  const sub = stageSubtitle(stage);
+  return (
+    <div className={`sx-card ss-k-${k.cls}${selected ? ' is-sel' : ''}${dim ? ' is-dim' : ''}${lit ? ' is-lit' : ''}`} title={summary || `${stage.label}\n${k.label} · ${sub}`}>
+      <Handle type="target" position={back ? Position.Right : Position.Left} style={hidden} isConnectable={false} />
+      <Tile tech={stage.technology} kind={k} />
+      <div className="sx-txt">
+        <div className="sx-name">{stage.label}</div>
+        <div className="sx-sub"><i />{k.label}{sub ? <span> · {sub}</span> : null}</div>
+      </div>
+      {live && <span className="ss-live-dot" aria-label="Extracting" />}
+      <Handle type="source" position={back ? Position.Left : Position.Right} style={hidden} isConnectable={false} />
+    </div>
+  );
+}
+
+function StudioFragment({ data }) {
+  const { stage, selected, expanded, onToggle, onSelect, selectedPath, dim, lit, summary, summaries, back } = data;
+  const frag = stage.fragment;
+  const inner = frag.stages || [];
+  const k = kindOf(stage);
+  return (
+    <div className={`sx-card sx-frag ss-k-frag${selected ? ' is-sel' : ''}${dim ? ' is-dim' : ''}${lit ? ' is-lit' : ''}`} title={summary}>
+      <Handle type="target" position={back ? Position.Right : Position.Left} style={{ ...hidden, top: 42 }} isConnectable={false} />
+      <div className="sx-frag-top">
+        <Tile tech="Fragment" kind={k} />
+        <div className="sx-txt">
+          <div className="sx-name">{stage.label}</div>
+          <div className="sx-sub"><i />Fragment{frag.version ? ` v${String(frag.version).replace(/^v/i, '')}` : ''}<span> · {frag.name}</span></div>
+        </div>
+      </div>
+      {frag.error ? (
+        <div className="sx-frag-foot is-err" title={frag.error}>Couldn&apos;t load its steps</div>
+      ) : (
+        <button type="button" className="sx-frag-foot nodrag nopan" aria-expanded={expanded}
+          onClick={(e) => { e.stopPropagation(); onToggle(stage.instance); }}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+          {expanded ? 'Hide' : 'Show'} {inner.length} step{inner.length === 1 ? '' : 's'} inside
+        </button>
+      )}
+      {expanded && !frag.error && (
+        <div className="ss-frag-inner nodrag nopan">
+          {inner.length === 0 && <div className="ss-muted">No steps</div>}
+          {inner.map((s2, i) => {
+            const path = `${stage.instance}/${s2.instance}`;
+            return (
+              <button key={s2.instance} type="button" title={summaries?.get(path)}
+                className={`ss-k-${kindOf(s2).cls}${selectedPath === path ? ' is-sel' : ''}`}
+                onClick={(e) => { e.stopPropagation(); onSelect(path); }}>
+                <span className="ss-step-n">{i + 1}</span>
+                <Tile tech={s2.technology} small />
+                <span className="ss-frag-inner-lb">{s2.label}</span>
+                <small>{s2.fragment ? 'Fragment' : s2.type_name}</small>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <Handle type="source" position={back ? Position.Left : Position.Right} style={{ ...hidden, top: 42 }} isConnectable={false} />
+    </div>
+  );
+}
 
 function StageNode({ data }) {
   const { stage, selected, live, dim, lit, summary, studio, back } = data;
@@ -154,7 +223,7 @@ function Tile({ tech, small = false, kind = null }) {
   return <span className={`ss-tile${small ? ' ss-tile-sm' : ''}`} style={{ '--t': color }} aria-hidden="true">{mark}</span>;
 }
 
-const nodeTypes = { stage: memo(StageNode), fragment: memo(FragmentNode), step: memo(StepNode) };
+const nodeTypes = { stage: memo(StageNode), fragment: memo(FragmentNode), step: memo(StepNode), sstage: memo(StudioStage), sfrag: memo(StudioFragment) };
 
 function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
   const studio = variant === 'studio';
@@ -179,7 +248,7 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
   }, [selectedPath, selectedTop]);
 
   const [box, setBox] = useState({ w: 0, h: 0 });   // canvas size, rounded, for the studio snake
-  const flat = useMemo(() => canvasLayout(detail.stages, expanded, studio ? { colGap: COL_GAP_S } : undefined), [detail.stages, expanded, studio]);
+  const flat = useMemo(() => canvasLayout(detail.stages, expanded, studio ? S : undefined), [detail.stages, expanded, studio]);
   const layout = useMemo(() => (studio ? snake(flat, box) : flat), [studio, flat, box]);
   const traced = useMemo(() => (hover && traceable(layout) ? lineage(layout.edges, hover) : null), [hover, layout]);
   const hoverOn = useCallback((id) => {
@@ -191,7 +260,7 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
 
   // Studio: "1 Read", "2 Transform"... right above each column's first stage.
   const bands = useMemo(() => {
-    if (!studio || !layout.nodes.length) return [];
+    if (!studio || STEP_HEAD === 0 || !layout.nodes.length) return [];
     const cols = new Map();
     layout.nodes.forEach(n => (cols.get(n.col) || cols.set(n.col, []).get(n.col)).push(n));
     if (cols.size < 2) return [];
@@ -207,7 +276,7 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
 
   const stageNodes = useMemo(() => layout.nodes.map(n => ({
     id: n.id,
-    type: n.stage.fragment ? 'fragment' : 'stage',
+    type: studio ? (n.stage.fragment ? 'sfrag' : 'sstage') : n.stage.fragment ? 'fragment' : 'stage',
     position: { x: n.x, y: n.y },
     width: n.w,
     height: n.h,
@@ -240,7 +309,8 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
       id: e.id,
       source: e.source,
       target: e.target,
-      type: 'default',
+      type: studio ? 'smoothstep' : 'default',
+      pathOptions: studio ? { borderRadius: 18, offset: 26 } : undefined,
       // Moving dashes repaint every frame - only worth it while this pipeline is actually being extracted.
       animated: live && e.kind === 'data',
       label: e.kind === 'event' ? 'event' : undefined,
@@ -248,8 +318,9 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
       labelBgStyle: { fill: '#faf9f7', stroke: '#d5cfc9' },
       labelBgPadding: [6, 2],
       labelBgBorderRadius: 8,
-      style: { stroke: color, strokeWidth: hot ? 2.2 : 1.7, strokeDasharray: e.kind === 'event' ? '5 5' : undefined, opacity: faded ? 0.18 : 1 },
-      markerEnd: { type: MarkerType.ArrowClosed, color, width: 15, height: 15 },
+      style: { stroke: studio && !hot ? (e.kind === 'event' ? '#c9bfb6' : '#bfb6ad') : color, strokeWidth: studio ? (hot ? 2 : 1.4) : hot ? 2.2 : 1.7,
+        strokeDasharray: e.kind === 'event' ? (studio ? '4 4' : '5 5') : undefined, opacity: faded ? (studio ? 0.12 : 0.18) : 1 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: studio && !hot ? '#bfb6ad' : color, width: studio ? 12 : 15, height: studio ? 12 : 15 },
       zIndex: hot ? 1 : 0,
       className: studio && hot ? 'is-hot' : undefined,
     };
@@ -341,7 +412,7 @@ function Canvas({ detail, selectedPath, onSelect, live, summaries, variant }) {
         <span className="ss-k-dst"><i />Destination</span><span className="ss-k-exe"><i />Executor</span>
         <span><svg width="22" height="6"><path d="M0 3h22" stroke={EDGE.event} strokeWidth="1.6" strokeDasharray="4 3" /></svg>Event</span>
       </div>
-      <div className="ss-cv-hint">Hover a stage to trace its data · scroll to zoom · drag to pan · click for details</div>
+      {!studio && <div className="ss-cv-hint">Hover a stage to trace its data · scroll to zoom · drag to pan · click for details</div>}
     </div>
   );
 }

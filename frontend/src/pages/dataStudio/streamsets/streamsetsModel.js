@@ -134,10 +134,10 @@ const FRAG_H = 100;          // header + the "show steps" row
 const INNER_ROW_H = 34;
 
 /** Height a node will draw at, so the layout can stack them without overlap. */
-export function nodeHeight(stage, expanded) {
-  if (!stage.fragment) return STAGE_H;
-  if (!expanded || stage.fragment.error) return FRAG_H;
-  return FRAG_H + Math.max(1, stage.fragment.stages.length) * INNER_ROW_H + 8;
+export function nodeHeight(stage, expanded, { stageH = STAGE_H, fragH = FRAG_H } = {}) {
+  if (!stage.fragment) return stageH;
+  if (!expanded || stage.fragment.error) return fragH;
+  return fragH + Math.max(1, stage.fragment.stages.length) * INNER_ROW_H + 8;
 }
 
 /**
@@ -146,7 +146,8 @@ export function nodeHeight(stage, expanded) {
  * column stages sit in the average row of what feeds them, which keeps most
  * edges straight and stops them crossing. Columns are centred on each other.
  */
-export function canvasLayout(stages, expandedSet, { colGap = COL_GAP } = {}) {
+export function canvasLayout(stages, expandedSet, { colGap = COL_GAP, rowGap = ROW_GAP, nodeW = NODE_W, stageH, fragH } = {}) {
+  const size = { stageH, fragH };
   const list = stages || [];
   const known = new Set(list.map(s => s.instance));
   const inputs = (s) => [...(s.upstream || []), ...(s.triggered_by || [])].filter(i => known.has(i));
@@ -170,15 +171,15 @@ export function canvasLayout(stages, expandedSet, { colGap = COL_GAP } = {}) {
     c.forEach((x, idx) => rank.set(x.s.instance, idx));
   });
 
-  const heights = columns.map(c => c.reduce((t, x) => t + nodeHeight(x.s, expandedSet.has(x.s.instance)), 0) + ROW_GAP * (c.length - 1));
+  const heights = columns.map(c => c.reduce((t, x) => t + nodeHeight(x.s, expandedSet.has(x.s.instance), size), 0) + rowGap * (c.length - 1));
   const tallest = Math.max(0, ...heights);
   const nodes = [];
   columns.forEach((c, ci) => {
     let y = (tallest - heights[ci]) / 2;
     c.forEach(({ s }) => {
-      const h = nodeHeight(s, expandedSet.has(s.instance));
-      nodes.push({ id: s.instance, x: ci * (NODE_W + colGap), y, w: NODE_W, h, col: ci, stage: s });
-      y += h + ROW_GAP;
+      const h = nodeHeight(s, expandedSet.has(s.instance), size);
+      nodes.push({ id: s.instance, x: ci * (nodeW + colGap), y, w: nodeW, h, col: ci, stage: s });
+      y += h + rowGap;
     });
   });
 

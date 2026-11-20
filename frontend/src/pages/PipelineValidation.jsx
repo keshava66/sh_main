@@ -539,24 +539,32 @@ const PANE_CSS = `
 .ss-step-h b { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 700 11px var(--display); color: #fff; background: var(--ink); box-shadow: 0 6px 12px -6px rgba(49, 44, 42, .8); }
 .ss-step-h span { font: 700 14px var(--display); letter-spacing: -.01em; color: var(--ink); }
 .ss-step-h em { font-style: normal; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
-.ss-canvas.is-studio .ss-node { border-radius: 18px; border: 1px solid var(--line); background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%);
-  box-shadow: 0 18px 34px -26px rgba(49, 44, 42, .55); overflow: visible; transition: border-color .25s, box-shadow .3s, opacity .25s, transform .3s var(--ease); }
-.ss-canvas.is-studio .ss-node::after { content: ''; position: absolute; left: 18px; right: 18px; top: -1px; height: 3px; border-radius: 0 0 3px 3px; background: var(--k); opacity: .85; transform: scaleX(.28); transform-origin: left; transition: transform .45s var(--ease); }
-.ss-canvas.is-studio .react-flow__node:hover .ss-node { transform: translateY(-2px); border-color: color-mix(in srgb, var(--k) 40%, var(--line)); box-shadow: 0 24px 40px -24px color-mix(in srgb, var(--k) 55%, rgba(49, 44, 42, .5)); }
-.ss-canvas.is-studio .react-flow__node:hover .ss-node::after, .ss-canvas.is-studio .ss-node.is-sel::after, .ss-canvas.is-studio .ss-node.is-lit::after { transform: scaleX(1); }
-.ss-canvas.is-studio .ss-node.is-sel { border-color: var(--k); box-shadow: 0 0 0 4px color-mix(in srgb, var(--k) 16%, transparent), 0 24px 40px -24px color-mix(in srgb, var(--k) 60%, transparent); }
-.ss-canvas.is-studio .ss-node.is-lit { border-color: color-mix(in srgb, var(--k) 45%, var(--line)); }
-.ss-canvas.is-studio .ss-node.is-dim { opacity: .22; }
-.ss-canvas.is-studio .ss-node-in { gap: 12px; padding: 12px 14px 12px 13px; }
-.ss-canvas.is-studio .ss-tile { width: 38px; height: 38px; border-radius: 12px; font-size: 11px; background: linear-gradient(145deg, var(--t), color-mix(in srgb, var(--t) 72%, #000));
-  box-shadow: 0 8px 16px -10px var(--t), inset 0 1px 0 rgba(255, 255, 255, .25); }
+.sx-card { position: relative; width: 100%; height: 100%; display: flex; align-items: center; gap: 14px; padding: 0 18px 0 16px; border-radius: 16px;
+  background: #fff; border: 1px solid #e6e1dc; box-shadow: 0 1px 2px rgba(49, 44, 42, .05), 0 10px 24px -18px rgba(49, 44, 42, .35);
+  transition: border-color .2s, box-shadow .25s, opacity .25s; animation: ss-rise .45s var(--ease) both; animation-delay: var(--ss-d, 0ms); }
+.ss-canvas.is-studio .react-flow__node:hover .sx-card { border-color: color-mix(in srgb, var(--k) 45%, #e6e1dc); box-shadow: 0 1px 2px rgba(49, 44, 42, .05), 0 16px 32px -18px color-mix(in srgb, var(--k) 45%, rgba(49, 44, 42, .4)); }
+.sx-card.is-sel { border-color: var(--k); box-shadow: 0 0 0 4px color-mix(in srgb, var(--k) 14%, transparent), 0 16px 32px -18px color-mix(in srgb, var(--k) 50%, transparent); }
+.sx-card.is-lit { border-color: color-mix(in srgb, var(--k) 50%, #e6e1dc); }
+.sx-card.is-dim { opacity: .28; }
+.sx-txt { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.sx-name { font-family: var(--display); font-size: 14.5px; font-weight: 700; line-height: 1.25; letter-spacing: -.005em; color: var(--ink);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.sx-sub { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--k); font-weight: 700; white-space: nowrap; }
+.sx-sub i { width: 6px; height: 6px; border-radius: 50%; background: var(--k); flex-shrink: 0; }
+.sx-sub span { color: var(--ink-3); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.sx-frag { display: block; padding: 0; background: linear-gradient(180deg, #fff, #fcf9fe); }
+.sx-frag-top { display: flex; align-items: center; gap: 14px; height: 84px; padding: 0 18px 0 16px; }
+.sx-frag-foot { display: flex; align-items: center; gap: 7px; width: 100%; height: 28px; padding: 0 16px; border-top: 1px solid #efe6f6; font-size: 12px; font-weight: 700; color: var(--frag); text-align: left; border-radius: 0 0 16px 16px; }
+button.sx-frag-foot:hover { background: var(--frag-bg); }
+.sx-frag-foot svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; transition: transform .2s var(--ease); }
+.sx-frag-foot[aria-expanded="true"] svg { transform: rotate(90deg); }
+.sx-frag-foot.is-err { color: var(--bad); }
+.sx-frag .ss-frag-inner { border-top: 1px solid #efe6f6; padding-top: 6px; }
+.ss-canvas.is-studio .ss-tile { width: 42px; height: 42px; border-radius: 12px; font-size: 11.5px; background: linear-gradient(145deg, var(--t), color-mix(in srgb, var(--t) 74%, #000));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22); }
 .ss-canvas.is-studio .ss-tile-sm { width: 20px; height: 20px; border-radius: 6px; font-size: 8px; box-shadow: none; }
-.ss-tile-kind svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.ss-canvas.is-studio .ss-klabel { font-size: 10px; letter-spacing: .16em; }
-.ss-canvas.is-studio .ss-node-lb { font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: -.005em; margin-top: 2px; color: var(--ink); }
-.ss-canvas.is-studio .ss-node-sub { font-size: 12.5px; font-weight: 300; color: var(--ink-2); }
-.ss-canvas.is-studio .ss-node-frag { border-top: 1px solid #e3d2f1; background: linear-gradient(160deg, #fff 0%, #fbf7fe 100%); }
-.ss-canvas.is-studio .ss-frag-toggle { border-radius: 10px; }
+.ss-tile-kind svg { width: 19px; height: 19px; fill: none; stroke: #fff; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.ss-canvas.is-studio .react-flow__edge-text { font: 700 10px var(--text); letter-spacing: .04em; fill: var(--ink-3); }
 .ss-canvas.is-studio .react-flow__edge.is-hot path.react-flow__edge-path { stroke-dasharray: 7 7; animation: ss-dash .9s linear infinite; }
 @keyframes ss-dash { to { stroke-dashoffset: -14; } }
 .ss-canvas.is-studio .react-flow__edge-textbg { fill: #fff; }
