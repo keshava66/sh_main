@@ -619,27 +619,36 @@ button.sx-frag-foot:hover { background: var(--frag-bg); }
 .ss-ulink { display: inline-flex; align-items: flex-start; flex-wrap: wrap; gap: 2px 6px; min-height: 24px; padding: 3px 8px 3px 4px; border-radius: 7px; border: 1px solid var(--line); font-size: 12px; background: #fff; max-width: 100%; text-align: left; }
 .ss-ulink:hover { border-color: var(--k); background: var(--kb); }
 .ss-ulink i { width: 14px; height: 14px; margin-top: 1px; border-radius: 4px; background: var(--k); flex-shrink: 0; }
+.ss-wires .ss-ulink, .ss-wires-ev .ss-ulink { flex-wrap: nowrap; align-items: center; max-width: 100%; min-height: 30px; padding: 0 12px 0 8px; border-radius: 999px; background: #fff; font-size: 12.5px; }
+.ss-wires .ss-ulink i, .ss-wires-ev .ss-ulink i { width: 8px; height: 8px; margin: 0; border-radius: 50%; }
+.ss-wires .ss-ulink span, .ss-wires-ev .ss-ulink span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-ulink span { overflow-wrap: anywhere; }
 .ss-ulink em { font-style: normal; color: var(--mute); font-size: 11px; }
 .ss-ulink em::before { content: '· '; }
 
 /* ----------------------------- stage drawer ---------------------------- */
 .ss-drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 500px; max-width: 92%; z-index: 8; display: flex; flex-direction: column; background: #fff; border-left: 1px solid var(--line); box-shadow: -14px 0 30px -18px rgba(49, 44, 42, .45); animation: ss-slide .3s var(--ease); }
-.ss-dr-head { flex-shrink: 0; padding: 15px 18px 13px; background: #fff; border-bottom: 1px solid var(--line); border-top: 3px solid var(--k); }
+.ss-dr-head { flex-shrink: 0; padding: 20px 22px 18px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--kb) 70%, #fff) 0%, #fff 100%); }
 .ss-dr-crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11.5px; color: var(--frag); margin-bottom: 8px; }
 .ss-dr-crumbs button { color: var(--frag); }
 .ss-dr-crumbs button:hover { text-decoration: underline; }
-.ss-dr-top { display: flex; gap: 12px; align-items: flex-start; }
-.ss-dr-top h3 { margin: 2px 0; font-size: 16px; font-weight: 700; word-break: break-word; }
-.ss-dr-top small { font-size: 12px; color: var(--ink-2); }
-.ss-dr-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 40px; display: flex; flex-direction: column; gap: 20px; }
-.ss-sec-h { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--mute); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-.ss-sec-h em { font-style: normal; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 0 7px; letter-spacing: 0; }
-.ss-sec-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
-.ss-what { padding: 14px 16px; border-radius: 14px; background: var(--kb); border: 1px solid color-mix(in srgb, var(--k) 24%, var(--line)); }
-.ss-what-lead { margin: 0; font-size: 13.5px; line-height: 1.6; }
+.ss-dr-top { display: flex; gap: 14px; align-items: center; }
+.ss-drawer .ss-tile-lg { width: 48px; height: 48px; border-radius: 14px; font-size: 14px; background: linear-gradient(145deg, var(--t), color-mix(in srgb, var(--t) 74%, #000)); box-shadow: 0 10px 20px -12px var(--t), inset 0 1px 0 rgba(255, 255, 255, .22); }
+.ss-dr-top h3 { margin: 0; font: 700 19px/1.25 var(--display); letter-spacing: -.015em; color: var(--ink); overflow-wrap: anywhere; }
+.ss-dr-kind { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
+.ss-dr-kind small { font-size: 12.5px; color: var(--ink-3); }
+.ss-dr-chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; color: var(--k); background: #fff; border: 1px solid color-mix(in srgb, var(--k) 30%, var(--line)); }
+.ss-dr-chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--k); }
+.ss-dr-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 22px 48px; display: flex; flex-direction: column; gap: 26px; background: #fff; }
+.ss-sec-h { font: 700 14px var(--display); letter-spacing: -.005em; color: var(--ink); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.ss-sec-h em { font: 700 11px var(--text); font-style: normal; color: var(--ink-3); background: var(--wash-2); border-radius: 99px; padding: 2px 8px; }
+.ss-sec-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; font: 400 12.5px var(--text); }
+.ss-what > :not(.ss-sec-h) { margin-left: 0; padding-left: 14px; border-left: 3px solid color-mix(in srgb, var(--k) 45%, transparent); }
+.ss-what > ul { margin-top: 0; padding-top: 10px; }
+.ss-what-lead { margin: 0; font-size: 14px; line-height: 1.65; color: var(--ink); overflow-wrap: anywhere; }
 .ss-what ul, .ss-fs-body ul { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 7px; }
-.ss-what li, .ss-fs-body li { position: relative; padding-left: 16px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.ss-what li, .ss-fs-body li { position: relative; padding-left: 16px; font-size: 13px; line-height: 1.6; color: var(--ink-2); overflow-wrap: anywhere; }
 .ss-what li::before, .ss-fs-body li::before { content: ''; position: absolute; left: 3px; top: 8px; width: 5px; height: 5px; border-radius: 50%; background: var(--k); }
 .ss-what b, .ss-fs-body b, .ss-rv b { color: var(--ink); font-weight: 700; }
 .ss-rt { color: var(--warn) !important; }
@@ -655,17 +664,19 @@ button.sx-frag-foot:hover { background: var(--frag-bg); }
 .ss-fs-body > button:hover b { color: var(--frag); }
 .ss-fs-body p { margin: 7px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
 .ss-dr-desc { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.55; white-space: pre-wrap; }
-.ss-wires { display: grid; grid-template-columns: 1fr 22px auto 22px 1fr; align-items: center; gap: 6px; padding: 12px; border-radius: 12px; background: var(--wash); border: 1px solid var(--line); }
+.ss-wires { display: grid; grid-template-columns: 1fr 26px auto 26px 1fr; align-items: center; gap: 8px; padding: 16px; border-radius: 16px; background: var(--wash); border: 1px solid var(--line); }
+.ss-wires .ss-muted { font-size: 12.5px; }
 .ss-wires-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; align-items: flex-start; }
 .ss-wires-col.is-r { align-items: flex-end; }
-.ss-wires-me { padding: 6px 10px; border-radius: 9px; background: var(--k); color: #fff; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
-.ss-wires-arr { height: 2px; background: var(--line-2); position: relative; }
+.ss-wires-me { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: 999px; background: #fff; color: var(--ink); border: 1.5px solid var(--k); font-size: 12px; font-weight: 700; white-space: nowrap; box-shadow: 0 0 0 4px color-mix(in srgb, var(--k) 12%, transparent); }
+.ss-wires-me i { width: 7px; height: 7px; border-radius: 50%; background: var(--k); }
+.ss-wires-arr { height: 1.5px; background: var(--line-2); position: relative; }
 .ss-wires-arr::after { content: ''; position: absolute; right: -1px; top: -4px; border: 5px solid transparent; border-left: 6px solid var(--line-2); border-right: 0; }
-.ss-wires-ev { grid-column: 1 / -1; font-size: 11.5px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding-top: 8px; margin-top: 4px; border-top: 1px dashed var(--line-2); }
-.ss-cfg-sec { margin: 14px 0 8px; font-size: 12px; font-weight: 700; color: var(--ink-2); display: flex; align-items: center; gap: 10px; }
+.ss-wires-ev { grid-column: 1 / -1; font-size: 12px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-top: 12px; margin-top: 6px; border-top: 1px dashed var(--line-2); }
+.ss-cfg-sec { margin: 18px 0 10px; font-size: 12.5px; font-weight: 700; color: var(--ink-2); display: flex; align-items: center; gap: 10px; }
 .ss-cfg-sec::after { content: ''; flex: 1; height: 1px; background: var(--line); }
-.ss-cfg { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; }
-.ss-cfg:hover { border-color: var(--line-2); }
+.ss-cfg { border: 1px solid var(--line); border-radius: 14px; margin-bottom: 8px; background: #fff; transition: border-color .15s, box-shadow .2s; }
+.ss-cfg:hover { border-color: var(--line-2); box-shadow: 0 10px 22px -18px rgba(49, 44, 42, .5); }
 .ss-cfg-h { display: flex; align-items: center; gap: 6px; padding: 9px 12px 2px; }
 .ss-cfg-h b { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-rawbtn { margin-left: auto; flex-shrink: 0; height: 22px; padding: 0 7px; border-radius: 6px; font: 10.5px var(--mono); color: var(--mute); border: 1px solid transparent; }
@@ -1586,7 +1597,7 @@ function StageDrawer({ found, path, detail, rawAll, onRawAll, onSelect, onClose 
   const chip = (inst) => {
     const x = sibling(inst);
     return (
-      <button key={inst} type="button" className={`ss-ulink ss-k-${x ? kindOf(x).cls : 'exe'}`} onClick={() => onSelect(pathOf(parentPrefix, { instance: inst }))}>
+      <button key={inst} type="button" title={x ? x.label : inst} className={`ss-ulink ss-k-${x ? kindOf(x).cls : 'exe'}`} onClick={() => onSelect(pathOf(parentPrefix, { instance: inst }))}>
         <i /><span>{x ? x.label : inst}</span>
       </button>
     );
@@ -1609,9 +1620,9 @@ function StageDrawer({ found, path, detail, rawAll, onRawAll, onSelect, onClose 
         <div className="ss-dr-top">
           <Tile tech={stage.technology} large />
           <div className="ss-grow">
-            <div className="ss-klabel">{kindOf(stage).label}</div>
             <h3>{stage.label}</h3>
-            <small>{stageSubtitle(stage)}</small>
+            <div className="ss-dr-kind"><span className="ss-dr-chip"><i />{frag ? `Fragment${frag.version ? ` v${String(frag.version).replace(/^v/i, '')}` : ''}` : kindOf(stage).label}</span>
+              {stageSubtitle(stage) && <small>{stageSubtitle(stage)}</small>}</div>
           </div>
           <IconButton name="close" label="Close stage details (Esc)" onClick={onClose} />
         </div>
@@ -1659,7 +1670,7 @@ function StageDrawer({ found, path, detail, rawAll, onRawAll, onSelect, onClose 
           <div className="ss-wires">
             <div className="ss-wires-col">{stage.upstream?.length ? stage.upstream.map(chip) : <span className="ss-muted">Start of the flow</span>}</div>
             <span className="ss-wires-arr" />
-            <span className="ss-wires-me">This {frag ? 'fragment' : 'stage'}</span>
+            <span className="ss-wires-me"><i />This {frag ? 'fragment' : 'stage'}</span>
             <span className="ss-wires-arr" />
             <div className="ss-wires-col is-r">{stage.downstream?.length ? stage.downstream.map(chip) : <span className="ss-muted">End of the flow</span>}</div>
             {((stage.triggered_by || []).length > 0 || (stage.triggers || []).length > 0) && (
