@@ -1,5 +1,5 @@
 import React, {
-  useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, memo, lazy, Suspense,
+  useState, useEffect, useLayoutEffect, useId, useRef, useCallback, useMemo, useDeferredValue, memo, lazy, Suspense,
   createContext, useContext,
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -104,11 +104,47 @@ const PANE_CSS = `
 @font-face { font-family: 'JohnsonDisplay'; src: url('/fonts/JohnsonDisplay-Medium.otf') format('opentype'); font-weight: 500; font-style: normal; font-display: swap; }
 .ss-root *, .ss-root *::before, .ss-root *::after { box-sizing: border-box; }
 .ss-root ::selection { background: #ffd2cb; color: var(--ink); }
-.ss-root * { scrollbar-width: thin; scrollbar-color: #cbc4bc transparent; }
+/* Slim warm scrollbars. Chrome/Edge drop ::-webkit-scrollbar styling when scrollbar-color is set, so that is Firefox-only. */
 .ss-root ::-webkit-scrollbar { width: 10px; height: 10px; }
-.ss-root ::-webkit-scrollbar-thumb { background: #cbc4bc; border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; }
-.ss-root ::-webkit-scrollbar-thumb:hover { background-color: var(--mute); }
-.ss-root ::-webkit-scrollbar-track { background: transparent; }
+.ss-root ::-webkit-scrollbar-thumb { background: rgba(129, 118, 111, .32); border-radius: 99px; border: 3px solid transparent; background-clip: padding-box; min-height: 40px; }
+.ss-root ::-webkit-scrollbar-thumb:hover { background-color: rgba(129, 118, 111, .62); }
+.ss-root ::-webkit-scrollbar-thumb:active { background-color: rgba(235, 23, 0, .55); }
+.ss-root ::-webkit-scrollbar-track, .ss-root ::-webkit-scrollbar-corner { background: transparent; }
+.ss-root ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+@supports not selector(::-webkit-scrollbar) { .ss-root * { scrollbar-width: thin; scrollbar-color: rgba(129, 118, 111, .4) transparent; } }
+
+/* dropdowns (see Dropdown) */
+.ss-dd { position: relative; display: inline-flex; min-width: 0; }
+.ss-dd-btn { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 11px 0 12px; max-width: 240px; border-radius: 999px; border: 1px solid var(--line); background: #fff;
+  font-size: 12.5px; color: var(--ink-2); transition: border-color .2s, background-color .2s, color .2s, box-shadow .2s; }
+.ss-dd-btn > .ss-i { color: var(--ink-3); flex-shrink: 0; }
+.ss-dd-btn:hover:not(:disabled) { border-color: var(--line-2); color: var(--ink); }
+.ss-dd-btn:disabled { opacity: .5; cursor: default; }
+.ss-dd-val { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.ss-dd-val > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-dd-val i, .ss-dd-list li > i { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ss-dd-chev { margin-left: 2px; color: var(--ink-3); transform: rotate(90deg); transition: transform .25s var(--ease); flex-shrink: 0; }
+.ss-dd.is-open .ss-dd-chev { transform: rotate(-90deg); }
+.ss-dd.is-open .ss-dd-btn { border-color: rgba(235, 23, 0, .45); box-shadow: 0 0 0 3px var(--focus-ring); color: var(--ink); }
+.ss-dd.is-on .ss-dd-btn { background: var(--red-wash); border-color: var(--red-line); color: var(--red-d); }
+.ss-dd.is-on .ss-dd-btn > .ss-i, .ss-dd.is-on .ss-dd-chev { color: var(--red); }
+.ss-dd-list { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; min-width: max(100%, 220px); max-width: 340px; max-height: 320px; overflow-y: auto; margin: 0; padding: 6px;
+  list-style: none; border-radius: 16px; background: #fff; border: 1px solid var(--line); box-shadow: 0 30px 60px -24px rgba(49, 44, 42, .45), 0 6px 14px -8px rgba(49, 44, 42, .2);
+  animation: ss-ddin .18s var(--ease); transform-origin: top right; }
+@keyframes ss-ddin { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.ss-dd-list li { display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 0 10px 0 12px; border-radius: 10px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.ss-dd-list li > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-dd-list li em { font-style: normal; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ss-dd-list li.is-hi { background: var(--wash-2); color: var(--ink); }
+.ss-dd-list li.is-sel { color: var(--red-d); font-weight: 700; }
+.ss-dd-list li.is-sel em { color: var(--red); }
+.ss-dd-tick { color: var(--red); visibility: hidden; flex-shrink: 0; }
+.ss-dd-list li.is-sel .ss-dd-tick { visibility: visible; }
+.ss-dd-list li.is-dis { opacity: .45; cursor: default; }
+.ss-dd.is-field { display: flex; width: 100%; }
+.ss-dd.is-field .ss-dd-btn { width: 100%; max-width: none; height: 38px; border-radius: 12px; padding: 0 12px 0 14px; font-size: 13px; color: var(--ink); border-color: var(--line-2); }
+.ss-dd.is-field .ss-dd-val { flex: 1; }
+.ss-dd.is-field .ss-dd-list { left: 0; right: auto; width: 100%; max-width: none; transform-origin: top left; }
 .ss-root input, .ss-root textarea { caret-color: var(--red); }
 .ss-root button { cursor: pointer; font-family: inherit; }
 .ss-root button:disabled { cursor: not-allowed; }
@@ -263,16 +299,6 @@ const PANE_CSS = `
 .ss-pills button:hover:not(.is-on) { color: var(--ink); }
 .ss-pills button.is-on { background: var(--red); color: #fff; box-shadow: 0 10px 22px -10px rgba(235, 23, 0, .7); }
 .ss-subtools { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.ss-select { position: relative; display: inline-flex; align-items: center; height: 32px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink-2); }
-.ss-select:hover { border-color: var(--line-2); }
-.ss-select .ss-i { position: absolute; left: 11px; pointer-events: none; color: var(--ink-3); }
-.ss-select select { appearance: none; height: 100%; padding: 0 28px 0 31px; background: transparent; border: 0; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; outline: none; max-width: 210px;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 15px) 14px, calc(100% - 11px) 14px; background-size: 4px 4px; background-repeat: no-repeat; }
-.ss-select select option { color: var(--ink); background: #fff; }
-.ss-select:focus-within { border-color: rgba(235, 23, 0, .45); box-shadow: 0 0 0 3px var(--focus-ring); }
-.ss-select.is-on { background: var(--red-wash); border-color: var(--red-line); color: var(--red-d); }
-.ss-select.is-on .ss-i { color: var(--red); }
 .ss-subtools .ss-chip { animation: none; height: 32px; padding: 0 13px; gap: 6px; font-size: 12.5px; letter-spacing: 0; text-transform: none; color: var(--ink-2); background: #fff; border-color: var(--line); box-shadow: none; cursor: pointer; }
 .ss-subtools .ss-chip:hover:not(:disabled) { border-color: var(--line-2); color: var(--ink); }
 .ss-subtools .ss-chip:disabled { opacity: .45; }
@@ -2578,31 +2604,20 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
                     </button>
                   )}
                   {board?.lanes.source && (
-                    <label className={`ss-select${srcFilter ? ' is-on' : ''}`} title="Show the pipelines that read from one source">
-                      <Svg name="db" size={13} />
-                      <select value={srcFilter || ''} onChange={e => setSrc(e.target.value || null)} aria-label="Filter by source">
-                        <option value="">All sources ({unsourced.length})</option>
-                        {sources.filter(x => x.n > 0 || x.id === srcFilter).map(x => <option key={x.id} value={x.id}>{x.label} ({x.n})</option>)}
-                      </select>
-                    </label>
+                    <Dropdown label="Filter by source" title="Show the pipelines that read from one source" icon="db" active={!!srcFilter}
+                      value={srcFilter || ''} onChange={v => setSrc(v || null)}
+                      options={[{ value: '', label: 'All sources', hint: unsourced.length },
+                        ...sources.filter(x => x.n > 0 || x.id === srcFilter).map(x => ({ value: x.id, label: x.label, hint: x.n, color: x.color }))]} />
                   )}
                   {labelCounts.length > 0 && (
-                    <label className="ss-select" title="Show one label">
-                      <Svg name="layers" size={13} />
-                      <select value={label || ''} onChange={e => { setLabel(e.target.value || null); }} aria-label="Filter by label">
-                        <option value="">All labels</option>
-                        {label && !labelCounts.some(([l]) => l === label) && <option value={label}>{label}</option>}
-                        {labelCounts.map(([l, n]) => <option key={l} value={l}>{l} ({n})</option>)}
-                      </select>
-                    </label>
+                    <Dropdown label="Filter by label" title="Show one label" icon="layers" active={!!label}
+                      value={label || ''} onChange={v => setLabel(v || null)}
+                      options={[{ value: '', label: 'All labels' },
+                        ...(label && !labelCounts.some(([l]) => l === label) ? [{ value: label, label }] : []),
+                        ...labelCounts.map(([l, n]) => ({ value: l, label: l, hint: n }))]} />
                   )}
-                  <label className="ss-select" title="Sort the cards">
-                    <Svg name="list" size={13} />
-                    <select value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort pipelines">
-                      <option value="name">A to Z</option>
-                      <option value="modified">Recently changed</option>
-                    </select>
-                  </label>
+                  <Dropdown label="Sort pipelines" title="Sort the cards" icon="list" value={sort} onChange={setSort}
+                    options={[{ value: 'name', label: 'A to Z' }, { value: 'modified', label: 'Recently changed' }]} />
                   <button type="button" className="ss-chip" onClick={selectShown} disabled={!shown.length}
                     title={allShownSelected ? 'Unpick every pipeline shown' : `Pick every pipeline shown (up to ${maxPerRun})`}>
                     {allShownSelected ? 'Unpick shown' : 'Pick shown'}
@@ -3061,6 +3076,84 @@ function StatusPill({ s }) {
 
 
 /* ----------------------------- small parts ----------------------------- */
+
+// A list in the page's own style instead of the browser's: click (or Enter / Space / Down) to open, arrows to move,
+// Enter to pick, Esc or a click outside to close, a letter jumps to the next option starting with it.
+// options: [{ value, label, hint?, color?, disabled? }]
+function Dropdown({ value, options, onChange, icon, label, title, variant = 'pill', disabled, active }) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const root = useRef(null);
+  const list = useRef(null);
+  const id = useId();
+  const idx = Math.max(0, options.findIndex(o => o.value === value));
+  const cur = options[idx];
+  useEffect(() => {
+    if (!open) return undefined;
+    const off = (e) => { if (!root.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('pointerdown', off);
+    return () => document.removeEventListener('pointerdown', off);
+  }, [open]);
+  useEffect(() => { if (open) list.current?.children[hi]?.scrollIntoView({ block: 'nearest' }); }, [open, hi]);
+  const pick = (o) => {
+    if (!o || o.disabled) return;
+    setOpen(false);
+    if (o.value !== value) onChange(o.value);
+    root.current?.querySelector('.ss-dd-btn')?.focus();
+  };
+  const step = (from, d) => {
+    for (let k = 1; k <= options.length; k += 1) {
+      const n = (from + d * k + options.length) % options.length;
+      if (!options[n].disabled) return n;
+    }
+    return from;
+  };
+  const onKey = (e) => {
+    if (disabled) return;
+    if (!open) {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); setHi(idx); setOpen(true); }
+      return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setOpen(false); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setHi(h => step(h, e.key === 'ArrowDown' ? 1 : -1)); }
+    else if (e.key === 'Home') { e.preventDefault(); setHi(step(-1, 1)); }
+    else if (e.key === 'End') { e.preventDefault(); setHi(step(options.length, -1)); }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(options[hi]); }
+    else if (e.key === 'Tab') setOpen(false);
+    else if (e.key.length === 1) {
+      const k = e.key.toLowerCase();
+      for (let n = 1; n <= options.length; n += 1) {
+        const j = (hi + n) % options.length;
+        if (!options[j].disabled && String(options[j].label).toLowerCase().startsWith(k)) { setHi(j); break; }
+      }
+    }
+  };
+  return (
+    <div className={`ss-dd is-${variant}${open ? ' is-open' : ''}${active ? ' is-on' : ''}`} ref={root} onKeyDown={onKey}>
+      <button type="button" className="ss-dd-btn" aria-haspopup="listbox" aria-expanded={open} aria-controls={`${id}-l`}
+        aria-activedescendant={open ? `${id}-${hi}` : undefined} aria-label={label} title={title} disabled={disabled}
+        onClick={() => { setHi(idx); setOpen(o => !o); }}>
+        {icon && <Svg name={icon} size={13} />}
+        <span className="ss-dd-val">{cur?.color && <i style={{ background: cur.color }} />}<span>{cur?.label ?? ''}</span></span>
+        <Svg name="chevron" size={11} className="ss-dd-chev" />
+      </button>
+      {open && (
+        <ul className="ss-dd-list" role="listbox" id={`${id}-l`} ref={list} aria-label={label}>
+          {options.map((o, i) => (
+            <li key={String(o.value)} id={`${id}-${i}`} role="option" aria-selected={o.value === value} aria-disabled={o.disabled || undefined}
+              className={`${i === hi ? 'is-hi' : ''}${o.value === value ? ' is-sel' : ''}${o.disabled ? ' is-dis' : ''}`}
+              onPointerEnter={() => !o.disabled && setHi(i)} onClick={() => pick(o)}>
+              {o.color ? <i style={{ background: o.color }} /> : null}
+              <span>{o.label}</span>
+              {o.hint != null && <em>{o.hint}</em>}
+              <Svg name="check" size={12} className="ss-dd-tick" />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function Segmented({ options, value, onChange, disabled, label, offFor = () => null }) {
   return (
@@ -3559,13 +3652,12 @@ function ValidatePanel({ v, detail, onOpenPipeline }) {
               options={[['manual', 'Review first'], ['auto', 'Straight through']]} />
             <div className="pvs-hint">{v.runMode === 'auto' ? 'Extract → check → validate without stopping; stops and says why if a check fails.' : 'Extract and check, then you confirm before anything is compared.'}</div>
           </div>
-          <label>
+          <div>
             <div className="pvs-micro">Validation config</div>
-            <select className="pvs-input" value={v.db} onChange={(e) => v.setDb(e.target.value)} disabled={running}>
-              {(v.setup?.databases || []).map((d) => <option key={d.id} value={d.id}>{d.label}{d.ready ? '' : ' (not set up)'}</option>)}
-            </select>
+            <Dropdown variant="field" label="Validation config" value={v.db} onChange={v.setDb} disabled={running}
+              options={(v.setup?.databases || []).map((d) => ({ value: d.id, label: d.label, hint: d.ready ? null : 'not set up' }))} />
             <div className="pvs-hint">{v.dbInfo && !v.dbInfo.ready ? <span className="pvs-bad">{v.dbInfo.reason}</span> : sv?.source ? `Picked from the pipeline's ${sv.source} source` : 'Which validation config to compare with'}</div>
-          </label>
+          </div>
           <div>
             <div className="pvs-micro">Write to Snowflake</div>
             <button type="button" role="switch" aria-checked={v.wantWrite} className={`pvs-switch${v.wantWrite ? ' is-on' : ''}`}
