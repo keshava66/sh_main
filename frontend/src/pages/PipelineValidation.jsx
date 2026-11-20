@@ -226,7 +226,8 @@ const PANE_CSS = `
 .ss-map-bub { position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center; background: #fff; border: 1px solid var(--line);
   box-shadow: 0 16px 30px -18px rgba(49, 44, 42, .55); font: 700 11px/1 var(--text); letter-spacing: .04em; color: var(--c); transition: transform .35s var(--ease), background-color .3s, color .3s, box-shadow .3s, border-color .3s; }
 .ss-map-bub::before { content: ''; position: absolute; inset: 4px; border-radius: 50%; background: var(--c); opacity: .08; }
-.ss-map-node:not(:disabled):hover .ss-map-lbl { color: var(--c); }
+.ss-map-node:not(:disabled):hover .ss-map-lbl, .ss-map-node.is-on .ss-map-lbl { color: var(--c); }
+.ss-map-node.is-on .ss-map-bub { transform: scale(1.14); background: var(--c); border-color: var(--c); color: #fff; box-shadow: 0 20px 36px -16px var(--c); }
 .ss-map-node:not(:disabled):hover .ss-map-bub, .ss-map-node:focus-visible .ss-map-bub { transform: scale(1.14); background: var(--c); border-color: var(--c); color: #fff; box-shadow: 0 20px 36px -16px var(--c); }
 .ss-map-lbl { position: absolute; right: 58px; top: 50%; transform: translateY(-50%); display: flex; align-items: baseline; gap: 7px; white-space: nowrap;
   font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
@@ -270,6 +271,8 @@ const PANE_CSS = `
   background-position: calc(100% - 15px) 14px, calc(100% - 11px) 14px; background-size: 4px 4px; background-repeat: no-repeat; }
 .ss-select select option { color: var(--ink); background: #fff; }
 .ss-select:focus-within { border-color: rgba(235, 23, 0, .45); box-shadow: 0 0 0 3px var(--focus-ring); }
+.ss-select.is-on { background: var(--red-wash); border-color: var(--red-line); color: var(--red-d); }
+.ss-select.is-on .ss-i { color: var(--red); }
 .ss-subtools .ss-chip { animation: none; height: 32px; padding: 0 13px; gap: 6px; font-size: 12.5px; letter-spacing: 0; text-transform: none; color: var(--ink-2); background: #fff; border-color: var(--line); box-shadow: none; cursor: pointer; }
 .ss-subtools .ss-chip:hover:not(:disabled) { border-color: var(--line-2); color: var(--ink); }
 .ss-subtools .ss-chip:disabled { opacity: .45; }
@@ -1009,6 +1012,7 @@ function Readable({ v, k = '', ctx, stage }) {
 
 // Inline glyphs: crisp at any zoom, nothing to load, and they take currentColor.
 const Glyph = {
+  db: <><ellipse cx="8" cy="3.8" rx="5" ry="1.9" /><path d="M3 3.8v8.4c0 1 2.2 1.9 5 1.9s5-.9 5-1.9V3.8M3 8c0 1 2.2 1.9 5 1.9s5-.9 5-1.9" /></>,
   search: <path d="M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10Zm3.6-1.4L14 14" />,
   refresh: <path d="M13.5 8A5.5 5.5 0 1 1 11.9 4M13.5 2v3h-3" />,
   close: <path d="M4 4l8 8m0-8-8 8" />,
@@ -1177,7 +1181,7 @@ const Board = memo(function Board({ lanes, rowsByLane, collapsed, onCollapse, qu
 // The map beside the title: each source as a node, a line from it into Snowflake, and the pass rate on the
 // Snowflake disc with a ring split by last result. Plain SVG + CSS, so it costs nothing on a GPU-less desktop.
 const MAP_W = 560, MAP_H = 340, DISC = { x: 400, y: 170, r: 74 };
-function PipelineMap({ sources, ring, headline, loading, total, onSource, onResult }) {
+function PipelineMap({ sources, ring, headline, loading, total, onSource, onResult, active }) {
   const shown = sources.filter(s => s.n > 0 || s.always);
   const gap = MAP_H / (shown.length + 1);
   const nodes = shown.map((s, i) => ({ ...s, x: 168, y: Math.round(gap * (i + 1)) }));
@@ -1187,7 +1191,7 @@ function PipelineMap({ sources, ring, headline, loading, total, onSource, onResu
   let acc = 0;
   const pct = headline?.ring != null ? Math.round(headline.ring * 100) : null;
   return (
-    <div className={`ss-map${hot ? ' has-hot' : ''}`} aria-label="Where the pipelines read from and how they did">
+    <div className={`ss-map${hot || active ? ' has-hot' : ''}`} aria-label="Where the pipelines read from and how they did">
       <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
         <defs>
           <pattern id="ss-map-dots" width="18" height="18" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#cbc4bc" opacity=".55" /></pattern>
@@ -1197,7 +1201,7 @@ function PipelineMap({ sources, ring, headline, loading, total, onSource, onResu
         {nodes.map((n, i) => {
           const d = `M ${n.x + 24} ${n.y} C ${n.x + 110} ${n.y}, ${DISC.x - 150} ${DISC.y}, ${DISC.x - DISC.r - 20} ${DISC.y}`;
           return (
-            <g key={n.id} className={`ss-map-link${hot === n.id ? ' is-hot' : ''}`} style={{ '--c': n.color, '--d': `${i * -0.7}s` }}>
+            <g key={n.id} className={`ss-map-link${(hot || active) === n.id ? ' is-hot' : ''}`} style={{ '--c': n.color, '--d': `${i * -0.7}s` }}>
               <path d={d} className="ss-map-line" />
               {n.n > 0 && <path d={d} className="ss-map-flow" />}
             </g>
@@ -1214,15 +1218,15 @@ function PipelineMap({ sources, ring, headline, loading, total, onSource, onResu
         })}
       </svg>
       {nodes.map(n => (
-        <button key={n.id} type="button" className="ss-map-node" style={{ left: `${(n.x / MAP_W) * 100}%`, top: `${(n.y / MAP_H) * 100}%`, '--c': n.color }}
+        <button key={n.id} type="button" className={`ss-map-node${active === n.id ? ' is-on' : ''}`} aria-pressed={active === n.id} style={{ left: `${(n.x / MAP_W) * 100}%`, top: `${(n.y / MAP_H) * 100}%`, '--c': n.color }}
           onMouseEnter={() => setHot(n.id)} onMouseLeave={() => setHot(null)} onFocus={() => setHot(n.id)} onBlur={() => setHot(null)}
-          onClick={() => onSource?.(n.id)} disabled={!onSource || !n.n} title={n.n ? `Show the ${n.label} pipelines` : `No ${n.label} pipelines`}>
+          onClick={() => onSource?.(n.id)} disabled={!onSource || !n.n} title={active === n.id ? 'Show every pipeline again' : n.n ? `Show only the ${n.label} pipelines` : `No ${n.label} pipelines`}>
           <span className="ss-map-bub">{n.mark}</span>
           <span className="ss-map-lbl"><b>{n.n}</b>{n.label}</span>
         </button>
       ))}
       <button type="button" className="ss-map-disc" style={{ left: `${(DISC.x / MAP_W) * 100}%`, top: `${(DISC.y / MAP_H) * 100}%` }}
-        onClick={onResult} disabled={!onResult} title="Group the board by last result">
+        onClick={onResult} disabled={!onResult} title={onResult ? 'Show every pipeline again' : undefined}>
         <span className="ss-map-pulse" aria-hidden="true" /><span className="ss-map-pulse is-b" aria-hidden="true" />
         <span className="ss-map-sf"><Svg name="snow" size={15} strokeWidth={1.8} /></span>
         {loading ? <b className="ss-map-wait">…</b> : <b>{pct != null ? <>{pct}<small>%</small></> : total}</b>}
@@ -1232,7 +1236,7 @@ function PipelineMap({ sources, ring, headline, loading, total, onSource, onResu
   );
 }
 
-function Hero({ health, extractorReady, reason, fetchedAt, booting, total, search, headline, sources, ring, onSource, onResult }) {
+function Hero({ health, extractorReady, reason, fetchedAt, booting, total, search, headline, sources, ring, onSource, onResult, activeSource }) {
   return (
     <section className="ss-hero" aria-label="Pipeline Studio">
       <div className="ss-hero-copy">
@@ -1258,7 +1262,7 @@ function Hero({ health, extractorReady, reason, fetchedAt, booting, total, searc
           </p>
         )}
       </div>
-      <PipelineMap sources={sources} ring={ring} headline={headline} total={total} loading={booting || headline?.loading} onSource={onSource} onResult={onResult} />
+      <PipelineMap sources={sources} ring={ring} headline={headline} total={total} loading={booting || headline?.loading} onSource={onSource} onResult={onResult} active={activeSource} />
     </section>
   );
 }
@@ -2052,6 +2056,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   // how the board is scoped lives in the address too, so a view can be shared, bookmarked or gone back to
   const sort = params.get('sssort') === 'modified' ? 'modified' : 'name';
   const label = params.get('sslabel') || null;
+  const srcParam = params.get('sssrc') || null;   // one source, or every pipeline
   const groupBy = params.get('ssgroup') || null;   // null = the board's default (it can change as permissions load)
   const [pickedOnly, setPickedOnly] = useState(false);
   const board = studio?.board || null;
@@ -2111,6 +2116,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
 
   const setSort = useStable((v) => navigate({ sssort: v === 'modified' ? v : null }, { replace: true }));
   const setLabel = useStable((v) => navigate({ sslabel: v }, { replace: true }));
+  const setSrc = useStable((v) => navigate({ sssrc: v }, { replace: true }));
   const setGroupBy = useStable((v) => navigate({ ssgroup: v === board?.defaultMode ? null : v }, { replace: true }));
 
   const openPipeline = useStable((id) => {
@@ -2248,13 +2254,16 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
     pipelines.forEach(p => (p.labels || []).forEach(l => counts.set(l, (counts.get(l) || 0) + 1)));
     return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 10);
   }, [pipelines]);
-  const visible = useMemo(() => {
+  // every filter but the source one, so the source dropdown and the map can count each source
+  const unsourced = useMemo(() => {
     const list = pipelines.filter(p => matchesPipeline(p, listQuery) && (!label || (p.labels || []).includes(label)) && (!pickedOnly || selected.has(p.id)));
     if (sort === 'modified') {
       list.sort((a, b) => String(b.last_modified || '').localeCompare(String(a.last_modified || '')));
     }
     return list;
   }, [pipelines, listQuery, label, pickedOnly, selected, sort]);
+  const srcFilter = srcParam && board?.lanes.source?.some(l => l.id === srcParam) ? srcParam : null;
+  const visible = useMemo(() => (srcFilter ? unsourced.filter(p => board.laneOf(p, 'source') === srcFilter) : unsourced), [unsourced, srcFilter, board]);
   const lanes = useMemo(() => (board?.lanes[mode] || [{ id: 'all', label: 'Pipelines', color: 'var(--ink-3)' }]), [board, mode]);
   const rowsByLane = useMemo(() => {
     const m = new Map(lanes.map(l => [l.id, []]));
@@ -2275,21 +2284,12 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
     if (!sourceLanes) return [{ id: 'all', label: 'StreamSets', color: '#81766f', mark: 'SS', n: visible.length, always: true }];
     const ready = !board.readyFor || board.readyFor('source');
     const n = {};
-    if (ready) visible.forEach(p => { const k = board.laneOf(p, 'source'); n[k] = (n[k] || 0) + 1; });
+    if (ready) unsourced.forEach(p => { const k = board.laneOf(p, 'source'); n[k] = (n[k] || 0) + 1; });
     return sourceLanes.map(l => ({ id: l.id, label: l.id === 'mariadb' ? 'MariaDB' : l.id === 'other' ? 'At run time' : l.label, color: l.color, mark: marks[l.id] || 'SRC', n: n[l.id] || 0, always: !ready && l.id !== 'cant' && l.id !== 'other' }));
-  }, [sourceLanes, board, visible]);
+  }, [sourceLanes, board, unsourced, visible.length]);
   const ring = headline?.bar || [];
-  const showSource = useStable((id) => { if (board?.lanes.source) { setGroupBy('source'); setTimeout(() => jumpToLane(id), 60); } });
-  const showResult = useStable(() => setGroupBy('result'));
-  const jumpToLane = useStable((id) => {
-    setCollapsed(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
-    if (pipelineId) navigate({ pipeline: null, stage: null, ssview: null });
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`ss-lane-${id}`);
-      el?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
-      el?.classList.remove('is-flash'); void el?.offsetWidth; el?.classList.add('is-flash');
-    });
-  });
+  const showSource = useStable((id) => setSrc(srcFilter === id ? null : id));
+  const showResult = useStable(() => setSrc(null));
 
   const bump = useCallback(() => {
     setShake(n => n + 1);
@@ -2526,7 +2526,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
   const full = selected.size >= maxPerRun;
   const filtered = visible.length !== pipelines.length;
   const closeSheet = () => navigate({ pipeline: null, stage: null, ssview: null });
-  const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); };
+  const clearFilters = () => { setQuery(''); setLabel(null); setPickedOnly(false); setSrc(null); };
 
   return (
     <div className={`ss-root${pipelineId ? ' has-sheet' : ''}${selected.size ? ' has-picks' : ''}${run ? ' has-run' : ''}`}>
@@ -2537,7 +2537,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
         <main className="ss-main" inert={pipelineId ? true : undefined}>
           <Hero health={health} extractorReady={extractorReady} reason={reason} fetchedAt={fetchedAt} booting={booting} total={pipelines.length}
             headline={headline} sources={sources} ring={ring}
-            onSource={board?.lanes.source ? showSource : null} onResult={board?.lanes.result && mode !== 'result' ? showResult : null}
+            onSource={board?.lanes.source ? showSource : null} onResult={srcFilter ? showResult : null} activeSource={srcFilter}
             search={(
               <div className="ss-cmd">
                 <label className="ss-cmd-box">
@@ -2562,7 +2562,7 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
             <div className="ss-sec-head">
               <div>
                 <div className="ss-k">Board</div>
-                <h2>Every pipeline, by <em>{mode === 'source' ? 'source.' : mode === 'result' ? 'last result.' : 'name.'}</em></h2>
+                <h2>{srcFilter ? `${sources.find(x => x.id === srcFilter)?.label || 'These'} pipelines` : 'Every pipeline'}, by <em>{mode === 'source' ? 'source.' : mode === 'result' ? 'last result.' : 'name.'}</em></h2>
                 <p>
                   {booting ? 'Loading…' : filtered ? `${visible.length} of ${plural(pipelines.length, 'pipeline', 'pipelines')} match` : plural(pipelines.length, 'pipeline', 'pipelines')}
                   {' '}· sorted {sort === 'modified' ? 'by last change' : 'A to Z'}
@@ -2576,6 +2576,15 @@ function StreamsetsPane({ logInPage, active = true, studio = null }) {
                     <button type="button" className={`ss-chip${pickedOnly ? ' is-on' : ''}`} aria-pressed={pickedOnly} onClick={() => setPickedOnly(v => !v)}>
                       <Svg name="check" size={12} />Picked <em>{selected.size}</em>
                     </button>
+                  )}
+                  {board?.lanes.source && (
+                    <label className={`ss-select${srcFilter ? ' is-on' : ''}`} title="Show the pipelines that read from one source">
+                      <Svg name="db" size={13} />
+                      <select value={srcFilter || ''} onChange={e => setSrc(e.target.value || null)} aria-label="Filter by source">
+                        <option value="">All sources ({unsourced.length})</option>
+                        {sources.filter(x => x.n > 0 || x.id === srcFilter).map(x => <option key={x.id} value={x.id}>{x.label} ({x.n})</option>)}
+                      </select>
+                    </label>
                   )}
                   {labelCounts.length > 0 && (
                     <label className="ss-select" title="Show one label">
@@ -3818,7 +3827,8 @@ export default function PipelineValidation() {
       ],
       board: (canValidate || canHistory) ? {
         // if the last results can't be read, the board sorts by source instead of showing every lane empty
-        modes: [...(canHistory && !(latestErr && canValidate) ? [['result', 'Last result']] : []), ...(canValidate ? [['source', 'Source']] : [])],
+        // sources are a filter (the dropdown), not a grouping; group by source only when there are no results to group by
+        modes: canHistory && !(latestErr && canValidate) ? [['result', 'Last result']] : canValidate ? [['source', 'Source']] : [],
         defaultMode: canHistory && !(latestErr && canValidate) ? 'result' : 'source',
         readyFor: (m) => (m === 'result' ? latest !== null : m === 'source' ? support !== null : true),
         folded: ['cant'],
