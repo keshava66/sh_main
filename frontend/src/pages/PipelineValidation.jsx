@@ -302,6 +302,9 @@ const PANE_CSS = `
 .ss-lane.is-collapsed .ss-lane-btn { flex-direction: column; gap: 10px; width: 44px; padding: 14px 0; border-radius: 16px; }
 .ss-lane.is-collapsed .ss-lane-btn b { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; color: var(--ink-2); }
 .ss-lane.is-collapsed .ss-lane-btn:hover { background: #fff; }
+.ss-lane.is-empty { opacity: .7; }
+.ss-lane.is-empty .ss-lane-btn { cursor: default; }
+.ss-lane.is-empty .ss-lane-n { background: var(--mute); }
 
 /* cards: the Dashboard's card language at board density */
 .ss-card { position: relative; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%);
@@ -336,7 +339,9 @@ const PANE_CSS = `
 .ss-check[aria-checked="true"] { background: var(--red); border-color: var(--red); box-shadow: 0 6px 14px -6px rgba(235, 23, 0, .8); }
 .ss-check[aria-checked="true"] svg { stroke-dashoffset: 0; }
 .ss-check:disabled { opacity: .35 !important; }
-.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; padding-right: 112px; font-size: 11.5px; color: var(--ink-3); }
+.ss-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; font-size: 11.5px; color: var(--ink-3); }
+.ss-card.has-tail .ss-meta { padding-right: 112px; }
+.ss-card-note { display: block; margin-top: 8px; font-size: 11.5px; line-height: 1.4; }
 .ss-tag { padding: 0 8px; height: 19px; display: inline-flex; align-items: center; border-radius: 99px; font-size: 10.5px; background: var(--wash-2); color: var(--ink-2); border: 1px solid var(--line); }
 .ss-tag-warn { background: #fff6e0; color: #8a5a00; border-color: #f5e1b0; }
 .ss-tag-proc { background: var(--proc-bg); color: var(--proc); border-color: #cfe0f2; }
@@ -1091,7 +1096,7 @@ const PipelineCard = memo(function PipelineCard({ p, query, isOpen, isPicked, lo
   const info = infoOf ? infoOf(p) : null;
   const tone = info?.tone || 'var(--line-2)';
   return (
-    <li className={`ss-card${isOpen ? ' is-open' : ''}${isPicked ? ' is-picked' : ''}${info?.muted ? ' is-muted' : ''}`}
+    <li className={`ss-card${isOpen ? ' is-open' : ''}${isPicked ? ' is-picked' : ''}${info?.muted ? ' is-muted' : ''}${info?.tail ? ' has-tail' : ''}`}
       style={{ '--tone': tone, '--d': `${delay}ms` }}>
       <button type="button" className="ss-card-open" onClick={() => onOpen(p.id)} aria-current={isOpen ? 'true' : undefined}
         title={p.modified_by ? `${p.name}\nLast changed by ${p.modified_by}` : p.name}>
@@ -1109,8 +1114,8 @@ const PipelineCard = memo(function PipelineCard({ p, query, isOpen, isPicked, lo
           {runState === 'running' && <span className="ss-tag ss-tag-red">● extracting</span>}
           {runState === 'done' && <span className="ss-tag ss-tag-ok">✓ extracted</span>}
           {runState === 'failed' && <span className="ss-tag ss-tag-bad">✕ failed</span>}
-          {info?.note}
         </span>
+        {info?.note && <span className="ss-card-note">{info.note}</span>}
       </button>
       <button type="button" role="checkbox" aria-checked={isPicked} className="ss-check" disabled={locked}
         onClick={() => onPick(p.id)} aria-label={`Pick ${p.name} for extraction`}
@@ -1127,12 +1132,14 @@ const LANE_CAP = 120;   // cards painted per lane before "Show all"; search narr
 function Lane({ lane, rows, collapsed, onCollapse, cardProps }) {
   const [all, setAll] = useState(false);
   const shown = all ? rows : rows.slice(0, LANE_CAP);
+  const empty = !rows.length;   // an empty lane folds to a thin column instead of holding a full one
+  collapsed = collapsed || empty;
   return (
-    <section className={`ss-lane${collapsed ? ' is-collapsed' : ''}`} id={`ss-lane-${lane.id}`} aria-label={`${lane.label}: ${rows.length}`}
+    <section className={`ss-lane${collapsed ? ' is-collapsed' : ''}${empty ? ' is-empty' : ''}`} id={`ss-lane-${lane.id}`} aria-label={`${lane.label}: ${rows.length}`}
       style={{ '--lane': lane.color }}>
       <header className="ss-lane-h">
-        <button type="button" className="ss-lane-btn" onClick={() => onCollapse(lane.id)} aria-expanded={!collapsed}
-          title={collapsed ? `Show ${lane.label}` : `Fold ${lane.label} away`}>
+        <button type="button" className="ss-lane-btn" onClick={() => !empty && onCollapse(lane.id)} aria-expanded={!collapsed}
+          title={empty ? (lane.empty || `No ${lane.label} pipelines`) : collapsed ? `Show ${lane.label}` : `Fold ${lane.label} away`}>
           <i className="ss-lane-dot" />
           <b>{lane.label}</b>
           <span className="ss-lane-n">{rows.length}</span>
@@ -3758,6 +3765,7 @@ const StudioPane = memo(StreamsetsPane);
 
 const PAGE_CSS = `${PANEL_CSS}
 .pvs-badge { width: 34px; height: 30px; margin-top: -2px; border-radius: 8px; display: grid; place-items: center; font-size: 10px; font-weight: 700; flex-shrink: 0; background: var(--wash-2); color: var(--mute); letter-spacing: .02em; }
+.pvs-badge.is-guess { outline: 1.5px dashed rgba(255, 255, 255, .7); outline-offset: -3px; }
 .pvs-badge.is-ora { background: linear-gradient(145deg, #c74634, #9e2a1b); color: #fff; box-shadow: 0 6px 12px -8px #c74634; }
 .pvs-badge.is-mdb { background: linear-gradient(145deg, #0f68b2, #0a4a80); color: #fff; box-shadow: 0 6px 12px -8px #0f68b2; }
 .pvs-badge.is-mss { background: linear-gradient(145deg, #8c3bbb, #62278a); color: #fff; box-shadow: 0 6px 12px -8px #8c3bbb; }
@@ -3860,10 +3868,11 @@ export default function PipelineValidation() {
           const l = canHistory ? last(p.name) : null;
           const cant = canValidate && s?.ok === false;
           const [text, cls] = !canValidate ? ['SRC', 'is-any'] : !s ? [supportErr ? '?' : '··', ''] : cant ? ['—', ''] : SOURCE_BADGE[s.source] || ['SRC', 'is-any'];
-          const title = !canValidate ? 'Source' : !s ? (supportErr ? "Couldn't check the source" : 'Checking…') : cant ? `Can't validate: ${s.reason}` : `Source: ${s.source || 'decided when it runs'}`;
+          const title = !canValidate ? 'Source' : !s ? (supportErr ? "Couldn't check the source" : 'Checking…') : cant ? `Can't validate: ${s.reason}`
+            : `Source: ${s.source || 'decided when it runs'}${s.guessed ? ' (going by its name - the run confirms it)' : ''}`;
           const busy = running && pickedId === p.id;
           return {
-            lead: <span className={`pvs-badge ${cls}`} title={title}>{text}</span>,
+            lead: <span className={`pvs-badge ${cls}${s?.guessed ? ' is-guess' : ''}`} title={title}>{text}</span>,
             end: cant && /target/i.test(s.reason || '') ? '?' : 'SF',
             tone: busy ? 'var(--red)' : l ? (STATUS[l.status] || [])[2] : cant ? 'transparent' : 'var(--line-2)',
             muted: cant,

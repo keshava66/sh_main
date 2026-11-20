@@ -991,25 +991,70 @@ def pipelines(refresh: bool = Query(False), auth: dict = Depends(require_permiss
 _support_cache: Dict[str, Dict[str, Any]] = {}   # commit id -> verdict; commits never change
 
 
-def _verdict(pipeline_id: str, commit_id: Optional[str]) -> Dict[str, Any]:
+_conn_cache: Dict[str, Optional[str]] = {}       # shared connection id -> driver kind (or None)
+_url_cache: Dict[str, Optional[str]] = {}        # resource-file URL setting -> driver kind (or None)
+_NAME_HINTS = (("sqlserver", r"sql_?svr|sql_?server|mssql|\blift\b"), ("mariadb", r"maria|mysql|\bhaq\b"),
+               ("oracle", r"orcl|oracle|\bora\b|insight7|rimdocs"))
+
+
+def _kind_from_text(text: str) -> Optional[str]:
+    """Best guess at the database from a name: Orcl/Oracle, MariaDB/MySQL, SqlSvr/SQL Server (and the systems we know)."""
+    t = re.sub(r"[^a-z0-9]+", "_", (text or "").lower())
+    t = f"_{t}_".replace("_", " ")
+    return next((k for k, rx in _NAME_HINTS if re.search(rx, t)), None)
+
+
+def _connection_kind(conn_id: str) -> Optional[str]:
+    """What a shared Control Hub connection points at: its JDBC URL first, then its type, then its name."""
+    if conn_id in _conn_cache:
+        return _conn_cache[conn_id]
+    kind = None
+    try:
+        c = ssx._get(f"connection/rest/v1/connection/{conn_id}") or {}
+        d = c.get("connectionDefinition")
+        d = json.loads(d) if isinstance(d, str) else d or {}
+        url = next((str(x.get("value")) for x in d.get("configuration") or []
+                    if isinstance(x, dict) and str(x.get("name", "")).endswith("connectionString") and x.get("value")), "")
+        kind = driver_kind(url) or _kind_from_text(c.get("connectionType", "")) or _kind_from_text(c.get("name", ""))
+    except Exception as e:   # noqa: BLE001 - no access to connections: fall back to the name hints
+        logger.info("Couldn't read StreamSets connection %s: %s", conn_id, e)
+    _conn_cache[conn_id] = kind
+    return kind
+
+
+def _url_kind(value: str, constants: Dict[str, str]) -> Optional[str]:
+    """Driver from a connection string that is a ${PARAM} or a runtime resource file."""
+    if value in _url_cache:
+        return _url_cache[value]
+    try:
+        url, _, _ = _resolve(value, constants)
+    except Exception:   # noqa: BLE001 - SFTP to the Data Collectors failed: decided at run time
+        url = None
+    _url_cache[value] = driver_kind(url or "")
+    return _url_cache[value]
+
+
+def _verdict(pipeline_id: str, commit_id: Optional[str], name: str = "") -> Dict[str, Any]:
     """Same rules the run applies, read from the pipeline definition (no extraction):
-    Snowflake target + JDBC table/query origin + an oracle/mariadb/mysql URL (or one we can't see)."""
+    Snowflake target + JDBC table/query origin + an oracle/mariadb/mysql/sqlserver source. The source is read from
+    the URL, a shared connection, a parameter or resource file, or the stage inside a fragment; failing all of
+    those it is guessed from the pipeline and connection names (guessed: True)."""
     if not commit_id:
         commit_id = ssx._latest(pipeline_id, False)["commitId"]
     if commit_id in _support_cache:
         return _support_cache[commit_id]
     pdef = ssx._definition(ssx._get_commit(commit_id))
     constants = ssx._constants(pdef)
-    stages = [s for s in pdef.get("stages") or [] if isinstance(s, dict)]
+    frag = lambda st: bool((st.get("uiInfo") or {}).get("fragmentGroupStage"))
+    stages = [s for s in ssx._raw_stages(pdef) if isinstance(s, dict) and not frag(s)]   # fragments opened up
     targets = [s for s in stages if ssx._kind(s) == "TARGET"]
     origins = [s for s in stages if ssx._kind(s) == "SOURCE"]
 
     def no(reason, source=None):
         return {"ok": False, "reason": reason, "source": source}
 
-    frag = lambda st: bool((st.get("uiInfo") or {}).get("fragmentGroupStage"))
-    if any(frag(st) for st in targets + origins):
-        v = {"ok": True, "reason": None, "source": None}   # source/target inside a fragment: decided at run time
+    if not targets and not origins:
+        v = {"ok": True, "reason": None, "source": None}   # fragments we couldn't open: decided at run time
     elif not any(ssx._technology(t) == "Snowflake" for t in targets):
         v = no("Target isn't Snowflake")
     elif not origins:
@@ -1021,17 +1066,19 @@ def _verdict(pipeline_id: str, commit_id: Optional[str]) -> Dict[str, Any]:
             v = no(f"Source is {ssx._type_name(o.get('stageName') or '')}", ssx._technology(o))
         else:
             cfg = {c.get("name"): c.get("value") for c in o.get("configuration") or [] if isinstance(c, dict)}
-            shared = any(key and key.endswith("connectionSelection") and val not in (None, "", "MANUAL") for key, val in cfg.items())
-            url = "" if shared else next((str(val) for key, val in cfg.items() if key and key.endswith("connectionString") and val), "")
-            ref = re.fullmatch(r"\$\{\s*([A-Za-z_][\w.]*)\s*\}", url.strip())
-            if ref:
-                url = constants.get(ref.group(1), url)   # ${PARAM} -> pipeline parameter value
-            driver = driver_kind(url) or FAMILY_KIND.get(fam)   # CDC origins name their database
+            conn = next((val for key, val in cfg.items() if key and key.endswith("connectionSelection") and val not in (None, "", "MANUAL")), None)
+            url = "" if conn else next((str(val) for key, val in cfg.items() if key and key.endswith("connectionString") and val), "")
+            driver = FAMILY_KIND.get(fam) or (_connection_kind(str(conn)) if conn else
+                                              driver_kind(url) or (_url_kind(url, constants) if "${" in url else None))
+            guessed = False
+            if not driver:   # still unknown: the names usually say it (RDH_HAQ_MariaDB_..., ..._Orcl_to_Snow_...)
+                driver = _kind_from_text(" ".join(filter(None, [name, o.get("uiInfo", {}).get("label"), str(conn or "")])))
+                guessed = bool(driver)
             if driver in SUPPORTED:
-                v = {"ok": True, "reason": None, "source": LABELS[driver]}
+                v = {"ok": True, "reason": None, "source": LABELS[driver], **({"guessed": True} if guessed else {})}
             elif driver:
                 v = no(f"Source '{driver}' isn't supported yet", driver)
-            else:   # shared connection or runtime resource: can't see the URL until it runs
+            else:   # nothing to go on: the run will find out
                 v = {"ok": True, "reason": None, "source": None}
     _support_cache[commit_id] = v
     return v
@@ -1045,7 +1092,7 @@ def support(auth: dict = Depends(require_permission("runITChecks"))):
 
     def one(p):
         try:
-            return p["id"], _verdict(p["id"], p.get("commit_id"))
+            return p["id"], _verdict(p["id"], p.get("commit_id"), p.get("name") or "")
         except Exception as e:   # noqa: BLE001 - one bad pipeline mustn't hide the rest; let it be tried
             return p["id"], {"ok": True, "reason": None, "source": None, "warning": f"Couldn't check: {e}"}
 
